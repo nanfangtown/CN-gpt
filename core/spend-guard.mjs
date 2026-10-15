@@ -42,15 +42,30 @@ export function toCents(value) {
 
 /**
  * 计算这次付费调用要花多少钱。
+ *
+ * ⚠ 判据是"**正价**"，不是"非 null"。2026-10-15 修：
+ * 早先只判 null / 非有限数，于是 `unitPrice: 0` 会被算成"预估 ¥0.00"——
+ * 一个 30 秒的出片被报价 0 元，而下面三层闸门（单次上限 / 会话上限 / 强制确认）
+ * **会全部放行**：0 既不超任何上限，也能被 `confirm_estimate=0` 精确复述。
+ * 等于"单价表里写一个 0，就把整道花钱闸门关掉"。
+ * 0 不是"未知"（未知写 null），0 是"宣称免费"——所以必须走未计价分支。
+ *
  * @param {object} args - { model, duration, unitPrice } 单价为 null 表示未计价。
  * @returns {{ estimated: number|null, unitPrice: number|null, duration: number, reason?: string }}
  */
 export function estimateSpend({ model, duration, unitPrice }) {
   const seconds = Number(duration ?? 5)
-  if (unitPrice === null || unitPrice === undefined || !Number.isFinite(Number(unitPrice))) {
-    return { estimated: null, unitPrice: null, duration: seconds, reason: `模型 ${model} 未计价，无法预估——请先在配置卡里补齐单价` }
+  const price = unitPrice === null || unitPrice === undefined ? null : Number(unitPrice)
+  if (price === null || !Number.isFinite(price) || price <= 0) {
+    const reason =
+      price === 0
+        ? `模型 ${model} 的单价被写成 0：0 等于宣称"免费"，不是"未知"，闸门不接受 0 作为预估依据。请填真实单价；不知道就写 null（= 未计价）`
+        : price !== null && Number.isFinite(price) && price < 0
+          ? `模型 ${model} 的单价是负数（${price}），不可能是合法价格——请检查 插件页 → gpt-CN → 配置卡 里的单价表`
+          : `模型 ${model} 未计价，无法预估——请先在配置卡里补齐单价`
+    return { estimated: null, unitPrice: null, duration: seconds, reason }
   }
-  return { estimated: toCents(Number(unitPrice) * seconds), unitPrice: Number(unitPrice), duration: seconds }
+  return { estimated: toCents(price * seconds), unitPrice: price, duration: seconds }
 }
 
 /**

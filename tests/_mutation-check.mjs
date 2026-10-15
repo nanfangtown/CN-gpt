@@ -45,6 +45,35 @@ const MUTATIONS = [
     from: '    if (config?.allowUnpricedSpend !== true) {',
     to: '    if (typeof confirmed?.confirm_estimate === "number") return { ok: true }\n    if (config?.allowUnpricedSpend !== true) {',
   },
+  // ---- 2026-10-15 第二轮：零价闸门 + 账本 schema（跑离线套件 run.mjs）----
+  {
+    label: '零价闸门改回"只判 null"（等于让 unitPrice:0 算出 ¥0 并放行三层闸门）',
+    file: 'core/spend-guard.mjs',
+    from: '  if (price === null || !Number.isFinite(price) || price <= 0) {',
+    to: '  if (price === null || !Number.isFinite(price)) {',
+    suite: 'run.mjs',
+  },
+  {
+    label: 'isPriced 改回"非 null 即已计价"（等于让 0 冒充已计价、自检重新变哑）',
+    file: 'core/cost.mjs',
+    from: '  return priceAboveZero(unitPriceOf(entry))',
+    to: '  return unitPriceOf(entry) !== null',
+    suite: 'run.mjs',
+  },
+  {
+    label: '账本 schema 撤回 null 放行（等于重新毒化领域 → 静默退回空 JSON 账本）',
+    file: 'core/cost.mjs',
+    from: '        unitPrice: z.number().nullable(),',
+    to: '        unitPrice: z.number(),',
+    suite: 'run.mjs',
+  },
+  {
+    label: '去掉 invalidRecords 护栏（等于下一次形状漂移仍然整领域打不开）',
+    file: 'core/cost.mjs',
+    from: "        invalidRecords: 'backup-and-skip',\n",
+    to: '',
+    suite: 'run.mjs',
+  },
 ]
 
 const results = []
@@ -62,13 +91,15 @@ for (const mutation of MUTATIONS) {
     let output = ''
     let failed = false
     try {
-      const { stdout } = await run(NODE, ['--import', './tests/register.mjs', './tests/verify-functionality.mjs'], { cwd: ROOT, encoding: 'utf8' })
+      // 每个变异可以指定跑哪套用例（默认"功能验证"；零价/账本 schema 那几条在 run.mjs）。
+      const suite = mutation.suite ?? 'verify-functionality.mjs'
+      const { stdout } = await run(NODE, ['--import', './tests/register.mjs', './tests/' + suite], { cwd: ROOT, encoding: 'utf8' })
       output = stdout
     } catch (error) {
       failed = true
       output = String(error.stdout ?? '') + String(error.stderr ?? '')
     }
-    const tail = (output.match(/\[功能验证\] 通过 \d+，失败 \d+/) ?? ['(无结果行)']).at(-1)
+    const tail = (output.match(/\[(?:功能验证|试运行结果)\] 通过 \d+，失败 \d+/) ?? ['(无结果行)']).at(-1)
     const failedCases = [...output.matchAll(/✗ (.+)/g)].map((match) => match[1].trim())
     results.push({
       label: mutation.label,

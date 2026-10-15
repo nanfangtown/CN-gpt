@@ -127,11 +127,27 @@ export const DEFAULT_PRICING = {
   },
 }
 
-/** 一条单价记录是否"已计价"（null / 非有限数 = 未计价）。 */
+/**
+ * 一条单价记录是否"已计价"——判据是**正数**，不是"非 null"。
+ *
+ * ⚠ 2026-10-15 修：早先只判 `!== null`，于是 `unitPrice: 0` 被读成"已计价"。
+ * 后果有两个，都很贵：
+ *   ① 真钱被报表显示成 0.0000（"免费"）；
+ *   ② 花费闸门把 0 当成合法预估金额 → 单次上限 / 会话上限 / 强制确认**全部失效**
+ *      （详见 core/spend-guard.mjs 的 estimateSpend）。
+ * 0 不是"未知"（未知的正确写法是 null），0 是"宣称免费"，所以不算已计价。
+ */
 export function isPriced(entry) {
   if (entry === null || entry === undefined) return false
-  if (entry.unit === 'ktoken') return unitPriceOf(entry, 'inputPrice') !== null || unitPriceOf(entry, 'outputPrice') !== null
-  return unitPriceOf(entry) !== null
+  if (entry.unit === 'ktoken') {
+    return priceAboveZero(unitPriceOf(entry, 'inputPrice')) || priceAboveZero(unitPriceOf(entry, 'outputPrice'))
+  }
+  return priceAboveZero(unitPriceOf(entry))
+}
+
+/** 单价是否为"可用正价"；null / 0 / 负数 / NaN 一律不算。 */
+function priceAboveZero(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
 
 /** 取生效单价表。 */
@@ -164,7 +180,7 @@ export const PRICING_ZERO_HINT =
  *
  * 与 `unitPriceOf` 的区别：这里把 `0` 当成**比不出价**（`<= 0` 一律视为没有可用价），
  * 因为 0 元单价的唯一效果就是"把真钱显示成免费"。这正是要检出的东西，
- * 所以不能像 `isPriced` 那样把 0 当成"已计价"。
+ * 判据与 `isPriced` 现在一致（都是"正数才算有价"）：两处若不一致，自检与报表就会互相打架 —— 一处说"已计价"，另一处说"没有可用价"。
  *
  * @param {object} entry - 单价记录。
  * @returns {number|null} 正数 = 可用；null = 没有可用价。
@@ -345,9 +361,16 @@ export async function openLedger(ctx, config, logger) {
         model: z.string(),
         unitKind: z.string(),
         units: z.number(),
-        unitPrice: z.number(),
+        // ⚠ unitPrice / amount 必须**允许 null**：未计价（单价表里写 null，或模型查不到价）
+        // 是插件有意支持的记录形态，落盘时写的就是 null。
+        //
+        // 2026-10-15 事故：这里原本写的是 z.number()。于是只要产生一条"未计价"记录，
+        // 下次 open() 逐条 zod 校验就 invalid-record → 下面这个 catch 把领域整个放弃，
+        // **静默**退回 JSON 文件账本 —— 报表里所有历史用量凭空消失（数据没丢，只是读不出来）。
+        // 放行 null 才是与写入方一致的语义。
+        unitPrice: z.number().nullable(),
         currency: z.string(),
-        amount: z.number(),
+        amount: z.number().nullable(),
         sessionId: z.string().optional(),
         taskId: z.string().optional(),
         note: z.string().optional(),
@@ -362,12 +385,20 @@ export async function openLedger(ctx, config, logger) {
       const spec = defineDomain({
         name: DOMAIN_NAME,
         version: REGISTRY_VERSION,
+        // 再加一道护栏：宿主 storage-domain 的官方策略 —— 某条记录校验不过时，
+        // 把它备份挪走、记一条 error 日志、其余记录照常装载，
+        // 而不是让整个领域 open() 失败。
+        // 没有它，任何一次"写入形状漂移"都会重演 2026-10-15 的静默降级：
+        // 整个账本读不出来，报表显示"没有用量记录"，而磁盘上数据完好。
+        invalidRecords: 'backup-and-skip',
         tables: { usage: domainTable(usageSchema), health: domainTable(healthSchema) },
       })
       domain = await facility.open(spec)
       backend = 'storage'
     } catch (error) {
       storageError = error
+      // 只写 logger.warn 是不够的：DSH 不落盘插件日志，用户根本看不见，
+      // 表现就是"报表突然空了"。所以原因由 ledger.storageError() 带进 health 报告（见 tools/media-report.mjs）。
       log('warn', `[mm-models] storageDomain ledger unavailable; falling back to JSON file: ${clip(String(error?.message ?? error))}`)
     }
   }

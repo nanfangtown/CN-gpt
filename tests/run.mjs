@@ -29,6 +29,7 @@ import { dashscopeImageAdapter } from '../tasks/adapters/dashscope-image.mjs'
 import { arkVideoAdapter } from '../tasks/adapters/ark-video.mjs'
 import { CODES, MediaError, classifyHttpError, fixedMessage, isPreSendError } from '../core/errors.mjs'
 import { DEFAULT_PRICING, isPriced, pricingOf, pricingWarnings, renderCostReport, zeroPriceOverrides } from '../core/cost.mjs'
+import { authorizeSpend, estimateSpend } from '../core/spend-guard.mjs'
 import { createCallBudget, createSwitches, normalizeSettingsOps } from '../core/tool-kit.mjs'
 import { READER_FORBIDDEN_TOOLS, inspectReaderFilters, readerFilterViolation } from '../core/reader-guard.mjs'
 import { downloadToFile, imageSize, mediaTypeFromBytes, shouldAttachImage } from '../core/deliver.mjs'
@@ -1968,6 +1969,103 @@ async function main() {
     } else {
       assert.ok(schemaSemanticsSource.includes('schemastery'), '真实来源路径应指向 schemastery，实际 ' + schemaSemanticsSource)
     }
+  })
+
+  // ================================================== 2026-10-15 事故的回归用例
+  //
+  // 两个真实故障，当时的套件**都没覆盖**，所以各自溜到了生产：
+  //   ① 单价写成 0：预估金额算成 ¥0.00，于是单次上限 / 会话上限 / 强制确认
+  //      三层闸门全部放行 —— "在单价表里写个 0"就能把整道花钱闸门关掉；
+  //   ② 未计价记录（unitPrice/amount = null）过不了账本自己的 zod schema，
+  //      重启后整个 storage 领域 open() 失败、静默退回空的 JSON 账本，
+  //      报表里历史用量凭空消失。
+  // 下面每条都写成"改坏就必须失败"的形状。
+
+  await test('零价闸门：unitPrice=0 必须走未计价分支，不能被算成"预估 ¥0"', async () => {
+    // ① 预估函数本身
+    const zero = estimateSpend({ model: 'doubao-seedance-2-5-260628', duration: 30, unitPrice: 0 })
+    assert.equal(zero.estimated, null, '0 元单价不得算出金额（算出来三层闸门就全过了）：' + JSON.stringify(zero))
+    assert.ok(/0/.test(zero.reason) && /免费|未计价/.test(zero.reason), '理由要点明 0 是"宣称免费"还是"未知"：' + zero.reason)
+    // 对照：正价必须照常预估（别把闸门修成"谁都不放行"）
+    assert.equal(estimateSpend({ model: 'm', duration: 10, unitPrice: 1.519 }).estimated, 15.19, '正价必须照常预估')
+    // 其它非法价也一律不算
+    assert.equal(estimateSpend({ model: 'm', duration: 5, unitPrice: -1 }).estimated, null, '负价不得预估')
+    assert.equal(estimateSpend({ model: 'm', duration: 5, unitPrice: null }).estimated, null, '未计价不得预估')
+    assert.equal(estimateSpend({ model: 'm', duration: 5, unitPrice: Number.NaN }).estimated, null, 'NaN 不得预估')
+
+    // ② 端到端：拿 0 价去闸门，必须被拒（而不是"复述 ¥0 即放行"）
+    const gate = await authorizeSpend({
+      estimate: zero,
+      config: { videoCostLimitCNY: 10, videoSessionCostLimitCNY: 30, requireSpendConfirm: true, allowUnpricedSpend: false },
+      spentInSession: async () => 0,
+      confirmed: { confirm_estimate: 0 },
+      providerLabel: '方舟 Ark',
+    })
+    assert.equal(gate.ok, false, '0 价 + 复述 ¥0 绝不能放行：' + JSON.stringify(gate))
+  })
+
+  await test('零价自检：在用模型被写成 0 必须在告警里点名（不能静默）', async () => {
+    const base = { ...plain(new Config({}).pricing) }
+    const inUse = { qwenModel: 'qwen-image-3.0', seedanceModel: 'doubao-seedance-2-5-260628' }
+    // 干净配置：一条告警都不该有（对照，防止"报警报成狼来了"）
+    assert.equal(pricingWarnings({ pricing: base, ...inUse }).length, 0, '干净配置不应报警')
+
+    // 现场复刻：在用的制图模型被写成 0（2026-10-15 报表显示"16 张图 ¥0.0000"的那个配置）
+    const zeroed = { ...base, 'qwen-image-3.0': { unit: 'image', unitPrice: 0, currency: 'CNY', asOf: '2026-10-12' } }
+    const warnings = pricingWarnings({ pricing: zeroed, ...inUse })
+    assert.ok(warnings.length >= 1, '在用模型写 0 必须有告警，实际 ' + warnings.length + ' 条')
+    assert.ok(warnings.some((w) => w.includes('qwen-image-3.0')), '要点名是哪个模型：' + warnings.join(' | '))
+
+    // 出片模型被写成 0 同样要点名（2026-10-15 出片锁死的那条路径）
+    const zeroedVideo = { ...base, 'doubao-seedance-2-5-260628': { unit: 'second', unitPrice: 0, currency: 'CNY', asOf: '2026-10-12' } }
+    const videoWarnings = pricingWarnings({ pricing: zeroedVideo, ...inUse })
+    assert.ok(videoWarnings.some((w) => w.includes('doubao-seedance-2-5-260628')), '出片模型写 0 也要点名：' + videoWarnings.join(' | '))
+  })
+
+  await test('isPriced：0 / 负数 / null 都不算已计价，只有正数才算', async () => {
+    assert.equal(isPriced({ unit: 'image', unitPrice: 0 }), false, '0 不是已计价')
+    assert.equal(isPriced({ unit: 'image', unitPrice: 0.18 }), true, '正价是已计价')
+    assert.equal(isPriced({ unit: 'second', unitPrice: -1 }), false, '负价不是已计价')
+    assert.equal(isPriced({ unit: 'ktoken', inputPrice: 0, outputPrice: 0 }), false, 'ktoken 全 0 不是已计价')
+    assert.equal(isPriced({ unit: 'ktoken', inputPrice: 0.5, outputPrice: 0 }), true, 'ktoken 有一项正价即已计价')
+    assert.equal(isPriced({ unit: 'image', unitPrice: null }), false, 'null 不是已计价')
+    assert.equal(isPriced(null), false, '缺条目不是已计价')
+  })
+
+  await test('账本 schema：未计价记录（unitPrice/amount = null）必须能通过校验', async () => {
+    // 关键：未计价是插件**有意写入**的形态。schema 若只收 number，
+    // 一条 null 记录就会让整个领域 open() 失败 → 静默退回空 JSON 账本。
+    const tmp = await makeTmp()
+    const storageDomain = createFakeStorageDomain()
+    const { tools } = setup(mock, tmp, { storageDomain })
+    const { exec } = newExec(tmp)
+    await tools.qwen_draw.execute({ prompt: 'schema 检查' }, exec)
+
+    const opened = storageDomain.opened.get('mm_media_ledger')
+    assert.ok(opened !== undefined, 'storage 账本领域应已被打开')
+    const usage = opened.spec.tables.usage.valueSchema
+    assert.equal(usage.shape.unitPrice.isNullable, true, 'unitPrice 必须放行 null（未计价）')
+    assert.equal(usage.shape.amount.isNullable, true, 'amount 必须放行 null（未计价）')
+    // 对照：别把整个 schema 放松了，其余字段仍要严格
+    assert.equal(usage.shape.units.isNullable, false, 'units 不该被放松')
+    assert.equal(usage.shape.currency.isNullable, false, 'currency 不该被放松')
+    // 宿主的官方护栏：未来再出现形状漂移时，坏记录备份跳过而不是整领域打不开
+    assert.equal(opened.spec.invalidRecords, 'backup-and-skip', '必须声明宿主的备份跳过策略')
+  })
+
+  await test('账本退回文件后端时，health 报告必须说清原因（不能静默）', async () => {
+    const tmp = await makeTmp()
+    const broken = {
+      async open() {
+        throw new Error('invalid-record: stored record does not match its schema')
+      },
+    }
+    const { tools } = setup(mock, tmp, { storageDomain: broken })
+    const { exec } = newExec(tmp)
+    const health = await tools.media_report.execute({ action: 'health' }, exec)
+    assert.ok(health.report.includes('账本后端：file'), health.report)
+    assert.ok(health.report.includes('storage 账本领域打不开'), '退化为文件后端必须点名：' + health.report)
+    assert.ok(health.report.includes('invalid-record'), '要带上宿主给的原因：' + health.report)
   })
 
   // ---------------------------------------------------------------- 收尾

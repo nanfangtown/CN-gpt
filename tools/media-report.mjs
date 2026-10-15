@@ -102,7 +102,18 @@ export function createMediaReportTool(deps) {
           llmProviders = undefined
         }
         const report = renderHealthReport({ keyEntries, health, probes, llmProviders, config, switches: switches?.snapshot?.() ?? {}, readerConflict: switches?.conflict?.() === true })
-        return { report: report + '\n\n账本后端：' + ledgerBackend + '（storage = 宿主 storage 服务；file = 插件 JSON 回退）' }
+        let backendLine = '\n\n账本后端：' + ledgerBackend + '（storage = 宿主 storage 服务；file = 插件 JSON 回退）'
+        // 退回文件后端是**降级**，必须说清原因：否则表现就是"报表里历史用量凭空消失"，
+        // 而用户没有任何线索（2026-10-15 实发：一条未计价记录过不了 zod 校验，
+        // 整个账本领域 open() 失败，静默退回空的 JSON 文件）。
+        const fallbackReason = typeof ledger.storageError === 'function' ? ledger.storageError() : undefined
+        if (ledgerBackend === 'file' && fallbackReason !== undefined && fallbackReason !== null) {
+          backendLine +=
+            '\n\n⚠ **宿主 storage 账本领域打不开，已退回 JSON 文件**：磁盘上的历史用量仍在 `~/.dsh/storages/mm_media_ledger.json`，' +
+            '但报表读不到它，所以上面/下面的数字**不是全部历史**。原因：' +
+            String(fallbackReason?.message ?? fallbackReason)
+        }
+        return { report: report + backendLine }
       }
       throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：action 必须是 cost 或 health')
     },
