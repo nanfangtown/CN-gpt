@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "title": "gpt-CN (read / draw / video)",
+    "description": "One plugin. China's GPT."
+  },
+  "config": {
+    "dashscopeApiKey": "Alibaba DashScope API key (qwen_draw images + ask_qwen reader)",
+    "dashscopeApiKeyEnv": "Credential ref for DASHSCOPE_API_KEY",
+    "arkApiKey": "Volcengine Ark API key (seedance_video)",
+    "arkApiKeyEnv": "Credential ref for ARK_API_KEY",
+    "zhipuApiKey": "Zhipu API key (ask_glm reader; defaults to Settings > Models > GLM)",
+    "zhipuApiKeyEnv": "Credential ref for ZHIPU_API_KEY",
+    "enableAskGlm": "Allow ask_glm (GLM image reader)",
+    "enableAskQwen": "Allow ask_qwen (Qwen-VL image reader)",
+    "blockMainAgentNativeVision": "Block the main agent's native image reading (forces the reader subagent; needs restart)",
+    "enableQwenDraw": "Allow qwen_draw (Qwen images)",
+    "enableSeedanceVideo": "Allow seedance_video (Seedance video)",
+    "enableMediaTask": "Allow media_task (re-query / download)",
+    "enableMediaReport": "Allow media_report (cost / health)",
+    "dashscopeBase": "DashScope API base URL",
+    "dashscopeCompatBase": "DashScope OpenAI-compatible base URL (health probe)",
+    "arkBase": "Ark API base URL",
+    "qwenModel": "Qwen image model id",
+    "seedanceModel": "Seedance video model id",
+    "taskTimeoutMs": "Image task wait limit (ms)",
+    "videoTimeoutMs": "Video task wait limit (ms)",
+    "taskPollIntervalMs": "Initial poll interval (ms)",
+    "taskPollMaxIntervalMs": "Maximum poll interval (ms)",
+    "httpTimeoutMs": "Per-request HTTP timeout (ms)",
+    "queryRetries": "Idempotent query retries",
+    "maxCallsPerTurn": "Generation calls per turn (0 = unlimited)",
+    "outDir": "Image output directory",
+    "videoOutDir": "Video output directory",
+    "maxDownloadBytes": "Per-artifact download limit (bytes)",
+    "maxInlineImageBytes": "Inline first-frame limit (bytes)",
+    "ledgerPath": "Ledger JSON fallback path",
+    "pricing": "Pricing table",
+    "promptSection": "Register the division-of-labor prompt section",
+    "degradeToText": "Fallback guidance when image reading fails",
+    "healthProbe": "Enable health probes",
+    "healthProbeTtlMs": "Health probe cache TTL (ms)"
+  }
+}

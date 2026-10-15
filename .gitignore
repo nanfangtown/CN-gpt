@@ -1,0 +1,33 @@
+# ---- 试运行环境与产物：绝不进仓库 ----
+# _sandbox/ 是本地试运行用的 DSH home + 产物（会话日志、附件、生成的图，可达数十 MB）。
+# 它记录的是**本机**的运行痕迹，对别人没有任何价值，且可能含私人内容。
+_sandbox/
+tests/_sandbox/
+
+# 生成的媒体产物（qwen_draw / seedance_video 的落盘目录）
+gen/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.mp4
+# 但测试夹具里的图是源码，要保留
+!tests/**/*.png
+!icon.svg
+
+# 账本与报告（本机用量数据）
+mm-models-ledger.json
+ledger.json
+tests/field-report-*.md
+
+# ---- 依赖与构建 ----
+node_modules/
+.pnpm-store/
+
+# ---- 编辑器 / 系统 ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+*.tmp

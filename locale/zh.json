@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "title": "gpt-CN（读图 / 制图 / 出片）",
+    "description": "一个插件，做成中国的GPT"
+  },
+  "config": {
+    "dashscopeApiKey": "阿里云百炼 DashScope API Key（qwen_draw 制图 + ask_qwen 读图）",
+    "dashscopeApiKeyEnv": "DASHSCOPE_API_KEY 引用名",
+    "arkApiKey": "火山方舟 Volcengine Ark API Key（seedance_video 出片）",
+    "arkApiKeyEnv": "ARK_API_KEY 引用名",
+    "zhipuApiKey": "智谱 API Key（ask_glm 读图；默认用 设置 → 模型 → GLM 行）",
+    "zhipuApiKeyEnv": "ZHIPU_API_KEY 引用名",
+    "enableAskGlm": "允许 ask_glm（GLM 读图子代理）",
+    "enableAskQwen": "允许 ask_qwen（Qwen-VL 读图子代理）",
+    "blockMainAgentNativeVision": "屏蔽主代理原生读图（强制走读图子代理，需重启）",
+    "enableQwenDraw": "允许 qwen_draw（Qwen 制图）",
+    "enableSeedanceVideo": "允许 seedance_video（Seedance 出片）",
+    "enableMediaTask": "允许 media_task（任务重查 / 补下载）",
+    "enableMediaReport": "允许 media_report（成本 / 健康报告）",
+    "dashscopeBase": "DashScope API 基址",
+    "dashscopeCompatBase": "DashScope OpenAI 兼容基址（健康探测）",
+    "arkBase": "方舟 Ark API 基址",
+    "qwenModel": "Qwen 制图模型 id",
+    "seedanceModel": "Seedance 出片模型 id",
+    "taskTimeoutMs": "图片任务等待上限（毫秒）",
+    "videoTimeoutMs": "视频任务等待上限（毫秒）",
+    "taskPollIntervalMs": "轮询起始间隔（毫秒）",
+    "taskPollMaxIntervalMs": "轮询间隔上限（毫秒）",
+    "httpTimeoutMs": "单次 HTTP 超时（毫秒）",
+    "queryRetries": "幂等查询重试次数",
+    "maxCallsPerTurn": "每轮生成调用上限（0 = 不限）",
+    "outDir": "图片产物目录",
+    "videoOutDir": "视频产物目录",
+    "maxDownloadBytes": "单产物下载上限（字节）",
+    "maxInlineImageBytes": "首帧图内联上限（字节）",
+    "ledgerPath": "账本 JSON 回退路径",
+    "pricing": "单价表",
+    "promptSection": "注册分工说明段落",
+    "degradeToText": "读图失败的替代指引开关",
+    "healthProbe": "健康探测开关",
+    "healthProbeTtlMs": "健康探测缓存 TTL（毫秒）"
+  }
+}

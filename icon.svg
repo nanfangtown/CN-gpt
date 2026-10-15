@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="MM Models">
+  <rect width="64" height="64" rx="14" fill="#1f6feb"/>
+  <circle cx="22" cy="22" r="7" fill="#ffd166"/>
+  <path d="M10 46l12-14 9 10 8-9 15 13z" fill="#e8f1ff"/>
+  <circle cx="46" cy="18" r="5" fill="#ff6b6b"/>
+</svg>

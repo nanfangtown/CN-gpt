@@ -1,0 +1,66 @@
+{
+  "name": "@local/dsh-mm-models",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "DeepSeek 主脑 + GLM/Qwen 读图（二选一）/ Qwen 制图 / Seedance 出片：把三个外部模型能力做成与 bash 同级的顶级工具，共用异步任务层、多 key 管理与成本估算。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "multimodal",
+    "qwen-vl",
+    "image-generation",
+    "video-generation"
+  ],
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "core",
+    "tasks",
+    "tools",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-credentials": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "scripts": {
+    "test": "node --import ./tests/register.mjs ./tests/run.mjs && node tests/client-card.test.mjs && node tests/_card-mutex.test.mjs",
+    "test:sizes": "node --import ./tests/register.mjs ./tests/size-report.mjs"
+  },
+  "meta": {
+    "title": "gpt-CN（读图 / 制图 / 出片）",
+    "description": "一个插件，做成中国的GPT"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  }
+}

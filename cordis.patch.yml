@@ -1,0 +1,165 @@
+# ============================================================================
+# @local/dsh-mm-models bundle patch
+# 规划：dsh-创作模式插件-规划.txt v0.7（[7] 最终架构 / [8.2] 配置样例）
+#
+# 三行：
+#   行1  llm-pi-ai（覆盖配置）：providers.glm → 智谱视觉，供 ask_glm 使用
+#   行2  tool-subagent-glm（官方包实例，零代码）：ask_glm 多模态阅读子代理
+#   行2b tool-subagent-qwen（同一官方包，零代码）：ask_qwen 多模态阅读子代理
+#        —— 2 与 2b 互斥、二选一，默认两个都不开，由用户在设置卡里选一个。
+#   行3  mm-models（自研）：qwen_draw / seedance_video / media_task / media_report
+#
+# ⚠ 行1 是"覆盖"语义：config 整体替换，不会与已有 providers 深合并。
+#    若 profile 的 llm-pi-ai 行已有 providers（例如 GUI 添加过路由），
+#    请把 providers.glm 合并进那份配置，或改用媒体工具行里的 base/模型开关。
+#    当前 desktop profile 的 llm-pi-ai 行没有 config（2026-10-12 已核对）。
+#
+# 实跑确证（2026-10-12）：glm-4.6v-flash 持续 429（型号拥挤不可用）；
+# glm-4.6v / glm-4.5v / glm-4v-flash 均可用，且"左红右蓝"读图测试全部答对。
+# 这里钉 glm-4.6v（同族、较新）；flash 恢复后改回下面两处 id 即可。
+# ============================================================================
+
+# ---- 行1：智谱 GLM 视觉路由（key 在 设置 → 模型 → GLM 行 填写）----
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      glm:
+        displayName: GLM (智谱·视觉)
+        apiKeyEnv: ZHIPU_API_KEY
+        api: openai-completions
+        baseURL: https://open.bigmodel.cn/api/paas/v4
+        compat: { thinkingFormat: zai }
+        models:
+          # input 必须声明 image，否则图片会变成占位符（规划 [2.1] 前置条件）。
+          - id: glm-4.6v
+            input: [text, image]
+            contextWindow: 200000
+            maxTokens: 32768
+      # ask_qwen 用的百炼 Qwen-VL 路由（2026-10-12 实跑确证：qwen3-vl-plus 真读图）。
+      qwen-vl:
+        displayName: Qwen-VL (百炼·视觉)
+        apiKeyEnv: DASHSCOPE_API_KEY
+        api: openai-completions
+        baseURL: https://dashscope.aliyuncs.com/compatible-mode/v1
+        models:
+          - id: qwen3-vl-plus
+            input: [text, image]
+            contextWindow: 131072
+            maxTokens: 32768
+
+# ---- 读图子代理的共享定义（YAML 锚点：两个读图员必须完全一致）----
+# 2026-10-13 起读图子代理被"物理阉割"：toolFilter 只放行读图工具。
+# 以前放行 read / glob / grep / web_search，结果主模型会把"看看这个仓库""查一下配置"
+# 这类本地活派给子代理，而子代理看不到本地环境，只能反复试错烧上下文。
+# 现在除图片之外它没有任何工具可用，从物理上切断环境探查。
+#
+# 锚点定义在第一个读图行内部（不放顶层，避免多出一个会被当成 patch 条目的键）；
+# 第二个读图行用合并键 << 引用，两行的 persona 与 toolFilter 因而永远是同一份。
+
+# ---- 行2：ask_glm 视觉阅读子代理（只读，零代码）----
+- insert:
+    - id: tool-subagent-glm
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: ask_glm
+        backgroundMode: one-shot
+        # 体积优化：关掉 run_in_background 参数（ask_glm schema 937→788 字符/请求）。
+        # 读图通常要等结果再继续；确实需要后台读图时改回 true 即可。
+        enableRunInBackground: false
+        # 规划原文写 maxDepth: 0（本意=读图员不能再委派）；实跑证明该 API 下 0 会把
+        # ask_glm 自身的 spawn 一起挡掉（"subagent depth 1 exceeds maxDepth 0"）。
+        # 正确写法是 1：允许本层子代理，深度 2 的嵌套委派被拒；再加上只读 toolFilter。
+        maxDepth: 1
+        agentOptions: { provider: glm, model: glm-4.6v }
+        # ↓ 共享定义（锚点 &readerCommon），第二个读图员用 << 合并同一份。
+        persona: &readerPersona >-
+          你是视觉阅读员：只把图片、截图、图表、界面里的文字与结构转述成结论。
+          不臆测、不补全看不见的内容；看不清就明确说看不清。
+          除图片之外的一切请求（读代码、翻目录、查配置、跑命令）都超出你的能力：
+          直接回答"这需要主代理处理"，不要尝试、不要重试。
+          输出尽量短：先给结论，再给支撑细节。
+        toolFilter: &readerTools
+          allow: [read_image]
+
+    # ---- 行2b：ask_qwen 视觉阅读子代理（百炼 Qwen-VL；与 ask_glm 互斥）----
+    # 开关互斥由 Host 半侧强制：两个都开时 GLM 优先、ask_qwen 被压制（健康报表会标注冲突）；
+    # 设置卡里打开一个会自动关闭另一个。默认两者都不开，由用户在设置卡里选一个。
+    - id: tool-subagent-qwen
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: ask_qwen
+        backgroundMode: one-shot
+        enableRunInBackground: false
+        maxDepth: 1
+        agentOptions: { provider: qwen-vl, model: qwen3-vl-plus }
+        persona: *readerPersona
+        toolFilter: *readerTools
+
+    # ---- 行3：自研插件本体 ----
+    - id: mm-models
+      name: '@local/dsh-mm-models'
+      config:
+        # 三把 key：secret 字面值（null = 未设置）优先于 credential-ref 引用
+        dashscopeApiKey: null
+        dashscopeApiKeyEnv: DASHSCOPE_API_KEY
+        arkApiKey: null
+        arkApiKeyEnv: ARK_API_KEY
+        zhipuApiKey: null
+        zhipuApiKeyEnv: ZHIPU_API_KEY
+        # 端点与型号
+        dashscopeBase: https://dashscope.aliyuncs.com/api/v1
+        dashscopeCompatBase: https://dashscope.aliyuncs.com/compatible-mode/v1
+        arkBase: https://ark.cn-beijing.volces.com/api/v3
+        qwenModel: qwen-image-3.0
+        # 实跑确证（2026-10-12）：本账号不支持 DashScope 异步调用（403），
+        # qwen-image 走同步 multimodal-generation；auto 会自动按模型选择。
+        dashscopeImageMode: auto
+        seedanceModel: seedance-2.0
+        # 任务层
+        taskTimeoutMs: 600000
+        videoTimeoutMs: 1800000
+        taskPollIntervalMs: 5000
+        taskPollMaxIntervalMs: 10000
+        httpTimeoutMs: 60000
+        queryRetries: 2
+        maxCallsPerTurn: 3
+        # 落盘
+        outDir: gen
+        videoOutDir: gen/video
+        maxDownloadBytes: 209715200
+        maxInlineImageBytes: 10485760
+        ledgerPath: ''
+        # 成本：0.0 是占位，请按各家官网填真实单价并更新 asOf（规划 [5.1]）
+        pricing:
+          qwen-image-3.0: { unit: image, unitPrice: 0.0, currency: CNY, asOf: 2026-10-12 }
+          seedance-2.0:
+            unit: second
+            unitPrice: 0.0
+            currency: CNY
+            asOf: 2026-10-12
+            tiers: []
+          glm-4.6v: { unit: ktoken, inputPrice: 0.0, outputPrice: 0.0, currency: CNY, asOf: 2026-10-12 }
+          qwen3-vl-plus: { unit: ktoken, inputPrice: 0.0, outputPrice: 0.0, currency: CNY, asOf: 2026-10-12 }
+        # 工具开关（插件页 → MM Models → 配置卡 一键勾选；关闭后调用被拒、新会话不显示）
+        # 读图子代理 ask_glm / ask_qwen 互斥、必须二选一：设置卡里打开一个会自动关闭另一个；
+        # 万一两个都是 true（例如手改本文件），Host 侧按 "GLM 优先" 仲裁并压制 ask_qwen，
+        # media_report(action=health) 会把这次冲突标出来。默认两个都关（不预设读图员）。
+        enableAskGlm: false
+        enableAskQwen: false
+        # 屏蔽主代理的原生读图：打开后主 agent 的工具列表里没有 read_image，读图只能走
+        # 上面选中的读图子代理。子代理不受影响 —— 否则读图员会被一起弄瞎（实测过）。
+        # 默认关：主代理原生读图更快、少一次调用；打开是为了"确定性路由"。
+        # 改这个开关需要完整重启才生效（限制在 agent 创建时装上）。
+        blockMainAgentNativeVision: false
+        enableQwenDraw: true
+        enableSeedanceVideo: false   # Ark 未开通/门槛高：默认关闭，接通后一键打开
+        enableMediaTask: true
+        enableMediaReport: true
+        # 其它
+        promptSection: true
+        degradeToText: false
+        healthProbe: true
+        healthProbeTtlMs: 300000

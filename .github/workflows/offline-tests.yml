@@ -1,0 +1,51 @@
+name: offline-tests
+
+# 只跑"离线可复现"的验证：不需要安装 dsh、不需要任何 API key、不联网、不花钱。
+# 需要真实 harness 的脚本（tests/e2e-*.mjs）刻意不在这里跑 —— 它们要 DSH 安装与真 key。
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 装真实的 schemastery（devDependency）。为什么必须装：
+      # tests/register.mjs 找不到真包时会回落到最小替身，而替身把
+      # `.volatile() / .role() / .step() / .min()` 全部实现成 no-op ——
+      # 生产里 `.volatile()` 会让字段变成引用对象 `{ get() }`（index.js 靠
+      # liveConfig Proxy 解包）。不装真包，CI 验证的是一套与生产不同的 Config 语义，
+      # volatile/role 类回归永远抓不到。DSH_REQUIRE_REAL_SCHEMASTERY=1 让这件事
+      # 变成硬失败，而不是静默降级。
+      - name: Install real schemastery (production Config semantics)
+        run: npm install --no-audit --no-fund
+
+      # 单测 + 本地假厂商：配置解析、注册面、任务链路、错误映射、账本、开关、读图守卫
+      - name: Unit + mock-provider suite
+        env:
+          DSH_REQUIRE_REAL_SCHEMASTERY: '1'
+        run: node --import ./tests/register.mjs ./tests/run.mjs
+
+      # 设置卡（client.js）：注册点、开关/文本字段读写、密钥框只写语义、互斥逻辑
+      - name: Settings card suite
+        run: node tests/client-card.test.mjs
+
+      - name: Settings card mutex + API-key fields
+        run: node tests/_card-mutex.test.mjs
+
+      # 每请求固定成本（工具 schema + 提示词段落）
+      - name: Request-size report
+        env:
+          DSH_REQUIRE_REAL_SCHEMASTERY: '1'
+        run: node --import ./tests/register.mjs ./tests/size-report.mjs

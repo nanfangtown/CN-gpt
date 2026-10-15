@@ -1,0 +1,169 @@
+/**
+ * 付费调用的收口闸门（2026-10-15 加，源于一次真实事故）。
+ *
+ * ## 事故
+ * 为探测 `duration` 的合法取值范围，调用方逐个试 `2,3,4,…,30`，用"返回 200 即通过"
+ * 当判据。但 200 的真实含义是**任务已创建、已开始计费**——22 个任务、账单 ¥195.97。
+ *
+ * ## 根因（不是"参数算错"，而是设计缺失）
+ * 付费接口的提交路径上**没有任何强制意图声明**：
+ *   - 调用方无法在提交前得知"这次要花多少钱"；
+ *   - 也没有任何机制要求它为"花钱"这件事表态；
+ *   - 于是"探测参数"和"下单购买"在接口层面**长得一模一样**。
+ *
+ * ## 对策：三层，逐级升级授权
+ *   1. **单次上限**：预估超 `videoCostLimitCNY` → 拒绝；
+ *   2. **会话累计上限**：已花 + 本次超 `videoSessionCostLimitCNY` → 拒绝；
+ *   3. **显式确认**：必须传回**精确到分的预估金额**才放行。
+ *
+ * 第 3 层是关键的**行为改变**：想花钱就必须先说出要花多少——
+ * "无意识的循环试参"因此不可能再发生，因为它每次都得先算钱、再复述金额。
+ * 这正好是事故里缺失的那一步。
+ *
+ * ## 同日修订（2026-10-15 第二轮）：未计价路径上的一个洞
+ * 初版在"金额算不出来"（未计价模型）时，只要 `confirm_estimate` 是个数字就放行。
+ * 于是"闸门"可以被一句话绕过：调用方自己报 `confirm_estimate: 1` 即可，
+ * 单次/会话上限也一并跳过 —— 想让闸门放行，只要自己编个价格。
+ * 现在未计价一律 **fail-closed**：默认拒绝（`allowUnpricedSpend=false`），
+ * 只有用户打开该开关 + 调用方带 `confirm_unpriced=true` 才放行；数字在此不作数。
+ */
+
+/** 金额比较用的容差（元）。浮点乘法会引入 1e-15 级误差，不能让"确认 6.08"被 6.079999 卡住。 */
+const MONEY_EPSILON = 0.01
+
+/**
+ * 把数值裁成"分"精度（两位小数的数字），用于让双方对同一个数达成一致。
+ * @param {number} value - 原始金额。
+ * @returns {number} 保留两位小数的数值。
+ */
+export function toCents(value) {
+  return Math.round(Number(value) * 100) / 100
+}
+
+/**
+ * 计算这次付费调用要花多少钱。
+ * @param {object} args - { model, duration, unitPrice } 单价为 null 表示未计价。
+ * @returns {{ estimated: number|null, unitPrice: number|null, duration: number, reason?: string }}
+ */
+export function estimateSpend({ model, duration, unitPrice }) {
+  const seconds = Number(duration ?? 5)
+  if (unitPrice === null || unitPrice === undefined || !Number.isFinite(Number(unitPrice))) {
+    return { estimated: null, unitPrice: null, duration: seconds, reason: `模型 ${model} 未计价，无法预估——请先在配置卡里补齐单价` }
+  }
+  return { estimated: toCents(Number(unitPrice) * seconds), unitPrice: Number(unitPrice), duration: seconds }
+}
+
+/**
+ * 付费提交前的收口检查。**任何付费路径都必须先过这里。**
+ *
+ * @param {object} input - 上下文。
+ * @param {object} input.estimate - `estimateSpend` 的结果。
+ * @param {object} input.config - 插件 Config（读两个上限 + allowUnpricedSpend）。
+ * @param {(key: string) => Promise<number>} input.spentInSession - 读本次会话已花金额（元）。
+ * @param {object} input.confirmed - 调用方传来的确认信息 `{ confirm_estimate, confirm_unpriced }`。
+ * @param {string} input.providerLabel - 厂商名，用于文案。
+ * @returns {Promise<{ ok: true } | { ok: false, message: string }>}
+ */
+export async function authorizeSpend({ estimate, config, spentInSession, confirmed, providerLabel }) {
+  const { estimated, unitPrice, duration, reason } = estimate
+
+  // ---- 未计价：默认 fail-closed，且**不接受"自报金额"作为放行凭证** ----
+  //
+  // 2026-10-15 的初版这里写的是"只要 confirm_estimate 是个数字就放行"。
+  // 那是个真洞：金额算不出来的时候，调用方随便报一个数（`confirm_estimate: 1`）
+  // 就能把闸门整个推开 —— 上限判定（单次 / 会话累计）也一并跳过，
+  // 等于"想让闸门放行，只要自己编个价格"。设计意图里的"让人表态"变成了"让模型表态"。
+  //
+  // 现在的语义：金额算不出来时，**只有人能放行**。
+  //   - `allowUnpricedSpend: false`（默认）→ 一律拒绝，调用方无法绕过；
+  //   - 用户把开关打开后，调用方还须带 `confirm_unpriced: true` 明示"我知道这次金额不可知"。
+  // 数字（confirm_estimate）在这里完全不作数 —— 它没法证明任何事。
+  if (estimated === null) {
+    if (config?.allowUnpricedSpend !== true) {
+      return {
+        ok: false,
+        message:
+          `⛔ ${reason}。**本次调用未提交、未产生任何费用。**` +
+          `未计价模型默认不放行（allowUnpricedSpend=false），且**不接受调用方自报金额**——` +
+          `因为"金额算不出来时自己报一个数"本身就不构成任何担保。` +
+          `请二选一：① 让用户在 插件页 → gpt-CN → 配置卡 的单价表里补上该模型 id 的单价（推荐，补完就能正常出片）；` +
+          `② 用户明确同意"按未知价格出片"后，把配置卡里的 allowUnpricedSpend 打开，再重试并带上 confirm_unpriced=true。`,
+      }
+    }
+    if (confirmed?.confirm_unpriced !== true) {
+      return {
+        ok: false,
+        message:
+          `⚠ ${reason}。用户已允许未计价出片（allowUnpricedSpend=true），但**本次仍未确认**。` +
+          `**本次未提交、未产生任何费用。**` +
+          `确认要按"未知价格"出片，请再调一次这个工具，并带上参数 confirm_unpriced=true。`,
+      }
+    }
+    return { ok: true }
+  }
+
+  // ⚠ 顺序很重要：**先判上限，再要确认**。
+  // 反过来的话，超上限的调用会先被确认层拦住、拿不到"超限"这个更具体的错因，
+  // 调用方也就不知道真正的问题在哪（是限额不够，还是没确认）。
+  const perCall = capOf(config.videoCostLimitCNY)
+  if (perCall !== null && estimated > perCall) {
+    return {
+      ok: false,
+      message:
+        `⛔ 这次出片预估 ¥${estimated.toFixed(2)}（${duration} 秒 × ¥${unitPrice}/秒）` +
+        `超过 videoCostLimitCNY=¥${perCall} 的单次上限，**已在提交前拦下，未产生任何费用**。` +
+        `要放行请让用户在 插件页 → gpt-CN → 配置卡 调大该上限（0 = 不限制）。`,
+    }
+  }
+
+  const perSession = capOf(config.videoSessionCostLimitCNY)
+  const already = typeof spentInSession === 'function' ? await spentInSession() : 0
+  if (perSession !== null && already + estimated > perSession) {
+    return {
+      ok: false,
+      message:
+        `⛔ 本次会话已花 ¥${already.toFixed(2)}，再加这次 ¥${estimated.toFixed(2)} 会超过 ` +
+        `videoSessionCostLimitCNY=¥${perSession} 的**会话累计上限**，**已在提交前拦下，未产生任何费用**。` +
+        `这是专门防"反复试、每次都不贵"的烧钱模式（2026-10-15 的事故就是这样烧掉 ¥195.97 的）。` +
+        `要放行请让用户在 插件页 → gpt-CN → 配置卡 调大该上限（0 = 不限制）。`,
+    }
+  }
+
+  // ---- 第 3 层：显式确认（这次事故真正缺的那一步）----
+  //
+  // `requireSpendConfirm: false` 是给**测试**用的逃生口：单测要覆盖提交/轮询/记账，
+  // 不该被确认层挡住。生产默认 true——**"绕过确认"必须由人显式配置**，
+  // 不能是"忘了传 confirm_estimate 就悄悄放过"。
+  if (config?.requireSpendConfirm === false) return { ok: true }
+
+  const given = confirmed?.confirm_estimate
+  if (typeof given !== 'number' || !Number.isFinite(given)) {
+    return {
+      ok: false,
+      message:
+        `⛔ 出片是**按次计费且不可撤销**：这次将花费 ¥${estimated.toFixed(2)}` +
+        `（${duration} 秒 × ¥${unitPrice}/秒，${providerLabel}）。**本次未提交、未产生任何费用。**` +
+        `确认要花这笔钱，请再调一次这个工具，并带上参数 confirm_estimate=${estimated}（精确到分）。`,
+    }
+  }
+  if (Math.abs(given - estimated) > MONEY_EPSILON) {
+    return {
+      ok: false,
+      message:
+        `⛔ confirm_estimate 对不上：你给的是 ¥${given.toFixed(2)}，实际预估是 ¥${estimated.toFixed(2)}` +
+        `（${duration} 秒 × ¥${unitPrice}/秒）。**本次未提交、未产生任何费用。**` +
+        `请用准确的金额再确认一次：confirm_estimate=${estimated}。`,
+    }
+  }
+  return { ok: true }
+}
+
+/**
+ * 读上限配置。0 或非法值 = 不限制（返回 null）。
+ * @param {unknown} value - 配置值。
+ * @returns {number|null} 上限或 null。
+ */
+function capOf(value) {
+  const number = Number(value ?? 0)
+  return Number.isFinite(number) && number > 0 ? number : null
+}
