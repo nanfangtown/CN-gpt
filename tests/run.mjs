@@ -29,7 +29,7 @@ import { dashscopeImageAdapter } from '../tasks/adapters/dashscope-image.mjs'
 import { arkVideoAdapter } from '../tasks/adapters/ark-video.mjs'
 import { CODES, MediaError, classifyHttpError, fixedMessage, isPreSendError } from '../core/errors.mjs'
 import { DEFAULT_PRICING, isPriced, pricingOf, pricingWarnings, renderCostReport, zeroPriceOverrides } from '../core/cost.mjs'
-import { createCallBudget, normalizeSettingsOps } from '../core/tool-kit.mjs'
+import { createCallBudget, createSwitches, normalizeSettingsOps } from '../core/tool-kit.mjs'
 import { READER_FORBIDDEN_TOOLS, inspectReaderFilters, readerFilterViolation } from '../core/reader-guard.mjs'
 import { downloadToFile, imageSize, mediaTypeFromBytes, shouldAttachImage } from '../core/deliver.mjs'
 
@@ -108,6 +108,64 @@ function setup(mock, tmp, options = {}) {
   fake.guards[3].label = GUARD_VISION_DELEGATION
   const tools = Object.fromEntries(fake.tools.map((definition) => [definition.name, definition]))
   return { config, fake, tools }
+}
+
+/**
+ * 造一个能被 apply() 管起来的假 agent，并截获插件注册的 `setInterval` 回调，
+ * 以便**手动触发一次每秒对账**（否则测试要么等 1 秒、要么根本量不到）。
+ *
+ * 为什么需要它：2026-10-15 给对账加了"开关签名没变就整轮跳过"的短路，
+ * 那是个**会吞掉配置变更**的优化——必须有测试证明"开关真变了，掩码确实在一个 tick 内跟上"。
+ *
+ * 用法：
+ *   const harness = makeSyncHarness()
+ *   const { agent, applied } = harness.install(fake)   // 在 apply() 之前调用
+ *   apply(fake.ctx, config)
+ *   fake.listeners.find((e) => e.event === 'agent/created').callback({ agent })
+ *   harness.tick()                                     // 手动跑一次对账
+ */
+function makeSyncHarness() {
+  const realSetInterval = globalThis.setInterval
+  let tick
+  globalThis.setInterval = (callback) => {
+    tick = callback
+    return { unref() {} }
+  }
+  return {
+    /** 造 agent 并装上记录用的 restrict（在 apply() 之前调用）。 */
+    install(fake) {
+      const applied = []
+      const agent = {
+        options: { provider: 'deepseek-account', model: 'deepseek-flash' },
+        ctx: {
+          ...fake.ctx,
+          effect: (callback) => callback(),
+          tools: {
+            restrict: ({ deny }) => {
+              applied.push([...deny])
+              return () => {}
+            },
+          },
+        },
+      }
+      return { agent, applied }
+    },
+    /** 恢复 setInterval 并返回被截获的对账回调。 */
+    tick: () => {
+      globalThis.setInterval = realSetInterval
+      if (typeof tick !== 'function') throw new Error('没截获到对账定时器')
+      return tick
+    },
+  }
+}
+
+/**
+ * 造一个只用于测 `createSwitches` 的配置 + 开关读取器。
+ * `set(field)` 用于在测试里翻转某个开关（模拟"用户在配置卡里改了一下"）。
+ */
+function setupSwitches(overrides = {}) {
+  const config = plainConfig(new Config({ ...overrides }))
+  return { config, switches: createSwitches(config), set: (field) => { config[field] = config[field] !== true } }
 }
 
 async function expectError(promise, code, contains) {
@@ -980,6 +1038,75 @@ async function main() {
     // 对照：用户**改价**（写自己的合同价）是允许的，不该报
     const repriced = { ...defaults, 'qwen-image-3.0': { unit: 'image', unitPrice: 0.5, currency: 'CNY' } }
     assert.equal(zeroPriceOverrides(repriced).length, 0, '改价是合法操作，不该报警')
+  })
+
+  await test('性能：开关签名是纯函数式的稳定串，逐个开关都会改变它', async () => {
+    // 签名是"每秒对账短路"的判据（2026-10-15 优化）。它一旦漏变，配置变更就会被吞掉；
+    // 一旦乱变，优化就退化成每次全量重算。两个方向都要钉住。
+    const { switches } = setupSwitches()
+    const base = switches.signature()
+    assert.equal(typeof base, 'string')
+    assert.equal(base, switches.signature(), '同一状态必须得到同一个签名（否则短路失效）')
+    assert.equal(base.split(',').length, 6, '六个开关都要进签名：' + base)
+
+    const fields = ['enableAskGlm', 'enableAskQwen', 'enableQwenDraw', 'enableSeedanceVideo', 'enableMediaTask', 'enableMediaReport']
+    for (const field of fields) {
+      const one = setupSwitches()
+      const before = one.switches.signature()
+      one.set(field)
+      assert.notEqual(one.switches.signature(), before, field + ' 变化后签名必须跟着变：' + before)
+    }
+  })
+
+  await test('性能优化不许吞掉配置变更：改开关后掩码必须在一个 tick 内跟上', async () => {
+    // 这是"签名短路"的**正确性**测试。短路让稳态对账从 2.28 ms/s 降到 0.001 ms/s，
+    // 代价是引入了一个缓存——缓存错了就会变成"改了开关但不生效"，
+    // 那正是这个插件 2026-10-13 修过的老毛病。所以必须有测试盯着。
+    const tmp = await makeTmp()
+    const harness = makeSyncHarness()
+    const config = makeConfig(mock, tmp, { enableQwenDraw: true, enableSeedanceVideo: false })
+    const fake = createFakeCtx({ credentials: { DASHSCOPE_API_KEY: 'k', ARK_API_KEY: 'k' }, llmProviders: ['glm'] })
+    const { agent, applied } = harness.install(fake)
+    apply(fake.ctx, config)
+    const tick = harness.tick()
+    const created = fake.listeners.find((entry) => entry.event === 'agent/created').callback
+    created({ agent })
+
+    // 初始状态：seedance / 两个读图员都关着 → 创建时就按实时配置贴掩码
+    // （顺序跟随 TOOL_SWITCHES 的声明顺序：ask_glm、ask_qwen、seedance_video）
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'seedance_video'], '创建时应按实时配置贴掩码：' + JSON.stringify(applied))
+
+    // 稳态：连跑 5 次 tick，不该有任何新掩码（短路生效）
+    const before = applied.length
+    for (let i = 0; i < 5; i += 1) tick()
+    assert.equal(applied.length, before, '开关没变时不该反复贴掩码（短路失效）：' + JSON.stringify(applied))
+
+    // 打开 seedance → 下一次 tick 必须重新对账，且 deny 里不再有它
+    config.enableSeedanceVideo = true
+    tick()
+    assert.equal(applied.length, before + 1, '开关变了下一次 tick 必须重新对账：' + JSON.stringify(applied))
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen'], '打开后 seedance_video 不该再被 deny：' + JSON.stringify(applied))
+
+    // 反向：关掉 qwen_draw → 下一次 tick 必须把它 deny 掉（deny 顺序 = TOOL_SWITCHES 声明顺序）
+    config.enableQwenDraw = false
+    tick()
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'qwen_draw'], '关掉后必须立刻 deny：' + JSON.stringify(applied))
+  })
+
+  await test('性能：工具 schema 体积有上限（每个请求都要发送，胖描述是持续成本）', async () => {
+    // 工具定义随**每个请求**发送，所以参数描述的字节数是 per-request 成本。
+    // 2026-10-15 优化：seedance_video 从 1663 B 降到 1098 B（两个确认参数原来写了近 600 B）。
+    // 这里钉一个上限，防止以后又往 schema 里写小作文（正文该写进 README，不该写进工具表）。
+    const tmp = await makeTmp()
+    const { tools } = setup(mock, tmp, { overrides: { enableSeedanceVideo: true } })
+    const budget = { qwen_draw: 700, seedance_video: 1200, media_task: 800, media_report: 500 }
+    let total = 0
+    for (const [name, definition] of Object.entries(tools)) {
+      const bytes = Buffer.byteLength(JSON.stringify({ name: definition.name, description: definition.description, parameters: definition.parameters }), 'utf8')
+      total += bytes
+      assert.ok(bytes <= budget[name], `${name} 的 schema 超预算：${bytes} B > ${budget[name]} B（描述该写进 README，不是写进每个请求）`)
+    }
+    assert.ok(total <= 3000, '四个工具 schema 合计超预算：' + total + ' B/请求')
   })
 
   // ---------------------------------------------------------------- 生成物附回上下文（默认关）

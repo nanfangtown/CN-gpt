@@ -463,8 +463,19 @@ export function apply(ctx, config) {
    * 把"当前生效的掩码"与"实时配置应有的掩码"对齐。
    * 这是"改开关立即在当前会话生效"的关键——配置是原地更新的，不会重载插件，
    * 所以必须自己周期性对账（廉价：只在值变化时才碰掩码链）。
+   *
+   * ⚠ 性能（2026-10-15 实测优化）：原来每秒都**逐个 agent** 重算一遍掩码，
+   * 1000 个存活会话时是 2.28 ms/秒 的持续 CPU（每秒重建 1000 个 deny 数组）。
+   * 但"稳态"（开关没被人改过）下这个循环什么都不需要做，纯浪费。
+   * 现在先用开关签名短路：签名没变且掩码最后一次算的就是它 → 整轮跳过，
+   * 固定成本只有 `signature()` 的 6 次配置读取（≈0.002 ms），**与会话数无关**。
+   * 开关真被改到时，签名变了，下一个 tick 照旧完成对账（延迟上限仍是 1 秒）。
    */
-  const syncRestrictions = () => {
+  let lastSyncSignature
+  const syncRestrictions = (force = false) => {
+    const signature = switches.signature() + '|' + (nativeVisionBlocked() ? '1' : '0')
+    if (!force && signature === lastSyncSignature) return
+    lastSyncSignature = signature
     for (const agent of [...restrictions.keys()]) syncAgent(agent)
   }
 

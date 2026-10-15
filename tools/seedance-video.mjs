@@ -56,7 +56,7 @@ export function createSeedanceVideoTool(deps) {
 
   return defineTool({
     name: 'seedance_video',
-    description: '文生/图生视频（Seedance / 方舟 Ark）：生成短视频，返回本地路径；超时保留 task_id。**按次计费且不可撤销**：第一次调用只返回预估金额不提交，必须带上 confirm_estimate 再调一次才真正出片。若该模型在单价表里查不到价（未计价），默认直接拒绝提交，需用户先在配置卡补价或打开 allowUnpricedSpend。',
+    description: '文生/图生视频（Seedance / 方舟 Ark）：生成短视频，返回本地路径；超时保留 task_id。**按次计费且不可撤销**：首次调用只报价不提交，须带 confirm_estimate 再调一次才出片。',
     parameters: {
       prompt: { type: 'string', required: true, description: '视频内容描述' },
       image: { type: 'string', description: '首帧图 URL 或本地路径；给出即图生视频' },
@@ -66,16 +66,11 @@ export function createSeedanceVideoTool(deps) {
       out_dir: { type: 'string', description: '产物目录，默认 gen/video' },
       confirm_estimate: {
         type: 'number',
-        description:
-          '花费确认：填入上一次调用返回的预估金额（元，精确到分），才会真正提交。' +
-          '这是按次计费接口的强制意图声明——防止"循环试参数"在无意识中变成"反复下单"。',
+        description: '花费确认：填上次返回的预估金额（元，精确到分）才会真正提交。',
       },
       confirm_unpriced: {
         type: 'boolean',
-        description:
-          '未计价模型的放行确认（默认 false）。仅当该模型查不到单价、且用户在配置卡里打开了 allowUnpricedSpend 时才用得上：' +
-          '填 true 表示"已知价格不可知，仍要出片"。注意 confirm_estimate 在这里**不作数**——' +
-          '金额算不出来时，报一个数字不构成任何担保，所以未计价路径只认这一个显式开关。',
+        description: '未计价模型（查不到单价）的放行确认；默认拒绝提交。此路径只认它，报金额不作数。',
       },
     },
     output: {
