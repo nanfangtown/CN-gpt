@@ -702,11 +702,18 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
     ['qwen_draw（制图）', plainValue(config?.qwenModel)],
     ['seedance_video（出片）', plainValue(config?.seedanceModel)],
   ]
+  /** 单价表里的单位是机器口径（image / second），给人看要说人话。 */
+  const UNIT_LABEL = { image: '张', second: '秒', call: '次' }
   for (const [label, id] of modelRows) {
     if (typeof id !== 'string' || id.trim() === '') continue
     const entry = pricing?.[id]
     const priced = isPriced(entry)
-    const unit = entry?.unit === 'ktoken' ? `in ${money(unitPriceOf(entry, 'inputPrice'))} / out ${money(unitPriceOf(entry, 'outputPrice'))} 元/千token` : entry?.unitPrice === undefined ? '—' : `${entry.unitPrice} 元/${entry.unit ?? '次'}`
+    const unit =
+      entry?.unit === 'ktoken'
+        ? `入 ${money(unitPriceOf(entry, 'inputPrice'))} / 出 ${money(unitPriceOf(entry, 'outputPrice'))} 元/千token`
+        : entry === undefined || entry.unitPrice === undefined
+          ? '—'
+          : `${entry.unitPrice} 元/${UNIT_LABEL[entry.unit] ?? entry.unit ?? '次'}`
     lines.push(`- ${label} → \`${id}\`：${priced ? '✅ 已计价（' + unit + '）' : '❌ **未计价**（提交会被花费闸门拒绝）'}`)
   }
   const pricingIssues = pricingWarnings(config, plainValue)

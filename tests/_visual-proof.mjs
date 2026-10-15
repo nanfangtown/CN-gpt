@@ -15,7 +15,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { DEFAULT_PRICING, isPriced, pricingWarnings, unitPriceOf } from '../core/cost.mjs'
+import { DEFAULT_PRICING, isPriced, pricingWarnings, renderHealthReport, unitPriceOf } from '../core/cost.mjs'
 import { authorizeSpend, estimateSpend } from '../core/spend-guard.mjs'
 
 /**
@@ -143,6 +143,19 @@ const fabricated = await authorizeSpend({
 })
 console.log(line('未计价 + 自报 ¥1', fabricated.ok ? '❌ 放行（旧行为，是个洞）' : '✅ 拒绝（新行为）'))
 console.log('  ' + String(fabricated.message).replace(/\n/g, '\n  ').slice(0, 300))
+
+console.log(rule('⑥ 重启后 media_report(health) 里会多出这一段（用真实配置渲染）'))
+const healthReport = renderHealthReport({
+  keyEntries: [],
+  health: {},
+  probes: {},
+  llmProviders: ['glm'],
+  config: { ...after, enableAskGlm: true, enableAskQwen: false },
+  switches: { qwen_draw: true, seedance_video: true, ask_glm: true, ask_qwen: false },
+})
+// 只打印新增的「单价表」段（前面的链路表与 key 状态不是这次改的东西）。
+const sectionAt = healthReport.indexOf('## 单价表')
+console.log(healthReport.slice(sectionAt, healthReport.indexOf('> 探测结果')))
 
 console.log(rule('结论'))
 console.log('修复前：出片闸门 fail-closed（工具不可用）、16 张图记为 ¥0.0000、自检会把缺价的模型点名。')
