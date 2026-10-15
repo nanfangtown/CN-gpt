@@ -55,6 +55,14 @@ prompt 段 mm-models:division
 node --import ./tests/register.mjs ./tests/run.mjs
 node tests/client-card.test.mjs
 node tests/_card-mutex.test.mjs
+:: 逐项证明"性能优化没改坏功能"（93 + 6 + 8 条断言）
+node --import ./tests/register.mjs ./tests/verify-functionality.mjs
+```
+
+```bat
+:: 1b) 可选：证明上面那套验证不是假绿 —— 故意改坏源码，看它会不会失败
+node tests/_mutation-check.mjs       :: 注入 4 个变异，4 个都必须被抓住
+node --import ./tests/register.mjs ./tests/_perf-bench.mjs   :: 性能基准，可随时复跑
 ```
 
 ```bat

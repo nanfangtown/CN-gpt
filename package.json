@@ -43,7 +43,10 @@
     "@deepseek-ai/schemastery": "^3.18.0"
   },
   "scripts": {
-    "test": "node --import ./tests/register.mjs ./tests/run.mjs && node tests/client-card.test.mjs && node tests/_card-mutex.test.mjs",
+    "test": "node --import ./tests/register.mjs ./tests/run.mjs && node tests/client-card.test.mjs && node tests/_card-mutex.test.mjs && node --import ./tests/register.mjs ./tests/verify-functionality.mjs",
+    "test:verify": "node --import ./tests/register.mjs ./tests/verify-functionality.mjs",
+    "test:mutation": "node tests/_mutation-check.mjs",
+    "test:perf": "node --import ./tests/register.mjs ./tests/_perf-bench.mjs",
     "test:sizes": "node --import ./tests/register.mjs ./tests/size-report.mjs"
   },
   "meta": {
