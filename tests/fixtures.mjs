@@ -110,6 +110,9 @@ export function createFakeCtx(options = {}) {
       }
       if (name === 'storageDomain') return options.storageDomain
       if (name === 'llm') return { listProviders: () => (options.llmProviders ?? []).map((id) => ({ id })) }
+      // 2026-10-17：读图员由插件自己注册，执行时要拿 subagents 服务。
+      // 默认「没有这个服务」，需要它的用例显式传 options.subagents。
+      if (name === 'subagents') return options.subagents
       return undefined
     },
     effect(callback) {

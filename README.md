@@ -1,6 +1,6 @@
 # dsh-mm-models
 
-> **状态**：`0.1.0` · 本地优先 · **尚未发布到 npm**（`private: true`）· MIT
+> **状态**：`0.1.1` · 本地优先 · **尚未发布到 npm**（`private: true`）· MIT
 > ｜ 开源准备清单见 [`SECURITY.md`](SECURITY.md)，密钥模板见 [`.env.example`](.env.example)
 
 DeepSeek 主脑 + GLM/Qwen 读图（二选一）/ Qwen 制图 / Seedance 出片 + 百炼出片（可灵/万相）。
@@ -92,7 +92,8 @@ set DSH_CLI=<安装目录>\resources\app.asar\dsh\node_modules\@deepseek-ai\dsh\
 
 | 工具 | 承担者 | 职责与产出 |
 | --- | --- | --- |
-| `ask_glm` | GLM `glm-4.6v`（智谱，只读子代理） | 看图、截图、PDF、图表、手写、界面 → 结构化文字结论 |
+| `ask_glm` | GLM `glm-5.3-flash`（智谱，只读子代理） | 看图、截图、PDF、图表、手写、界面 → 结构化文字结论 |
+| `ask_qwen` | Qwen `qwen3-vl-plus`（百炼，只读子代理，与 `ask_glm` 二选一） | 同上；中文界面 / 密集文字较强 |
 | `qwen_draw` | Qwen `qwen-image-3.0`（阿里云百炼 DashScope，同步；账号不支持异步时自动选择） | 文生图 → 本地图片文件 + 图片内容块 |
 | `seedance_video` | Seedance `doubao-seedance-1-0-pro-fast-251015`（火山方舟 Ark，异步） | 文生 / 图生视频 → 本地视频文件（**默认开关关闭**，接通 Ark 后一键打开） |
 | `video_gen` | 百炼托管：可灵 `kling-v3` / `kling-v3-turbo` / `kling-v3-omni`、万相 `wan2.5`（DashScope 异步，**复用 `DASHSCOPE_API_KEY`**） | 文生 / 图生视频 → 本地视频文件（**默认开关关闭**，填业务空间 ID + 开通可灵后一键打开） |
@@ -100,7 +101,8 @@ set DSH_CLI=<安装目录>\resources\app.asar\dsh\node_modules\@deepseek-ai\dsh\
 | `media_report` | 本插件 | `action=cost` 成本估算；`action=health` 三把 key 与四条链路健康 |
 
 主模型仍是 DeepSeek（由会话选择），本插件不碰 `agent-default-model`、不碰 fallback 链、
-不挂 persona、不做 preset；只注册 5 个全局工具 + 一段可关闭的分工说明提示词。
+不挂 persona；注册 7 个全局工具 + 一段可关闭的分工说明提示词（读图员的 persona 与工具面
+在 `preset-mm-reader` 里，见下文）。
 
 ## 百炼出片（可灵 / 万相，2026-10-17 加）
 
@@ -254,11 +256,15 @@ plugins in an Agent Preset and select it with agentPreset (spawn only)
   `getSnapshot / subscribe / mutate` 契约未变（配置卡不需要改）。
 - `@deepseek-ai/dsh-app-boot`：变化在 profile 重建流程，bundle patch 语义未变。
 
-安装会在 profile 里加三行：
+安装会在 profile 里加两行 + 三个 preset：
 
-1. `llm-pi-ai` —— **覆盖配置**：`providers.glm`（智谱视觉路由）；
-2. `tool-subagent-glm` —— 官方 `@deepseek-ai/dsh-tool-subagent` 第二实例（零代码）；
-3. `mm-models` —— 本插件。
+1. `llm-pi-ai` —— **覆盖配置**：`providers.glm` / `providers.qwen-vl`（两个读图路由）；
+2. `mm-models` —— 本插件（7 个工具，含两个读图员）。
+
+另有 `insert` 段：`preset-mm-reader` / `preset-mm-code` / `preset-mm-research`
+（读图员、执行、资料三个子代理的 persona 与工具面）+ 两条窄委派行
+`tool-subagent-code` / `tool-subagent-research`。读图员工具**不再**由 `tool-subagent` 行提供
+（2026-10-17 起由插件自己注册，原因见《2026-10-17：读图员改由插件自己注册》）。
 
 注意事项：
 
@@ -1124,6 +1130,32 @@ timeout（600 秒）。日志里其实早就写着 `Aborting batchmode due to fa
 `ask_qwen` 用 `DASHSCOPE_API_KEY`（与 `qwen_draw` 共用同一把），
 对应路由分别写在 `llm-pi-ai` 的 `providers.glm` / `providers.qwen-vl`。
 
+### 2026-10-17：读图员改由插件自己注册（工具描述终于说人话）
+
+原来 `ask_glm` / `ask_qwen` 是 `cordis.patch.yml` 里的两条 `tool-subagent` 行（官方包实例，
+零代码）。问题不在功能，在**模型看到的那段描述**：`dsh-tool-subagent` 的 Config 是封闭的
+7 键（provider / toolName / modelSelectionSettings / agentOptions / agentPreset /
+allowedAgentPresets / maxDepth），**没有 `description`**；工具描述由 `providerWording()`
+拼死成与 `subagent` 逐字相同的文案。后果：模型在 40+ 个工具里看不出 `ask_glm` 是"读图"，
+只能靠系统提示词那段「【读图路由】」兜着——提示词段一关，这个工具就彻底不可发现
+（2026-10-17 实测踩到：模型明明能调用，却按"没有读图工具"回答）。
+
+现在 `tools/reader.mjs` 用 `ctx.subagents.startActivation()` 自己注册两个工具，与官方实现
+同一条路（`provider:'spawn'` + `delivery:'parent'` + `agentPreset`），但描述与参数完全可控：
+
+- 描述开头就是「读图（当前配置的模型）」（型号从 Config 读，默认 `glm-5.3-flash` /
+  `qwen3-vl-plus`，不在文案里写死），并点名"不要用 `read` 读二进制图片"；
+- 参数从泛化的 `prompt` 换成 `image_path` + `question`（`prompt` 作为兼容兜底保留）；
+- `subagents` 服务缺失 / `spawn` 未注册 / 参数为空 → **派出之前**就报错，不留孤儿子代理。
+
+没变的：子代理仍然是 `preset-mm-reader`（persona + 只有 `read_image` 的工具面），
+"物理阉割"照旧。变的只是注册者与描述；路由/深度改由 Config 的
+`readerGlmProvider` / `readerGlmModel` / `readerQwenProvider` / `readerQwenModel` /
+`readerAgentPreset` / `readerMaxDepth` 决定（新的单一事实源）。
+
+⚠ 升级到这一版要**完整重启 dsh**。旧的 `tool-subagent-glm/-qwen` 行必须删掉
+（bundle patch 已删）；profile 里若手抄过同样的行也要同步删，否则会和插件注册的同名工具冲突。
+
 ### 读图子代理被"物理阉割"：只保留 `read_image`（2026-10-13）
 
 以前读图子代理的 `toolFilter` 放行 `read / read_image / glob / grep / web_search`，于是主模型
@@ -1622,10 +1654,11 @@ node tests/confirm-fields.mjs               :: 真实字段确证报告（图 1 
 ```
 dsh-mm-models/
   package.json                dsh-mm-models / dsh.bundle.patch / icon / peerDependencies
-  cordis.patch.yml            补丁层：llm-pi-ai 覆盖（glm + qwen-vl）+ tool-subagent-glm/-qwen + mm-models
+  cordis.patch.yml            补丁层：llm-pi-ai 覆盖（glm + qwen-vl）+ 3 个 preset
+                              + tool-subagent-code/-research + mm-models
   .gitignore / .gitattributes 试运行痕迹排除、跨平台换行统一
   LICENSE                     MIT
-  index.js                    Host 半侧：Config + 注册 5 个自研工具 + 分工/环境红线段落
+  index.js                    Host 半侧：Config + 注册 7 个工具 + 分工/环境红线段落
                               + 工具开关 guard/restrict + 读图守卫 + 原生读图屏蔽 + 读图契约自检
   client.js                   Client 半侧：插件页里的 gpt-CN 配置卡（唯一前端代码）
   core/fields.mjs             三家网关字段映射（DashScope 图 / DashScope 视频 / Ark）
@@ -1638,6 +1671,7 @@ dsh-mm-models/
   tasks/manager.mjs           submit / wait / query / fetch + 退避 / 超时 / 取消 / 重试策略
   tasks/adapters/dashscope-image.mjs
   tasks/adapters/ark-video.mjs
+  tools/reader.mjs            ask_glm / ask_qwen：读图员（2026-10-17 起由插件自己注册）
   tools/qwen-draw.mjs  tools/seedance-video.mjs  tools/media-task.mjs  tools/media-report.mjs
   locale/zh.json / en.json
   icon.svg

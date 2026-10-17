@@ -2,11 +2,11 @@
  * dsh-mm-models —— DeepSeek 主脑 + GLM 读图 / Qwen 制图 / Seedance 出片。
  *
  * 规划：dsh-创作模式插件-规划.txt v0.7。
- * 本文件 = Config + 注册 5 个工具 + 提示词段落（无 preset、无 persona、无前端）。
+ * 本文件 = Config + 注册 7 个工具 + 提示词段落（无 persona、无前端）。
  *
  * 顶层工具（与 bash / ops_* 同级）：
- *   ask_glm        （由 cordis.patch.yml 里的官方 tool-subagent 实例提供，零代码）
- *   ask_qwen       （同上，百炼 Qwen-VL；与 ask_glm 互斥，二选一）
+ *   ask_glm        读图员（GLM-4.6V；2026-10-17 起由本插件自己注册，见 tools/reader.mjs）
+ *   ask_qwen       读图员（百炼 Qwen-VL；与 ask_glm 互斥，二选一）
  *   qwen_draw      DashScope 异步文生图
  *   seedance_video 方舟 Ark 异步文生 / 图生视频
  *   video_gen      百炼异步出片（可灵 v3 / 万相 2.5，复用 DASHSCOPE_API_KEY）
@@ -24,13 +24,14 @@ import { createSeedanceVideoTool } from './tools/seedance-video.mjs'
 import { createVideoGenTool } from './tools/video-gen.mjs'
 import { createMediaTaskTool } from './tools/media-task.mjs'
 import { createMediaReportTool } from './tools/media-report.mjs'
+import { createReaderTools } from './tools/reader.mjs'
 import { createKeyResolver } from './core/keys.mjs'
 import { createReaderUsageMeter } from './core/reader-usage.mjs'
 import { DEFAULT_PRICING, PRICING_ZERO_HINT, openLedger, pricingOf, pricingWarnings } from './core/cost.mjs'
 import { openTaskRegistry } from './core/tasks.mjs'
 import { openImageCache } from './core/cache.mjs'
 import { createCallBudget, createSwitches } from './core/tool-kit.mjs'
-import { READER_ALLOWED_TOOLS, inspectReaderFilters, isReaderAgent, readerRouteAllowlist } from './core/reader-guard.mjs'
+import { READER_ALLOWED_TOOLS, inspectReaderFilters, inspectReaderRoutes, isReaderAgent, mergeReaderRoutes } from './core/reader-guard.mjs'
 
 /** 插件名（与 package.json / cordis.patch.yml 的 id 对应）。 */
 export const name = 'mm-models'
@@ -56,13 +57,17 @@ export const inject = ['tools', 'credentials', 'systemPrompt']
  *
  * 保留的三条（缺一不可）：
  *   1. 媒体分工与成本纪律（工具出素材、生成要花钱）；
- *   2. **读图路由**：图走 ask_glm/ask_qwen，都没开就如实说没有途径、不要猜图；
+ *   2. **读图路由**：原生优先；原生被屏蔽/不支持或要省钱时走已开启的读图员；
+ *      两者都不可用才如实说没有途径、不要猜图（2026-10-17 起不再写死"一律走 ask_glm"）；
  *   3. **窄委派**：子代理每轮要背全部工具 schema（实测 35 个工具 ≈ 32 KB），
  *      所以按用途选窄工具面的委派工具，别拿通用 subagent 干小活。
  */
 const PROMPT_SECTION = [
   '【媒体分工】媒体工具只出素材与结论，交付由主模型负责并负全责；生成可能计费，先确认能力可用。',
-  '【读图路由】图像识别/分析/审查一律走 ask_glm 或 ask_qwen（把图片路径交给它）；都没开就如实说"没有看图途径"并请用户在配置卡打开，不要绕道、不要猜图。',
+  // 2026-10-17 重写：这句话以前写死"一律走 ask_glm"，在原生可用/读图员被关时就成了假话
+  // —— 模型明明有眼睛，却被提示词告知"没有看图途径"。现在按"谁能用就用谁"写，与开关无关：
+  // 原生优先 → 原生不可用/要省钱时走已开启的读图员 → 都没有才如实说没有途径。
+  '【读图路由】优先用原生 read_image 做细节审读；原生被屏蔽/不支持，或要批量省钱时走**已开启的** ask_glm / ask_qwen（把图片路径交给它）；两者都不可用就如实说"没有看图途径"，不要猜图。',
   '【窄委派】子代理每轮背全部工具表（35个≈32KB）：跑命令/改代码用 subagent_code，查资料用 subagent_research。',
 ].join('\n')
 
@@ -292,6 +297,20 @@ export const Config = z.object({
   // ---- 工具开关（插件页 → gpt-CN → 配置卡，一键勾选；关闭后调用被拒，新会话不再显示）----
   enableAskGlm: z.boolean().default(false).volatile().description('允许主 agent 使用 ask_glm（GLM 读图子代理）。与 enableAskQwen 互斥：打开它就会自动关闭 ask_qwen，反之亦然；两个都关时没有读图工具。'),
   enableAskQwen: z.boolean().default(false).volatile().description('允许主 agent 使用 ask_qwen（Qwen-VL 读图子代理）。与 enableAskGlm 互斥：打开它就会自动关闭 ask_glm，反之亦然；两个都关时没有读图工具。'),
+
+  // ---- 读图员路由（2026-10-17：工具改由插件自己注册，改完需完整重启）----
+  //
+  // 以前这两组值写在 cordis.patch.yml 的 tool-subagent 行里，插件靠"文本扫描配置"
+  // 反推读图员是谁。现在工具在 tools/reader.mjs 里注册，路由的单一事实源就是这里。
+  // ⚠ 模型 id 必须同时出现在 llm-pi-ai 的 providers.<provider>.models 白名单里，
+  //   否则 spawn 会报 `pi-ai provider "glm" has no configured model "…"`（实测踩到）。
+  readerGlmProvider: z.string().default('glm').volatile().description('ask_glm 的子代理路由 provider（llm-pi-ai 里配置的名字）。'),
+  readerGlmModel: z.string().default('glm-5.3-flash').volatile().description('ask_glm 使用的模型 id（必须在 providers.glm.models 白名单里）。'),
+  readerQwenProvider: z.string().default('qwen-vl').volatile().description('ask_qwen 的子代理路由 provider（llm-pi-ai 里配置的名字）。'),
+  readerQwenModel: z.string().default('qwen3-vl-plus').volatile().description('ask_qwen 使用的模型 id（必须在 providers.qwen-vl.models 白名单里）。'),
+  readerAgentPreset: z.string().default('mm-reader').volatile().description('读图员子代理的 agent preset id（persona + 只有 read_image 的工具面）。'),
+  readerMaxDepth: z.number().step(1).min(1).max(9).default(2).volatile().description('读图员的绝对委派深度上限，默认 2（= 已委派的子代理也能调它，否则会报 "subagent depth 2 exceeds maxDepth 1"）。'),
+
   enableQwenDraw: z.boolean().default(true).volatile().description('允许主 agent 使用 qwen_draw（Qwen 制图）。'),
   blockMainAgentNativeVision: z
     .boolean()
@@ -544,18 +563,39 @@ export function apply(ctx, config) {
   const subagentVisionBlocked = () => liveConfig?.blockSubagentNativeVision === true
 
   /**
-   * 读图员路由白名单：**从契约文件里读**（读图行自己的 `agentOptions`），
-   * 而不是在代码里硬编码 provider 名 —— 用户改了路由名也不会把读图员一起弄瞎。
-   * 扫不到任何契约行时退回常量白名单，并且**放弃对子代理的屏蔽**（fail-open）。
+   * 读图员路由白名单。
+   *
+   * ⚠ 2026-10-17 改：读图工具由本插件自己注册（`tools/reader.mjs`），所以路由的
+   * **单一事实源是 Config**，不再是 patch 里的 `tool-subagent-glm/-qwen` 行。
+   * 契约文件扫描结果仍然并进来：旧装配、别的 profile、以及"用户手写了行"的情况
+   * 都还能认出来（扫描结果为空时不影响）。
+   *
+   * 认不出任何路由 → 放弃对子代理的原生读图屏蔽（fail-open，绝不把读图员弄瞎）。
    */
+  const configuredReaderRoutes = () => [
+    {
+      id: 'ask_glm',
+      provider: liveConfig.readerGlmProvider,
+      model: liveConfig.readerGlmModel,
+      maxDepth: liveConfig.readerMaxDepth,
+    },
+    {
+      id: 'ask_qwen',
+      provider: liveConfig.readerQwenProvider,
+      model: liveConfig.readerQwenModel,
+      maxDepth: liveConfig.readerMaxDepth,
+    },
+  ].filter((route) => (typeof route.provider === 'string' && route.provider.length > 0)
+    || (typeof route.model === 'string' && route.model.length > 0))
+
   let readerRoutes
   try {
-    readerRoutes = readerRouteAllowlist()
+    readerRoutes = mergeReaderRoutes([...inspectReaderRoutes(), ...configuredReaderRoutes()])
   } catch (error) {
-    readerRoutes = { providers: [], modelPrefixes: [], routes: [] }
-    logger?.warn?.('[mm-models] 读图员路由自检失败，已放弃对子代理的原生读图屏蔽：' + String(error?.message ?? error))
+    readerRoutes = mergeReaderRoutes(configuredReaderRoutes())
+    logger?.warn?.('[mm-models] 读图员路由自检失败（已退回 Config 里的路由）：' + String(error?.message ?? error))
   }
-  /** 契约文件里一行读图员声明都没扫到 → 认不出读图员 → 不对子代理下手。 */
+  /** 一行读图员路由都认不出来 → 不对子代理下手。 */
   const readerRoutesUnknown = readerRoutes.routes.length === 0
   const isReader = (agent) => isReaderAgent(agent, readerRoutes)
 
@@ -1131,6 +1171,9 @@ export function apply(ctx, config) {
   ctx.tools.register(createVideoGenTool(deps))
   ctx.tools.register(createMediaTaskTool(deps))
   ctx.tools.register(createMediaReportTool(deps))
+  // 读图员（2026-10-17 起由插件自己注册）：描述与 schema 完全可控，
+  // 不再依赖 tool-subagent 行那段"和 subagent 逐字相同"的通用文案。
+  for (const definition of createReaderTools(deps)) ctx.tools.register(definition)
 
   // 可选显式降级（规划 [6.4]，默认关闭）：读图子代理失败时给出"不要卡住"的替代指引。
   const degradeToText = typeof config.degradeToText?.get === 'function' ? config.degradeToText.get() : config.degradeToText
@@ -1178,7 +1221,11 @@ export function apply(ctx, config) {
   // 启动自检 ②（只告警，不改配置、不拦启动）：读图子代理必须仍然"只看图"。
   // 契约在 core/reader-guard.mjs；一旦有人把 read / glob / grep 之类加回
   // toolFilter.allow，环境探查能力就漏回去了，这里要让人在日志里立刻看见。
-  // 一次性检查（没有需要清理的副作用），所以不包 ctx.effect。
+  //
+  // ⚠ 2026-10-17：读图员工具面已从 `toolFilter`（行内）迁到 preset 的 `plugins`
+  // （`preset-mm-reader` → persona + tool-fs{readImage:true}），所以这条检查对
+  // **旧装配**仍然有效、对新装配恒为空。preset 的"只看图"由 `cordis.patch.yml`
+  // 的 `preset-mm-reader` 块保证（`read:false/write:false/edit:false`），改动时请对照。
   try {
     for (const item of inspectReaderFilters()) {
       logger?.warn?.(
@@ -1192,20 +1239,19 @@ export function apply(ctx, config) {
 
   // 启动自检 ③（只告警、不改配置）：`blockSubagentNativeVision` 的前提是否成立。
   // 这个开关判错的代价是"读图员一起瞎"或"子代理彻底没有看图途径"，所以两种情况都要点名：
-  //   ① 认不出读图员（契约文件里扫不到路由）→ 开关对子代理不生效（fail-open）；
-  //   ② 读图员没开 / 或读图员行 maxDepth < 2 → 子代理将没有任何看图途径。
-  // 注意：这里读的是**契约文件**（不是 line config），所以用户改 patch 后下次装配即可生效。
+  //   ① 认不出读图员路由 → 开关对子代理不生效（fail-open）；
+  //   ② 读图员没开 / 或读图员 maxDepth < 2 → 子代理将没有任何看图途径。
   if (subagentVisionBlocked()) {
     if (readerRoutesUnknown) {
       logger?.warn?.(
-        '[mm-models] blockSubagentNativeVision 已打开，但从契约文件里**认不出任何读图员路由**' +
-          '（cordis.patch.yml 的 tool-subagent-glm/-qwen 行及其 agentOptions）。' +
-          '为避免把读图员一起弄瞎，本次**不会**屏蔽子代理的原生读图。请检查契约文件。',
+        '[mm-models] blockSubagentNativeVision 已打开，但**认不出任何读图员路由**' +
+          '（Config 里的 reader* 字段与契约文件里的 tool-subagent 行都没扫到）。' +
+          '为避免把读图员一起弄瞎，本次**不会**屏蔽子代理的原生读图。请检查配置。',
       )
     } else {
       logger?.info?.(
         '[mm-models] blockSubagentNativeVision 已打开；读图员豁免路由：' + readerRoutes.providers.join(', ') +
-          '（来自 ' + readerRoutes.routes.length + ' 处契约声明）',
+          '（来自 ' + readerRoutes.routes.length + ' 条路由声明）',
       )
       if (switches.isEnabled('ask_glm') !== true && switches.isEnabled('ask_qwen') !== true) {
         logger?.warn?.(
@@ -1216,13 +1262,13 @@ export function apply(ctx, config) {
       const shallow = readerRoutes.routes.filter((route) => route.maxDepth !== undefined && Number(route.maxDepth) < 2)
       for (const route of shallow) {
         logger?.warn?.(
-          '[mm-models] 读图员行 ' + route.id + ' 的 maxDepth=' + route.maxDepth + ' < 2：' +
+          '[mm-models] 读图员路由 ' + route.id + ' 的 maxDepth=' + route.maxDepth + ' < 2：' +
             '已委派的子代理调用它会被拒（实测 "subagent depth 2 exceeds maxDepth 1"），' +
-            '等于 C 打开后子代理没有看图途径。请把该行 maxDepth 设为 2。',
+            '等于本开关打开后子代理没有看图途径。请把 readerMaxDepth 设为 2。',
         )
       }
     }
   }
 
-  logger?.info?.('[mm-models] 已注册 qwen_draw / seedance_video / media_task / media_report（ask_glm / ask_qwen 由 tool-subagent 行提供，互斥）')
+  logger?.info?.('[mm-models] 已注册 ask_glm / ask_qwen / qwen_draw / seedance_video / video_gen / media_task / media_report（两个读图员互斥）')
 }

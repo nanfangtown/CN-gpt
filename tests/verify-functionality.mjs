@@ -85,8 +85,8 @@ async function setup(overrides = {}) {
 await test('① 削减字节后，schema 的**功能面**一个都没少（与优化前提交逐字对比）', async () => {
   const { tools } = await setup({ enableSeedanceVideo: true })
 
-  // 1) 四个工具都还在
-  assert.deepEqual(Object.keys(tools).sort(), ['media_report', 'media_task', 'qwen_draw', 'seedance_video', 'video_gen'])
+  // 1) 七个工具都还在（2026-10-17：读图员改由插件注册，多出 ask_glm / ask_qwen）
+  assert.deepEqual(Object.keys(tools).sort(), ['ask_glm', 'ask_qwen', 'media_report', 'media_task', 'qwen_draw', 'seedance_video', 'video_gen'])
 
   // 2) 与优化前的提交**逐字对比参数结构**：参数集合 / 类型 / required / enum / 输出契约
   //    为什么这么做而不是手写期望值：手写期望值会把我对设计的误解写成"规格"

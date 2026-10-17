@@ -2,12 +2,15 @@
 # dsh-mm-models bundle patch
 # 规划：dsh-创作模式插件-规划.txt v0.7（[7] 最终架构 / [8.2] 配置样例）
 #
-# 三行：
-#   行1  llm-pi-ai（覆盖配置）：providers.glm → 智谱视觉，供 ask_glm 使用
-#   行2  tool-subagent-glm（官方包实例，零代码）：ask_glm 多模态阅读子代理
-#   行2b tool-subagent-qwen（同一官方包，零代码）：ask_qwen 多模态阅读子代理
-#        —— 2 与 2b 互斥、二选一，默认两个都不开，由用户在设置卡里选一个。
-#   行3  mm-models（自研）：qwen_draw / seedance_video / media_task / media_report
+# 两行（2026-10-17 起）：
+#   行1  llm-pi-ai（覆盖配置）：providers.glm / providers.qwen-vl → 读图路由
+#   行2  mm-models（自研）：ask_glm / ask_qwen（读图员）+ qwen_draw / seedance_video /
+#        video_gen / media_task / media_report；读图员子代理的 persona 与工具面在
+#        preset-mm-reader 里。
+#
+# ⚠ 读图员工具**不再**由 tool-subagent 行提供：那条路的 Config 没有 description，
+#   工具描述被拼死成与 `subagent` 逐字相同 —— 模型看不出 ask_glm 是读图。
+#   现在由插件用 ctx.subagents.startActivation() 自己注册（tools/reader.mjs）。
 #
 # ⚠ 行1 是"覆盖"语义：config 整体替换，不会与已有 providers 深合并。
 #    若 profile 的 llm-pi-ai 行已有 providers（例如 GUI 添加过路由），
@@ -58,7 +61,8 @@
             contextWindow: 131072
             maxTokens: 32768
 
-# ---- 行2：ask_glm 视觉阅读子代理（只读，零代码）----
+# ---- 行2：读图员 preset（persona + 只有 read_image 的工具面）----
+# 工具本身由 mm-models 注册（tools/reader.mjs）；这里只定义子代理"能看见什么"。
 - insert:
     # ---- 读图/执行/资料三个子代理的 preset（2026-10-17 迁移）----
     #
@@ -159,29 +163,21 @@
           - id: tool-web
             name: '@deepseek-ai/dsh-tool-web'
 
-    - id: tool-subagent-glm
-      name: '@deepseek-ai/dsh-tool-subagent'
-      config:
-        provider: spawn
-        toolName: ask_glm
-        # 2026-10-15 由 1 提到 **2**：maxDepth: 1 会让已委派的子代理调不动读图员
-        # （实测原文 "subagent depth 2 exceeds maxDepth 1"），只能自己 read_image。
-        maxDepth: 2
-        # 2026-10-17：glm-4.6v → glm-5.3-flash（A/B 实测更快更省，且认对了物种）。
-        agentOptions: { provider: glm, model: glm-5.3-flash }
-        # persona 与工具面在 preset-mm-reader 里（0.2.1 起唯一写法）。
-        agentPreset: mm-reader
-
-    # ---- 行2b：ask_qwen 视觉阅读子代理（百炼 Qwen-VL；与 ask_glm 互斥）----
-    # 开关互斥由 Host 半侧强制：两个都开时 GLM 优先、ask_qwen 被压制。
-    - id: tool-subagent-qwen
-      name: '@deepseek-ai/dsh-tool-subagent'
-      config:
-        provider: spawn
-        toolName: ask_qwen
-        maxDepth: 2
-        agentOptions: { provider: qwen-vl, model: qwen3-vl-plus }
-        agentPreset: mm-reader
+    # ⚠ 2026-10-17：读图员两行（tool-subagent-glm / tool-subagent-qwen）已**删除**。
+    #
+    # 原因：`dsh-tool-subagent` 的 Config 是封闭的 7 键
+    #   （provider / toolName / modelSelectionSettings / agentOptions /
+    #     agentPreset / allowedAgentPresets / maxDepth），**没有 description**；
+    #   工具描述由 providerWording() 拼死成与 `subagent` 逐字相同的文案 ——
+    #   模型在 40+ 个工具里看不出 ask_glm 是"读图"。
+    #
+    # 现在：读图员由插件自己用 ctx.subagents.startActivation() 注册
+    #   （见 tools/reader.mjs），描述与 schema 完全可控；子代理仍然走 preset-mm-reader。
+    #   路由与深度改由 mm-models 的 Config 决定：
+    #   readerGlmProvider / readerGlmModel / readerQwenProvider / readerQwenModel /
+    #   readerAgentPreset / readerMaxDepth。
+    #
+    # ⚠ 不要把这两行加回来：插件已注册同名工具，重复注册会冲突。
 
     # ---- 行2c/2d：窄工具面的委派行（2026-10-16 加；2026-10-17 迁到 preset）----
     # 工具面（文件读写 + 查找 + 命令）由 preset-mm-code 决定；这里只管路由与深度。
@@ -392,6 +388,15 @@
         # media_report(action=health) 会把这次冲突标出来。默认两个都关（不预设读图员）。
         enableAskGlm: false
         enableAskQwen: false
+        # 读图员路由（2026-10-17：工具由插件自己注册，这里是唯一事实源）。
+        # ⚠ 模型 id 必须同时出现在上面 llm-pi-ai 的 providers.<provider>.models 里，
+        #   否则 spawn 报 `pi-ai provider "glm" has no configured model "…"`（实测踩到）。
+        readerGlmProvider: glm
+        readerGlmModel: glm-5.3-flash
+        readerQwenProvider: qwen-vl
+        readerQwenModel: qwen3-vl-plus
+        readerAgentPreset: mm-reader
+        readerMaxDepth: 2
         # 屏蔽主代理的原生读图：打开后主 agent 的工具列表里没有 read_image，读图只能走
         # 上面选中的读图子代理。子代理不受影响 —— 否则读图员会被一起弄瞎（实测过）。
         # 默认关：主代理原生读图更快、少一次调用；打开是为了"确定性路由"。

@@ -234,8 +234,7 @@ export function isReaderAgent(agent, routes) {
  * @param {object} [options] - 同 `inspectReaderFilters`。
  * @returns {{ providers: string[], modelPrefixes: string[], routes: object[] }}
  */
-export function readerRouteAllowlist(options = {}) {
-  const routes = inspectReaderRoutes(options)
+export function mergeReaderRoutes(routes) {
   const providers = new Set(READER_FALLBACK_PROVIDERS)
   const modelPrefixes = new Set(READER_FALLBACK_MODEL_PREFIXES)
   for (const route of routes) {
@@ -243,4 +242,15 @@ export function readerRouteAllowlist(options = {}) {
     if (typeof route.model === 'string' && route.model.length > 0) modelPrefixes.add(route.model)
   }
   return { providers: [...providers], modelPrefixes: [...modelPrefixes], routes }
+}
+
+/**
+ * 从契约文件里扫出的路由 + 兜底白名单。
+ *
+ * ⚠ 2026-10-17 起读图工具由插件自己注册（`tools/reader.mjs`），路由的**单一事实源
+ * 变成 Config**；这里保留是因为旧装配/别的 profile 里可能还有 tool-subagent 行。
+ * 新代码请用 `mergeReaderRoutes()` 把 Config 路由与扫描结果合并。
+ */
+export function readerRouteAllowlist(options = {}) {
+  return mergeReaderRoutes(inspectReaderRoutes(options))
 }

@@ -1,7 +1,7 @@
 /**
  * 试运行：不安装 dsh、不联网、不花 key 的完整验收。
  *
- * 覆盖：配置默认值 → 5 个工具的注册面 → submit/poll/fetch 全链路 →
+ * 覆盖：配置默认值 → 7 个工具的注册面 → submit/poll/fetch 全链路 →
  *       错误归一化与固定文案 → 超时/取消保留 task_id → media_task 补下载 →
  *       成本账本两种后端 + 报表 → 健康探测 → 预算保护 → 附件退化路径。
  *
@@ -37,7 +37,7 @@ import { cacheKeyOf } from '../core/cache.mjs'
 import { DEFAULT_PRICING, isPriced, pricingOf, pricingWarnings, renderCostReport, zeroPriceOverrides } from '../core/cost.mjs'
 import { authorizeSpend, estimateSpend } from '../core/spend-guard.mjs'
 import { createCallBudget, createSwitches, normalizeSettingsOps, accountUnretrievedSpend, sessionSpentOrThrow } from '../core/tool-kit.mjs'
-import { READER_FORBIDDEN_TOOLS, inspectReaderFilters, isReaderAgent, readerFilterViolation, readerRouteAllowlist } from '../core/reader-guard.mjs'
+import { READER_FORBIDDEN_TOOLS, inspectReaderFilters, isReaderAgent, mergeReaderRoutes, readerFilterViolation, readerRouteAllowlist } from '../core/reader-guard.mjs'
 import { downloadToFile, imageSize, mediaTypeFromBytes, shouldAttachImage } from '../core/deliver.mjs'
 
 const stats = { passed: 0, failed: 0 }
@@ -111,6 +111,8 @@ function setup(mock, tmp, options = {}) {
     storageDomain: options.storageDomain,
     llmProviders: options.llmProviders ?? ['glm', 'deepseek-account'],
     saveImage: options.saveImage,
+    // 2026-10-17：读图员由插件自己注册，执行时要拿 subagents 服务。
+    subagents: options.subagents,
   })
   apply(fake.ctx, config)
   // 给 guard 打标签。这是**测试侧对注册顺序的显式断言**：顺序一变就在这里报错，
@@ -295,10 +297,20 @@ async function main() {
     assert.ok(!text.includes('undefined'), '不得出现 undefined 单位：' + text)
   })
 
-  await test('apply() 注册 5 个工具 + 分工说明段落（ask_glm 由配置行提供）', async () => {
+  await test('apply() 注册 7 个工具 + 分工说明段落（读图员也由插件自己注册）', async () => {
     const tmp = await makeTmp()
     const { fake, tools } = setup(mock, tmp)
-    assert.deepEqual(Object.keys(tools).sort(), ['media_report', 'media_task', 'qwen_draw', 'seedance_video', 'video_gen'])
+    assert.deepEqual(Object.keys(tools).sort(), ['ask_glm', 'ask_qwen', 'media_report', 'media_task', 'qwen_draw', 'seedance_video', 'video_gen'])
+    // 2026-10-17：读图员的描述不能再是 tool-subagent 那句通用文案 —— 那正是
+    // 模型在 40+ 个工具里认不出 ask_glm 是"读图"的原因。
+    assert.ok(tools.ask_glm.description.includes('读图'), 'ask_glm 描述必须自带"读图"：' + tools.ask_glm.description)
+    assert.ok(tools.ask_qwen.description.includes('读图'), 'ask_qwen 描述必须自带"读图"：' + tools.ask_qwen.description)
+    assert.ok(tools.ask_glm.parameters.image_path, '必须暴露 image_path 参数（而不是只给一个泛化 prompt）')
+    // 2026-10-17 事故：描述写死 GLM-4.6V，配置默认却是 glm-5.3-flash —— 工具"自称 4.6V、实际调 5.3-flash"。
+    // 型号必须来自 Config，改配置后描述跟着变。
+    assert.ok(tools.ask_glm.description.includes('glm-5.3-flash'), '描述里的型号必须来自 Config：' + tools.ask_glm.description)
+    assert.ok(tools.ask_qwen.description.includes('qwen3-vl-plus'), '描述里的型号必须来自 Config：' + tools.ask_qwen.description)
+    assert.ok(!tools.ask_glm.description.includes('GLM-4.6V'), '不能残留写死的旧型号：' + tools.ask_glm.description)
     assert.equal(fake.sections.length, 1)
     assert.equal(fake.sections[0].name, 'mm-models:division')
     const sectionText = typeof fake.sections[0].text === 'function' ? fake.sections[0].text({}) : fake.sections[0].text
@@ -328,6 +340,79 @@ async function main() {
     const tmp = await makeTmp()
     const { fake } = setup(mock, tmp, { overrides: { promptSection: false } })
     assert.equal(fake.sections.length, 0)
+  })
+
+  // ---------------------------------------------------------------- 读图员（2026-10-17 插件自有工具）
+  // 这三条是"工具描述看不出用途"那次事故的回归网：
+  //   ① 描述必须自带"读图"；② 派出的 request 形状必须与官方实现一致；
+  //   ③ 服务缺失/参数为空必须在派出**之前**失败，不能留下孤儿子代理。
+  await test('ask_glm：startActivation 的 request 形状（preset / 路由 / 深度 / 父 agent）', async () => {
+    const tmp = await makeTmp()
+    const activations = []
+    const subagents = {
+      getProvider: (name) => (name === 'spawn' ? { name: 'spawn' } : undefined),
+      async startActivation(spec) {
+        activations.push(spec)
+        return { childId: 'child-1' }
+      },
+    }
+    const { tools } = setup(mock, tmp, { subagents })
+    const parent = { id: 'parent-agent', options: { provider: 'deepseek-account', model: 'deepseek-flash' } }
+    const value = await tools.ask_glm.execute(
+      { image_path: 'C:/shots/a.png', question: '表格第三行第二列是什么' },
+      { agent: parent, signal: undefined },
+    )
+    assert.deepEqual(value, { kind: 'activation', subagentId: 'child-1' })
+    const spec = activations[0]
+    assert.equal(spec.provider, 'spawn', '必须走 spawn 提供方')
+    assert.equal(spec.delivery, 'parent', '结论必须投递给父会话')
+    assert.equal(spec.label, '读图')
+    assert.equal(spec.request.parent, parent)
+    assert.equal(spec.request.agentPreset, 'mm-reader', 'persona 与工具面必须由 preset 决定')
+    assert.deepEqual(spec.request.agentOptions, { provider: 'glm', model: 'glm-5.3-flash' })
+    assert.equal(spec.request.maxDepth, 2, '已委派的子代理也要能调读图员')
+    assert.equal(spec.request.prompt.length, 1)
+    assert.equal(spec.request.prompt[0].type, 'text')
+    assert.ok(spec.request.prompt[0].text.includes('C:/shots/a.png'), 'prompt 必须带上图片路径')
+    assert.ok(spec.request.prompt[0].text.includes('表格第三行第二列是什么'), 'prompt 必须带上问题')
+  })
+
+  await test('ask_qwen：走 qwen-vl 路由；两个读图员共用 mm-reader preset', async () => {
+    const tmp = await makeTmp()
+    const activations = []
+    const subagents = {
+      getProvider: () => ({ name: 'spawn' }),
+      async startActivation(spec) {
+        activations.push(spec)
+        return { childId: 'child-2' }
+      },
+    }
+    const { tools } = setup(mock, tmp, { subagents })
+    const value = await tools.ask_qwen.execute({ image_path: 'b.png' }, { agent: { id: 'p' }, signal: undefined })
+    assert.equal(value.subagentId, 'child-2')
+    assert.deepEqual(activations[0].request.agentOptions, { provider: 'qwen-vl', model: 'qwen3-vl-plus' })
+    assert.equal(activations[0].request.agentPreset, 'mm-reader')
+  })
+
+  await test('读图员：参数为空 / subagents 缺失 / spawn 未注册 → 派出前就报错', async () => {
+    const noService = setup(mock, await makeTmp())
+    await expectError(noService.tools.ask_glm.execute({}, { agent: { id: 'p' } }), CODES.BAD_REQUEST, ['image_path'])
+    await expectError(
+      noService.tools.ask_glm.execute({ image_path: 'a.png' }, { agent: { id: 'p' } }),
+      CODES.UNKNOWN,
+      ['subagents'],
+    )
+
+    let called = false
+    const noSpawn = setup(mock, await makeTmp(), {
+      subagents: { getProvider: () => undefined, async startActivation() { called = true; return { childId: 'x' } } },
+    })
+    await expectError(
+      noSpawn.tools.ask_glm.execute({ image_path: 'a.png' }, { agent: { id: 'p' } }),
+      CODES.UNKNOWN,
+      ['spawn'],
+    )
+    assert.equal(called, false, 'spawn 未注册时不能真去创建子代理')
   })
 
   // ---------------------------------------------------------------- 工具开关
@@ -1041,10 +1126,13 @@ async function main() {
     for (const banned of ['persona:', 'toolFilter:', 'backgroundMode:', 'enableRunInBackground:']) {
       assert.ok(!text.includes(banned), '不能残留退役键：' + banned)
     }
-    // ② 四个工具行都必须用 agentPreset 引用 preset
+    // ② 2026-10-17：读图员两行已删除（工具改由插件 tools/reader.mjs 注册）。
+    //    留着会与插件注册的同名工具冲突，所以这里钉"必须不存在"。
+    for (const banned of ['- id: tool-subagent-glm', '- id: tool-subagent-qwen']) {
+      assert.ok(!text.includes(banned), '读图员行应已迁到插件自有工具，patch 里不能再有：' + banned)
+    }
+    // ③ 其余两个委派行仍必须用 agentPreset 引用 preset
     for (const [id, preset] of [
-      ['tool-subagent-glm', 'mm-reader'],
-      ['tool-subagent-qwen', 'mm-reader'],
       ['tool-subagent-code', 'mm-code'],
       ['tool-subagent-research', 'mm-research'],
     ]) {
@@ -1700,14 +1788,16 @@ async function main() {
     const tmp = await makeTmp()
     const { tools } = setup(mock, tmp, { overrides: { enableSeedanceVideo: true } })
     // 2026-10-17：新增 video_gen（1132 B，与 seedance_video 同档），合计上限同步 +1200。
-    const budget = { qwen_draw: 700, seedance_video: 1200, video_gen: 1200, media_task: 800, media_report: 500 }
+    // 2026-10-17：新增 ask_glm / ask_qwen（插件自有读图员，描述约 1.1 KB/个），
+    // 合计上限同步上调。描述值钱的地方是"读图"这两个字，别写小作文。
+    const budget = { ask_glm: 1300, ask_qwen: 1300, qwen_draw: 700, seedance_video: 1200, video_gen: 1200, media_task: 800, media_report: 500 }
     let total = 0
     for (const [name, definition] of Object.entries(tools)) {
       const bytes = Buffer.byteLength(JSON.stringify({ name: definition.name, description: definition.description, parameters: definition.parameters }), 'utf8')
       total += bytes
       assert.ok(bytes <= budget[name], `${name} 的 schema 超预算：${bytes} B > ${budget[name]} B（描述该写进 README，不是写进每个请求）`)
     }
-    assert.ok(total <= 4200, '五个工具 schema 合计超预算：' + total + ' B/请求')
+    assert.ok(total <= 6600, '七个工具 schema 合计超预算：' + total + ' B/请求')
   })
 
   // ---------------------------------------------------------------- 生成物附回上下文（默认关）
@@ -2601,29 +2691,39 @@ async function main() {
       false,
       '通用子代理不该被误认成读图员',
     )
-    // 空 home：**插件自带的那份 patch 仍会被扫**（它是契约源头，与跑在哪个 profile 无关），
-    // 所以这里不是"扫不到"，而是"只剩自带的声明"。
+    // 空 home：插件自带的 patch 里**已经没有读图行**（2026-10-17 工具改由插件注册），
+    // 所以扫描结果为空；白名单仍要含兜底 provider，且不能因此把通用子代理误认成读图员。
     const empty = await mkdtemp(join(tmpdir(), 'mm-reader-empty-'))
     tmpRoots.push(empty)
     const fallback = readerRouteAllowlist({ dshHome: empty })
-    assert.ok(fallback.routes.length >= 2, '自带 patch 里的读图行必须始终被扫到：' + fallback.routes.length)
-    assert.ok(
-      fallback.routes.every((route) => route.file.endsWith(join('dsh-mm-models', 'cordis.patch.yml'))),
-      '空 home 下只应剩自带 patch 的声明：' + JSON.stringify(fallback.routes.map((route) => route.file)),
-    )
+    assert.equal(fallback.routes.length, 0, '自带 patch 里不应再有 tool-subagent 读图行')
     assert.ok(fallback.providers.includes('glm'), '兜底白名单要含 glm：' + JSON.stringify(fallback.providers))
-    // 自带 patch 的读图行必须都是 maxDepth ≥ 2（否则 C 打开后子代理没有看图途径）。
-    for (const route of fallback.routes) {
+
+    // 新单一事实源：Config 里的 reader* 路由经 mergeReaderRoutes 进白名单。
+    const fromConfig = mergeReaderRoutes([
+      { id: 'ask_glm', provider: 'glm', model: 'glm-5.3-flash', maxDepth: 2 },
+      { id: 'ask_qwen', provider: 'qwen-vl', model: 'qwen3-vl-plus', maxDepth: 2 },
+    ])
+    assert.equal(fromConfig.routes.length, 2, 'Config 里的两个读图员路由都要在')
+    assert.ok(fromConfig.providers.includes('glm') && fromConfig.providers.includes('qwen-vl'))
+    assert.ok(fromConfig.modelPrefixes.includes('glm-5.3-flash'), '模型名也要进白名单')
+    assert.equal(
+      isReaderAgent({ options: { provider: 'glm', model: 'glm-5.3-flash' } }, fromConfig),
+      true,
+      'Config 路由声明必须能认出读图员',
+    )
+    assert.equal(
+      isReaderAgent({ options: { provider: 'deepseek-account', model: 'deepseek-flash' } }, fromConfig),
+      false,
+      '通用子代理不该被误认成读图员',
+    )
+    // 读图员路由的 maxDepth 必须 ≥ 2（否则 C 打开后子代理没有看图途径）。
+    for (const route of fromConfig.routes) {
       assert.ok(
         typeof route.maxDepth === 'number' && route.maxDepth >= 2,
         route.id + ' 的 maxDepth 必须 ≥ 2（实测 < 2 会让子代理调不动读图员）：' + String(route.maxDepth),
       )
     }
-    // 注释里的示例值（例如说明文字中的 `maxDepth: 0`）不得被当成真实配置读出来。
-    assert.ok(
-      fallback.routes.every((route) => route.maxDepth !== 0),
-      '注释里的 maxDepth 示例值被误读了：' + JSON.stringify(fallback.routes),
-    )
   })
 
   // ---------------------------------------------------------------- 提示词段落内容
@@ -2647,7 +2747,9 @@ async function main() {
     assert.ok(sectionText.includes('读图路由'), '应保留读图路由策略（这是插件才知道的信息）')
     assert.ok(sectionText.includes('ask_glm') && sectionText.includes('ask_qwen'), '路由策略要点名两个读图员')
     assert.ok(sectionText.includes('没有看图途径'), '没读图员时要如实说明')
-    assert.ok(sectionText.includes('不要绕道、不要猜图'), '要禁止"猜图"这条退路')
+    // 2026-10-17：路由改成"原生优先"，不再写死"一律走 ask_glm"；但"不要猜图"这条退路必须保留。
+    assert.ok(sectionText.includes('不要猜图'), '要禁止"猜图"这条退路')
+    assert.ok(sectionText.includes('原生 read_image'), '原生可用时应优先原生（不再强制走读图员）')
     assert.ok(sectionText.includes('【窄委派】'), '要给出窄工具面委派的建议（子代理每轮背 35 个工具≈32KB）')
     assert.ok(!sectionText.includes('你是主创兼工程师'), '不该再有身份声明（读图员也收得到这段）')
 
