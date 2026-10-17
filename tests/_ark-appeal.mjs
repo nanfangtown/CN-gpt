@@ -11,8 +11,10 @@
  * 只发 GET，不创建任何东西。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 
-const BACKUP = 'C:/Users/陈成/.dsh/.env.bak-arkremove-20261015-135621'
+const BACKUP = join(homedir(), '.dsh', '.env.bak-arkremove-20261015-135621')
 const BASE = 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks'
 
 let key
@@ -77,7 +79,7 @@ lines.push('考虑到该消耗由程序误操作产生、提示词无实际内�
 lines.push('或按测试额度处理。若需补充材料（如客户端日志、提交时间线），我可以提供。')
 
 const text = lines.join('\n')
-const out = 'C:/Users/陈成/.dsh/ark-refund-appeal.txt'
+const out = join(homedir(), '.dsh', 'ark-refund-appeal.txt')
 writeFileSync(out, text, 'utf8')
 console.log(text)
 console.log('')

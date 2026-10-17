@@ -31,3 +31,14 @@ Thumbs.db
 .vscode/
 *.log
 *.tmp
+
+# ---- 密钥：绝不进仓库（.env.example 是模板，要保留）----
+.env
+.env.*
+!.env.example
+.credentials*
+
+# ---- 本机备份 / 打包产物（不参与开源）----
+*.bak
+*.bak-*
+*.tgz

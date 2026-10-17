@@ -17,7 +17,9 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-const CACHE_VERSION = 1
+// 2026-10-17：升到 2 —— 键里新增了**输入图指纹**（图生图）。
+// 不升版本的话，一张"文生图"的旧缓存会被"图生图"请求命中，返回一张完全无关的图。
+const CACHE_VERSION = 2
 const DEFAULT_MAX_ENTRIES = 200
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
 
@@ -30,10 +32,21 @@ export function cacheFilePath(config) {
 }
 
 /**
+ * 输入图指纹：只哈希，不把 data URL 原样塞进缓存键（一张图可能上 MB）。
+ * @param {Array<{url?: string, dataUrl?: string}>} [images] - 图生图的输入图。
+ * @returns {string} 无图时返回空串（纯文生图的键因此与历史语义一致）。
+ */
+export function imagesFingerprintOf(images) {
+  if (!Array.isArray(images) || images.length === 0) return ''
+  const joined = images.map((image) => image?.url ?? image?.dataUrl ?? '').join('\n')
+  return createHash('sha256').update(joined).digest('hex').slice(0, 16)
+}
+
+/**
  * 计算缓存键。
  *
  * 只纳入**影响出图结果**的字段；盐用来强制失效。
- * @param {object} spec - { model, prompt, n, size?, negativePrompt? }。
+ * @param {object} spec - { model, prompt, n, size?, negativePrompt?, images? }。
  * @param {object} config - 插件 Config（取 cacheKeySalt）。
  * @returns {string} 16 进制摘要。
  */
@@ -47,6 +60,8 @@ export function cacheKeyOf(spec, config) {
     n: Number(spec?.n ?? 1),
     size: spec?.size ?? '',
     negativePrompt: spec?.negativePrompt ?? '',
+    // 图生图：同一句 prompt 配不同的原图，必须是不命中同一个缓存的两件事。
+    images: imagesFingerprintOf(spec?.images),
   })
   return createHash('sha256').update(payload).digest('hex').slice(0, 32)
 }

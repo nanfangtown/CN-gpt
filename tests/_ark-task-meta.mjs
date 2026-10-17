@@ -5,8 +5,10 @@
  * 而**已完成任务的详情**本身就记录了实际生效的参数——同样的信息，零风险。
  */
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 
-const BACKUP = 'C:/Users/陈成/.dsh/.env.bak-arkremove-20261015-135621'
+const BACKUP = join(homedir(), '.dsh', '.env.bak-arkremove-20261015-135621')
 const BASE = 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks'
 
 let key

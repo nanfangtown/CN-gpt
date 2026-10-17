@@ -26,7 +26,7 @@ set DSH_APP=D:\path\to\DeepSeek Harness.exe
 ## 1. 单测 + 本地假厂商（不需要 dsh、不需要 key）
 
 ```bat
-cd /d "D:\DS WORK AREA\dsh-mm-models"
+cd /d "D:\path\to\dsh-mm-models"
 node --import ./tests/register.mjs ./tests/run.mjs
 ```
 
@@ -40,7 +40,7 @@ node --import ./tests/register.mjs ./tests/run.mjs
   `manager.mjs` 的退避重试与体积上限而加，此前那一层在测试里完全不可达；
 - `fixtures.mjs` 生成真实可解码的 PNG / 近似 MP4，并提供假 `ctx`（credentials / attachments /
   storageDomain / tools / systemPrompt / effect / on）；
-- `run.mjs` 共 70 项：配置默认值、注册面、成功链路、失败映射、提交重试策略、
+- `run.mjs` 共 110 项：配置默认值、注册面、成功链路、失败映射、提交重试策略、
   **轮询退避重试（429/503 退避后成功、持续 5xx 耗尽重试）**、
   **产物下载重试与体积上限（404/超限不重试、503 重试一次、声明超限快速拒绝、流式超限中途中止）**、
   超时/取消保留 task_id、media_task、seedance 文生/图生、两种账本后端、成本报表、

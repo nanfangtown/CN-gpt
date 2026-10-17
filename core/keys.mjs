@@ -40,6 +40,20 @@ export const KEY_SPECS = Object.freeze([
     settingsWhere: '设置 → 模型 → GLM 行',
     capability: 'ask_glm',
   }),
+  // 百炼视频（可灵 / 万相）与 qwen_draw 共用同一把 DASHSCOPE_API_KEY：
+  // 单独成行只为让健康报告能独立报出"出片"这一行。
+  // ⚠ 它额外需要"业务空间 ID"（dashscopeWorkspaceId）——那是**配置**不是密钥，
+  //   所以不在 KEY_SPECS 里；缺它时 video_gen 会 fail-closed 并指名去配置卡填。
+  Object.freeze({
+    id: 'dashscope-video',
+    ref: 'DASHSCOPE_API_KEY',
+    literalField: 'dashscopeApiKey',
+    envField: 'dashscopeApiKeyEnv',
+    label: '阿里云百炼 DashScope API Key（可灵 / 万相 出片）',
+    usage: '仅 video_gen 出片使用（与 qwen_draw 共用 DASHSCOPE_API_KEY；另需业务空间 ID）',
+    settingsWhere: '插件页 → gpt-CN → 配置卡',
+    capability: 'dashscope_video',
+  }),
   // DashScope 同一把 key 也供 ask_qwen 的 qwen-vl 路由使用：
   // 单独成行只为让健康报告能独立报出"读图子代理"这一行，不额外要求第四把 key。
   Object.freeze({

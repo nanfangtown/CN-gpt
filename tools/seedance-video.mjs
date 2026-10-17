@@ -6,53 +6,24 @@
  *   - 本地文件路径：读取后转成 data URL（大小受 config.maxInlineImageBytes 限制）。
  * 实跑确证厂商字段后，若只接受 URL，则本地文件路径这条路径需要改为先上传到可访问位置。
  */
-import { readFile, stat } from 'node:fs/promises'
-import { basename, extname, isAbsolute, resolve } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { CODES, MediaError, STATES, fixedMessage } from '../core/errors.mjs'
 import { resolveOutDir, shortHash, slugify, stamp } from '../core/deliver.mjs'
+import { resolveImageArg } from '../core/image-input.mjs'
 import { keySpec } from '../core/keys.mjs'
 import { pricingOf, unitPriceOf } from '../core/cost.mjs'
 import { authorizeSpend, estimateSpend } from '../core/spend-guard.mjs'
-import { asMediaError, budgetMessage, sessionIdOf, stateFailureToError } from '../core/tool-kit.mjs'
+import { accountUnretrievedSpend, asMediaError, budgetMessage, sessionIdOf, sessionSpentOrThrow, stateFailureToError } from '../core/tool-kit.mjs'
 
 const KEY = keySpec('ark')
 const ADAPTER_ID = 'ark-video'
-
-const IMAGE_TYPES = Object.freeze({
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-  '.bmp': 'image/bmp',
-})
-
-/**
- * 把 image 参数解析成 { url } 或 { dataUrl }。
- * @returns {Promise<{url?: string, dataUrl?: string, display: string}>}
- */
-async function resolveImageArg(image, { exec, maxBytes }) {
-  const trimmed = String(image).trim()
-  if (/^https?:\/\//iu.test(trimmed)) return { url: trimmed, display: trimmed }
-  const cwd = exec?.agent?.session?.header?.cwd ?? process.cwd()
-  const path = isAbsolute(trimmed) ? trimmed : resolve(cwd, trimmed)
-  const info = await stat(path)
-  if (!info.isFile()) throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：image 不是普通文件：' + trimmed)
-  if (info.size > maxBytes) {
-    throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：首帧图 ' + info.size + ' 字节超过内联上限 ' + maxBytes + '；请改用图片 URL 或压缩后重试')
-  }
-  const mediaType = IMAGE_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream'
-  const bytes = await readFile(path)
-  return { dataUrl: 'data:' + mediaType + ';base64,' + bytes.toString('base64'), display: basename(path) }
-}
 
 /**
  * 注册 seedance_video。
  * @param {object} deps - ctx / config / manager / keys / getLedger / budget。
  */
 export function createSeedanceVideoTool(deps) {
-  const { config, manager, keys, getLedger, getTaskRegistry, budget } = deps
+  const { config, manager, keys, getLedger, getTaskRegistry, budget, logger } = deps
 
   return defineTool({
     name: 'seedance_video',
@@ -119,6 +90,10 @@ export function createSeedanceVideoTool(deps) {
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       const sessionId = sessionIdOf(exec)
+      /** 闸门算出的预估——catch 里"提交了但没取回"时复用同一组数字补记。 */
+      let plannedEstimate
+      /** 已提交任务的 id（提交一旦发生就记下来，超时/取消的补记靠它）。 */
+      let plannedTaskId
       try {
         const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : ''
         if (prompt.length === 0) throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：prompt 不能为空；请提供视频描述后重试')
@@ -127,11 +102,13 @@ export function createSeedanceVideoTool(deps) {
         if (typeof args.resolution === 'string' && args.resolution.trim().length > 0) spec.resolution = args.resolution.trim()
         if (typeof args.ratio === 'string' && args.ratio.trim().length > 0) spec.ratio = args.ratio.trim()
         if (typeof args.image === 'string' && args.image.trim().length > 0) {
-          spec.image = await resolveImageArg(args.image, { exec, maxBytes: config.maxInlineImageBytes })
+          spec.image = await resolveImageArg(args.image, { exec, maxBytes: config.maxInlineImageBytes, label: '首帧图' })
         }
 
         const credential = await keys.resolve(KEY)
-        if (credential === undefined) {
+        // 只有"确实拿到非空字符串凭据"才算过：`null` 或 `{ value: undefined }` 都必须落回缺凭据，
+        // 否则后面 `credential.value` 会炸成语义不明的错误（2026-10-16 加固）。
+        if (credential === undefined || credential === null || typeof credential.value !== 'string' || credential.value.length === 0) {
           throw new MediaError(CODES.MISSING_CREDENTIAL, fixedMessage(CODES.MISSING_CREDENTIAL, { ref: KEY.ref }))
         }
         // 同 qwen_draw：配额只在真正要提交时扣，参数错/缺 key 不占名额。
@@ -146,19 +123,18 @@ export function createSeedanceVideoTool(deps) {
           duration: spec.duration,
           unitPrice: unitPriceOf(pricingOf(config)[spec.model] ?? {}),
         })
+        plannedEstimate = estimate
         const verdict = await authorizeSpend({
           estimate,
           config,
-          spentInSession: async () => {
-            const ledger = await getLedger().catch(() => undefined)
-            if (ledger === undefined || typeof ledger.list !== 'function') return 0
-            try {
-              const records = await ledger.list({ sessionId })
-              return records.filter((r) => Number.isFinite(r.amount)).reduce((sum, r) => sum + r.amount, 0)
-            } catch {
-              return 0
-            }
-          },
+          spentInSession: () =>
+            sessionSpentOrThrow({
+              getLedger,
+              sessionId,
+              // 会话累计含后代子代理会话（子代理默认允许出片）
+              sessionIds: deps.sessionIdsForSpend?.(sessionId),
+              providerLabel: '方舟 Ark',
+            }),
           confirmed: { confirm_estimate: args.confirm_estimate, confirm_unpriced: args.confirm_unpriced },
           providerLabel: '方舟 Ark',
         })
@@ -183,6 +159,9 @@ export function createSeedanceVideoTool(deps) {
             })
           },
         })
+        // 走到这里说明提交已经发生（taskRef 一定存在）——先把 id 记下来，
+        // 后面无论超时还是取消，补记那笔钱时都要用它。
+        plannedTaskId = taskRef.taskId
         if (state.status === STATES.TIMEOUT) {
           throw new MediaError(CODES.TIMEOUT, fixedMessage(CODES.TIMEOUT, { provider: '方舟 Ark', providerKey: 'seedance', taskId: taskRef.taskId, timeoutMs: config.videoTimeoutMs }))
         }
@@ -231,6 +210,27 @@ export function createSeedanceVideoTool(deps) {
       } catch (error) {
         const mediaError = asMediaError(error, { provider: '方舟 Ark', ref: KEY.ref, where: 'query' })
         if (mediaError.code !== CODES.MISSING_CREDENTIAL) {
+          // 超时/中断：任务**已经提交**、方舟在那一刻就开始计费，而成功路径的记账在产物落盘之后 ——
+          // 不补这一笔，"反复提交完就放弃"永远不体现在会话累计上限与报表里。
+          // 这正是 2026-10-15 事故的形态（22 个任务、¥195.97），同一个 taskId 只记一次。
+          if ((mediaError.code === CODES.TIMEOUT || mediaError.code === CODES.ABORTED) && typeof plannedTaskId === 'string' && plannedEstimate !== undefined) {
+            await accountUnretrievedSpend({
+              getLedger,
+              taskId: plannedTaskId,
+              logger,
+              entry: {
+                adapter: ADAPTER_ID,
+                provider: '方舟 Ark',
+                model: config.seedanceModel,
+                unitKind: 'second',
+                units: plannedEstimate.duration,
+                unitPrice: plannedEstimate.unitPrice,
+                currency: 'CNY',
+                amount: plannedEstimate.estimated,
+                ...(sessionId === undefined ? {} : { sessionId }),
+              },
+            })
+          }
           try {
             const ledger = await getLedger()
             await ledger.noteHealth(ADAPTER_ID, false, mediaError.code + (mediaError.taskId === undefined ? '' : ' task=' + mediaError.taskId))

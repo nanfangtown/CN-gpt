@@ -108,8 +108,16 @@ export const dashscopeImageAdapter = {
     if (mode === 'sync') {
       const body = {}
       setPath(body, F.bodyModel, spec.model)
+      // 图生图（I2I，2026-10-17 加）：content 是 [{ image }, …, { text }]。
+      // 官方示例的顺序是"先图后文"，多图按数组顺序；没有图时退化成纯文生图，与原行为逐字节一致。
+      const content = []
+      for (const image of Array.isArray(spec.images) ? spec.images : []) {
+        const value = image?.url ?? image?.dataUrl
+        if (typeof value === 'string' && value.length > 0) content.push({ [S.bodyImage]: value })
+      }
+      content.push({ [S.bodyText]: spec.prompt })
       setPath(body, S.bodyMessages, [
-        { [S.bodyRole]: S.roleUser, [S.bodyContent]: [{ [S.bodyText]: spec.prompt }] },
+        { [S.bodyRole]: S.roleUser, [S.bodyContent]: content },
       ])
       const parameters = { [S.bodyN]: spec.n ?? 1, [S.bodyPromptExtend]: false, [S.bodyWatermark]: false }
       if (spec.size !== undefined && spec.size !== '') parameters[S.bodySize] = spec.size
@@ -122,6 +130,14 @@ export const dashscopeImageAdapter = {
         body,
         mode: 'sync',
       }
+    }
+    // 异步端点（text2image/image-synthesis）不接受输入图。静默丢弃会让调用方以为
+    // "图生图成功了"，实际却拿到一张无关的新图 —— 那比直接报错更糟。
+    if (Array.isArray(spec.images) && spec.images.length > 0) {
+      throw new MediaError(
+        CODES.BAD_REQUEST,
+        '参数不被接受：当前制图模式（异步 text2image）不支持图生图；请把 qwenModel 设为 qwen-image 系列（走同步模式）后重试',
+      )
     }
     const body = {}
     setPath(body, F.bodyModel, spec.model)

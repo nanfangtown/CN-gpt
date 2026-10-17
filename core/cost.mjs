@@ -55,40 +55,6 @@ export const DEFAULT_PRICING = {
     currency: 'CNY',
     asOf: '2026-10-15',
     tiers: [],
-    source: '⚠ 估算：21,700 tokens/秒（实测）× 70 元/百万（第三方来源，未经官方页核实）',
-  },
-  'doubao-seedance-2-0-fast-260128': {
-    unit: 'second',
-    unitPrice: 0.998,
-    currency: 'CNY',
-    asOf: '2026-10-15',
-    tiers: [],
-    source: '⚠ 估算：21,700 tokens/秒（实测）× 46 元/百万（第三方来源，未经官方页核实）',
-  },
-  'doubao-seedance-1-0-pro-fast-251015': {
-    unit: 'second',
-    unitPrice: 0.206,
-    currency: 'CNY',
-    asOf: '2026-10-15',
-    tiers: [],
-    source: 'https://www.bianews.com/news/details?id=223817',
-  },
-  // ---- Seedance 出片：**按模型 id 计价**，别再用 'seedance-2.0' ----
-  //
-  // 2026-10-15 加这三个键，起因是一个**闸门锁死事故**（值得记住）：
-  //   - `seedanceModel` 在 10-15 从 'seedance-2.0' 改成 'doubao-seedance-2-5-260628'；
-  //   - 但单价表里只有旧键 'seedance-2.0'，新模型 id **查不到价** → unitPriceOf() 返回 null；
-  //   - 于是 spend-guard 走到"未计价"分支，估算金额是 null，而确认层要求一个精确数字，
-  //     调用方给不出 → **fail-closed，出片工具彻底不可用**；
-  //   - 全过程没有任何告警：模型 id 与单价表是两个独立字段，代码没做外键校验。
-  // 对策有两层，缺一不可：① 这里把三个真实模型 id 都配上价；② 启动自检（pricingWarnings）
-  // 会在"配置的模型查不到价"时直接在日志里点名，不再让它静默锁死。
-  'doubao-seedance-2-5-260628': {
-    unit: 'second',
-    unitPrice: 1.519,
-    currency: 'CNY',
-    asOf: '2026-10-15',
-    tiers: [],
     source: '⚠ 估算：21,700 tokens/秒（实测）× 70 元/百万 token（第三方来源，未经官方页核实）',
   },
   'doubao-seedance-2-0-fast-260128': {
@@ -99,6 +65,91 @@ export const DEFAULT_PRICING = {
     tiers: [],
     source: '⚠ 估算：21,700 tokens/秒（实测）× 46 元/百万 token（第三方来源，未经官方页核实）',
   },
+  'doubao-seedance-1-0-pro-fast-251015': {
+    unit: 'second',
+    unitPrice: 0.206,
+    currency: 'CNY',
+    asOf: '2026-10-15',
+    tiers: [],
+    source: 'https://www.bianews.com/news/details?id=223817',
+  },
+  // ---- 百炼视频（2026-10-17 加）：可灵 v3 + 万相 2.5 ----
+  //
+  // 口径：官方页标价，按秒、按"模式（720P/1080P/4K）× 是否带音频"二维计价。
+  // 为什么用 tiers 而不是一个数：4K 是 720P 的 5 倍（3.0 vs 0.6），
+  // 只写一个数会让 4K 请求被低报 5 倍 —— 闸门看着"没超上限"，实际一次 ¥45。
+  //
+  // `unitPrice` 字段是**兜底价**（= 1080P 无声档），tiers 才是实际取价路径。
+  'kling/kling-v3-video-generation': {
+    unit: 'second',
+    unitPrice: 0.8,
+    currency: 'CNY',
+    asOf: '2026-10-17',
+    tiers: [
+      { mode: 'std', audio: false, unitPrice: 0.6 },
+      { mode: 'std', audio: true, unitPrice: 0.9 },
+      { mode: 'pro', audio: false, unitPrice: 0.8 },
+      { mode: 'pro', audio: true, unitPrice: 1.2 },
+      { mode: '4k', audio: false, unitPrice: 3 },
+      { mode: '4k', audio: true, unitPrice: 3 },
+    ],
+    source: 'https://help.aliyun.com/zh/model-studio/kling-v3-video-generation',
+  },
+  'kling/kling-v3-turbo-video-generation': {
+    unit: 'second',
+    unitPrice: 1,
+    currency: 'CNY',
+    asOf: '2026-10-17',
+    // Turbo 固定音画同出（audio 字段不生效），所以两档同价。
+    tiers: [
+      { mode: 'std', audio: false, unitPrice: 0.8 },
+      { mode: 'std', audio: true, unitPrice: 0.8 },
+      { mode: 'pro', audio: false, unitPrice: 1 },
+      { mode: 'pro', audio: true, unitPrice: 1 },
+    ],
+    source: 'https://help.aliyun.com/zh/model-studio/kling-v3-turbo-video-generation',
+  },
+  'kling/kling-v3-omni-video-generation': {
+    unit: 'second',
+    unitPrice: 0.8,
+    currency: 'CNY',
+    asOf: '2026-10-17',
+    // 无参考视频档（本 adapter 不传 video 输入，故取这一档）。
+    tiers: [
+      { mode: 'std', audio: false, unitPrice: 0.6 },
+      { mode: 'std', audio: true, unitPrice: 0.9 },
+      { mode: 'pro', audio: false, unitPrice: 0.8 },
+      { mode: 'pro', audio: true, unitPrice: 1.2 },
+      { mode: '4k', audio: false, unitPrice: 3 },
+      { mode: '4k', audio: true, unitPrice: 3 },
+    ],
+    source: 'https://help.aliyun.com/zh/model-studio/kling-v3-omni-video-generation',
+  },
+  'wan2.5-t2v-preview': {
+    unit: 'second',
+    unitPrice: 1,
+    currency: 'CNY',
+    asOf: '2026-10-17',
+    tiers: [
+      { mode: 'std', audio: false, unitPrice: 0.6 },
+      { mode: 'std', audio: true, unitPrice: 0.6 },
+      { mode: 'pro', audio: false, unitPrice: 1 },
+      { mode: 'pro', audio: true, unitPrice: 1 },
+    ],
+    source: 'https://help.aliyun.com/zh/model-studio/wan2-5-t2v',
+  },
+  // ---- Legacy：2026-10-15 之前的模型 id，保留仅为兼容旧配置 ----
+  //
+  // ⚠ 上面的三个 `doubao-seedance-*` 键才是**真实模型 id**（按 id 计价，别再用 'seedance-2.0'）。
+  // 这个键曾是一次**闸门锁死事故**的现场：
+  //   - `seedanceModel` 在 10-15 从 'seedance-2.0' 改成 'doubao-seedance-2-5-260628'；
+  //   - 但单价表里只有旧键 'seedance-2.0'，新模型 id **查不到价** → unitPriceOf() 返回 null；
+  //   - 于是 spend-guard 走到"未计价"分支，估算金额是 null，而确认层要求一个精确数字，
+  //     调用方给不出 → **fail-closed，出片工具彻底不可用**；
+  //   - 全过程没有任何告警：模型 id 与单价表是两个独立字段，代码没做外键校验。
+  // 对策有三层，缺一不可：① 出厂表把三个真实模型 id 都配上价；② 启动自检（pricingWarnings）
+  // 会在"配置的模型查不到价"时直接点名；③ `tests/run.mjs` 里钉了"发布用 patch 的
+  // `seedanceModel` / `qwenModel` 必须在单价表里有正价"的回归断言，防止再犯。
   'seedance-2.0': {
     unit: 'second',
     unitPrice: null,
@@ -146,7 +197,7 @@ export function isPriced(entry) {
 }
 
 /** 单价是否为"可用正价"；null / 0 / 负数 / NaN 一律不算。 */
-function priceAboveZero(value) {
+export function priceAboveZero(value) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
 
@@ -242,6 +293,7 @@ export function pricingWarnings(config, plain = (value) => value) {
   const configured = [
     ['qwenModel', '制图'],
     ['seedanceModel', '出片'],
+    ['videoModel', '出片（百炼）'],
   ]
   const known = new Set()
   for (const [field, label] of configured) {
@@ -268,9 +320,15 @@ export function pricingWarnings(config, plain = (value) => value) {
   }
 
   // 既不在用、也非出厂键的条目 = 陈旧残留，容易让下一个人以为"这个模型按这个价计费"。
+  //
+  // ⚠ 2026-10-17：**ktoken 类条目不能拿 `known` 判陈旧**。`known` 只有 qwenModel /
+  // seedanceModel 两个字段，读图模型根本不在里面（它由 pi-ai 路由解析，config 里没有这个字段）。
+  // 于是刚给读图模型填好价，反而被报成「已不是当前使用的模型 id」——把正确配置说成错误。
+  // ktoken 条目只服务读图子代理，本来就可能同时留着几个候选模型，不做陈旧判定。
   const defaultKeys = new Set(Object.keys(DEFAULT_PRICING))
   for (const key of Object.keys(table ?? {})) {
     if (known.has(key) || defaultKeys.has(key)) continue
+    if (table?.[key]?.unit === 'ktoken') continue
     warnings.push(`单价表里的「${key}」已不是当前使用的模型 id（陈旧条目），建议删除以免误读。`)
   }
 
@@ -308,17 +366,83 @@ function ledgerFilePath(config) {
   return join(home, 'mm-models-ledger.json')
 }
 
-async function readJsonFile(path) {
+/**
+ * 读 JSON 账本文件。
+ *
+ * ⚠ `strict` 是"花钱路径"专用的读法（2026-10-16 加）：
+ *   - lenient（默认，报表/健康检查用）：坏文件当空账本，永远不阻塞任何工具；
+ *   - strict（闸门用）：**文件损坏/读不动必须抛错**，绝不能变成"本会话已花 0"。
+ *     "读失败 = 没有记录"会让会话累计上限静默失效——那正是这个项目两次栽过的形态。
+ * 只有"文件不存在"（ENOENT）在两种模式下都算空账本：首次运行本来就该是空的。
+ *
+ * @param {string} path - 账本文件路径。
+ * @param {object} [options] - { strict }。
+ * @returns {Promise<object>} { version, records, health }。
+ */
+async function readJsonFile(path, options = {}) {
+  const strict = options.strict === true
+  let text
   try {
-    const text = await readFile(path, 'utf8')
-    const parsed = JSON.parse(text)
-    if (parsed !== null && typeof parsed === 'object') {
-      return { version: REGISTRY_VERSION, records: Array.isArray(parsed.records) ? parsed.records : [], health: parsed.health ?? {} }
-    }
-  } catch {
-    // 首次运行 / 文件损坏 → 空账本（不阻塞任何工具）。
+    text = await readFile(path, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { version: REGISTRY_VERSION, records: [], health: {} }
+    const message = `账本文件读取失败（${path}）：${String(error?.message ?? error)}`
+    if (strict) throw new Error(message)
+    return { version: REGISTRY_VERSION, records: [], health: {} }
   }
-  return { version: REGISTRY_VERSION, records: [], health: {} }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    const message = `账本文件解析失败（${path}，文件可能被写坏）：${String(error?.message ?? error)}`
+    if (strict) throw new Error(message)
+    return { version: REGISTRY_VERSION, records: [], health: {} }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const message = `账本文件不是 JSON 对象（${path}）`
+    if (strict) throw new Error(message)
+    return { version: REGISTRY_VERSION, records: [], health: {} }
+  }
+  return { version: REGISTRY_VERSION, records: Array.isArray(parsed.records) ? parsed.records : [], health: parsed.health ?? {} }
+}
+
+/**
+ * 宿主 storage 后端的落盘文件（`<DSH_HOME>/storages/mm_media_ledger.json`）。
+ * 只在"服务拿不到、账本降级到文件后端"时用它做兜底对账（只读）。
+ */
+function hostStorageLedgerPath() {
+  const home = process.env.DSH_HOME && process.env.DSH_HOME.trim().length > 0 ? process.env.DSH_HOME : join(homedir(), '.dsh')
+  return join(home, 'storages', 'mm_media_ledger.json')
+}
+
+/**
+ * 只读地把宿主 storage 文件里的 usage 记录取出来。
+ *
+ * 为什么需要：storageDomain 服务拿不到时（热重载/装配时序，2026-10-15 实测复现过），
+ * 插件只能读文件账本，而**真实花销在 storage 领域里** → "已花"被算成 0 → 会话上限失效。
+ * 这里把 storage 文件里的记录并进对账，让上限在降级态下依然守得住。
+ *
+ * 文件不存在 = 该环境本就没有 storage 后端，返回空数组（不算错误）；
+ * 文件存在但读不动/解析不了 = 数据不可信，抛错（strict 下会因此拒绝提交）。
+ */
+async function readHostStorageRecords() {
+  const path = hostStorageLedgerPath()
+  let text
+  try {
+    text = await readFile(path, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return []
+    throw new Error(`宿主 storage 账本读取失败（${path}）：${String(error?.message ?? error)}`)
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    throw new Error(`宿主 storage 账本解析失败（${path}）：${String(error?.message ?? error)}`)
+  }
+  const rows = parsed?.tables?.usage
+  if (rows === null || rows === undefined || typeof rows !== 'object') return []
+  return Object.values(rows).filter((row) => row !== null && typeof row === 'object')
 }
 
 /** 原子写 JSON 文件。 */
@@ -401,6 +525,23 @@ export async function openLedger(ctx, config, logger) {
       // 表现就是"报表突然空了"。所以原因由 ledger.storageError() 带进 health 报告（见 tools/media-report.mjs）。
       log('warn', `[mm-models] storageDomain ledger unavailable; falling back to JSON file: ${clip(String(error?.message ?? error))}`)
     }
+  } else {
+    // ⚠ 这一支以前是**静默**的：服务压根拿不到时 `storageError` 保持 undefined，
+    // 于是 media-report 那条"已退回 JSON 文件"的告警不会打印，报表只会说"没有用量记录"——
+    // 表现是"磁盘上明明有历史用量，报表里凭空消失"，而用户没有任何线索。
+    // 2026-10-15 实测复现过一次（热重载 / 装配时序导致 `ctx.get('storageDomain')` 未命中：
+    // 当时 health 报「账本后端：file」、cost 报表读空，而 storages 里有 15 条真实记录）。
+    // 现在把"拿不到服务"与"服务打不开"统一成同一条**可解释**的降级原因。
+    //
+    // 注意措辞保持中性：某些发行版/CLI 场景本来就不带 storage-domain 服务，
+    // 那不是故障，只是"这类环境只能用文件账本"，所以原因要写清而不是报警。
+    storageError =
+      typeof ctx?.get !== 'function'
+        ? new Error('插件上下文没有 ctx.get：无法查找 storageDomain 服务，只能用文件账本')
+        : new Error(
+            "宿主未提供 storageDomain 服务（ctx.get('storageDomain') 未命中）：可能是该环境本就不带 storage-domain，或服务尚未就绪、插件先于它装配。此类环境下账本落在文件后端，storage 领域里的历史用量读不到。",
+          )
+    log('debug', '[mm-models] storageDomain service unavailable; using JSON file ledger')
   }
 
   const filePath = ledgerFilePath(config)
@@ -409,7 +550,10 @@ export async function openLedger(ctx, config, logger) {
   let sequence = 0
   const nextKey = () => `${Date.now().toString(36)}-${(sequence += 1).toString(36)}`
 
-  async function loadFileState() {
+  async function loadFileState(options = {}) {
+    // 严格读**不碰缓存**：上一次 lenient 读可能已经把"坏文件 → 空账本"缓存下来了，
+    // 花钱路径必须看到文件当前的真实状态。
+    if (options.strict === true) return await readJsonFile(filePath, { strict: true })
     if (fileState === undefined) fileState = await readJsonFile(filePath)
     return fileState
   }
@@ -432,7 +576,13 @@ export async function openLedger(ctx, config, logger) {
 
   async function record(entry) {
     const at = entry.at ?? nowIso()
-    const full = { at, ...entry, amount: entry.amount === undefined ? amountOf(entry) : entry.amount }
+    // `amount: null` 的语义是"交给账本按 unitKind 计算"（`reader-usage` 就是这么写的）。
+    // ⚠ 2026-10-17 修：以前这里只认 `undefined`，于是这类记录的金额**永远是 null** ——
+    // 而 `sessionSpentOrThrow` 用 `Number.isFinite(row.amount)` 汇总，读图 token 花费
+    // 因此对会话累计上限**完全隐形**（实测：账本里记账成功，闸门看到的却是 0）。
+    // 放行 null 不会把"算不出来"变成 0：`amountOf()` 对未计价本来就返回 null。
+    const amountPending = entry.amount === undefined || entry.amount === null
+    const full = { at, ...entry, amount: amountPending ? amountOf(entry) : entry.amount }
     try {
       if (backend === 'storage') {
         await domain.table('usage').put(nextKey(), full)
@@ -470,16 +620,85 @@ export async function openLedger(ctx, config, logger) {
     }
   }
 
-  async function list(filter = {}) {
+  /**
+   * 把"另一侧后端"的记录并进来对账。
+   *
+   * 同一条记录理论上不会同时落在两个后端（写入时按当时的 backend 二选一），
+   * 但真出现时**不能算两遍钱**，所以按键去重。
+   */
+  function mergeRecords(primary, extra) {
+    if (!Array.isArray(extra) || extra.length === 0) return primary
+    const keyOf = (row) => `${row?.at}|${row?.taskId ?? ''}|${row?.model ?? ''}|${row?.units ?? ''}`
+    const seen = new Set(primary.map(keyOf))
+    const merged = [...primary]
+    for (const row of extra) {
+      const key = keyOf(row)
+      if (seen.has(key)) continue
+      seen.add(key)
+      merged.push(row)
+    }
+    return merged
+  }
+
+  /**
+   * storage 后端：读**文件账本**里"降级期"写下的记录。
+   *
+   * 为什么必须有（2026-10-17 修）：`backend` 在 openLedger 时定死，但"服务拿不到"
+   * 是**按次**发生的（热重载 / 装配时序）。一次降级窗口里花掉的钱只落在文件里，
+   * 若 storage 恢复后不再读文件，这段花费就凭空消失 → 会话累计上限被低估，
+   * 等于留下一条"先制造一次降级、再花钱"的绕过路径。
+   * 文件不存在（ENOENT）= 从未降级过，返回空，不算故障。
+   */
+  async function readFileLedgerRecords(strict) {
+    try {
+      return (await readJsonFile(filePath, { strict })).records
+    } catch (error) {
+      if (strict) throw error
+      log('warn', `[mm-models] file ledger merge skipped: ${clip(String(error?.message ?? error))}`)
+      return []
+    }
+  }
+
+  /**
+   * 文件后端：读宿主 storage 文件里的记录。
+   * 语义与 `readFileLedgerRecords` 对称：不存在 = 空；损坏时 strict 抛错、lenient 只记日志。
+   */
+  async function readHostStorageRecordsSafe(strict) {
+    try {
+      return await readHostStorageRecords()
+    } catch (error) {
+      if (strict) throw error
+      log('warn', `[mm-models] host storage ledger merge skipped: ${clip(String(error?.message ?? error))}`)
+      return []
+    }
+  }
+
+  /**
+   * 读用量记录。
+   *
+   * ⚠ 对账是**双向**的（2026-10-17 修）。以前只有"降级到文件后端"这一侧会去并
+   * storage 文件，反过来 storage 后端**完全不读文件账本** —— 于是降级窗口里花掉的
+   * 钱在重载后消失，上限被低估。现在两侧都并、且 lenient（报表）也并：
+   * 只让 strict 并会让"闸门看到的已花"和"报表显示的合计"变成两个数。
+   *
+   * @param {object} [filter] - { sessionId, sessionIds, since, now }。
+   * @param {object} [options] - { strict }：**花钱路径必须传 strict**。
+   *   - lenient（默认）：读失败返回空数组，只给报表/健康检查这类"宁可少显示、也不阻塞"的场景用；
+   *   - strict：读失败**直接抛错**（`tool-kit.sessionSpentOrThrow` 会据此拒绝提交）——
+   *     对账那一侧读不动时同样抛，"看不见花费"绝不能折算成"已花 0"。
+   */
+  async function list(filter = {}, options = {}) {
+    const strict = options.strict === true
     try {
       if (backend === 'storage') {
         const rows = [...domain.table('usage').entries()].map(([, value]) => value)
-        return applyFilter(rows, filter)
+        return applyFilter(mergeRecords(rows, await readFileLedgerRecords(strict)), filter)
       }
-      const state = await loadFileState()
-      return applyFilter(state.records, filter)
+      const state = await loadFileState(options)
+      return applyFilter(mergeRecords(state.records, await readHostStorageRecordsSafe(strict)), filter)
     } catch (error) {
       log('warn', `[mm-models] ledger read failed: ${clip(String(error?.message ?? error))}`)
+      if (strict) throw error
       return []
     }
   }
@@ -500,8 +719,14 @@ export async function openLedger(ctx, config, logger) {
 
   function applyFilter(rows, filter) {
     const now = filter.now ?? Date.now()
+    // `sessionIds`（2026-10-16 加）：一次取"自己 + 后代子代理会话"的记录。
+    // 为什么需要：子代理的花费记在它自己的会话上，主代理只看 `sessionId` 等于
+    // "看不见自己派出去的子代理花了多少"——而那正是成本黑洞的机制（看不见 = 管不住）。
+    const sessionSet =
+      Array.isArray(filter.sessionIds) && filter.sessionIds.length > 0 ? new Set(filter.sessionIds) : undefined
     return rows.filter((row) => {
       if (filter.sessionId !== undefined && row.sessionId !== filter.sessionId) return false
+      if (sessionSet !== undefined && !sessionSet.has(row.sessionId)) return false
       if (filter.since !== undefined) {
         const at = Date.parse(row.at)
         if (!Number.isFinite(at) || at < filter.since) return false
@@ -584,6 +809,11 @@ function money(amount, currency) {
 function priceCell(value, currency, unitKind) {
   const price = unitPriceOf({ unitPrice: value })
   if (price === null) return '未计价'
+  // ⚠ 0 / 负数同样**不是价**（0 是"宣称免费"，负数是非法值），判据必须与闸门和自检同源
+  // （`priceAboveZero` / `isPriced`）。早先这里只判 `null`，于是单价被写成 0 的记录
+  // 在报表里显示成 `0.0000 CNY` —— 正是 README「故障 2：真钱显示成免费」的症状，
+  // 2026-10-15 那次修复只覆盖了闸门与自检，漏了这一处（同日复查时发现并修复）。
+  if (!priceAboveZero(price)) return '零价（无效）'
   const suffix = typeof unitKind === 'string' && unitKind.length > 0 ? `/${unitKind}` : ''
   return `${money(price, currency)}${suffix}`
 }
@@ -605,14 +835,19 @@ function formatTime(iso) {
 
 /**
  * 渲染成本报表（media_report action=cost）。
- * @param {object} options - records / config / scope / sessionId / now。
+ * @param {object} options - records / config / scope / sessionId / now / verbose / childSessionCount。
+ *   `childSessionCount`（2026-10-16 加）：本次汇总里带上了几个**后代子代理会话**。
+ *   子代理默认允许生成，它的花费记在自己会话上，所以标题必须写清"这份数字包含哪些会话"。
  * @returns {string}
  */
-export function renderCostReport({ records, config, scope = 'session', sessionId, now = Date.now() }) {
+export function renderCostReport({ records, config, scope = 'session', sessionId, now = Date.now(), verbose = false, childSessionCount = 0, readerUsage = null }) {
   const pricing = pricingOf(config)
   const groups = summarizeRecords(records)
   const lines = []
-  lines.push(`# 成本估算（scope: ${scope}${scope === 'session' && sessionId !== undefined ? `, session: ${sessionId}` : ''}）`)
+  const scopeNote = scope === 'session' && childSessionCount > 0 ? `（含 ${childSessionCount} 个子代理会话）` : ''
+  lines.push(`# 成本估算（scope: ${scope}${scope === 'session' && sessionId !== undefined ? `, session: ${sessionId}` : ''}${scopeNote}）`)
+  /** 单价为 0 的型号数（= 金额不可信的行数）。要在表格外也能用，所以声明在这里。 */
+  let zeroPriced = 0
   if (groups.length === 0) {
     lines.push('')
     lines.push('没有符合条件的用量记录（只统计本插件经手的调用）。')
@@ -623,17 +858,44 @@ export function renderCostReport({ records, config, scope = 'session', sessionId
     const totals = new Map()
     let unpriced = 0
     for (const group of groups) {
-      const priced = unitPriceOf(group) !== null
-      if (!priced) unpriced += 1
+      // ⚠ 判据必须与闸门 / 自检**同源**：只有正价才算"有价"。
+      // 单价 0 是"宣称免费"（见 isPriced 的注释），单价列不能再打印 `0.0000` ——
+      // 那正是 README「故障 2：真钱显示成免费」的症状。
+      const rawPrice = unitPriceOf(group)
+      const priced = priceAboveZero(rawPrice)
+      const zero = rawPrice !== null && !priced
+      if (rawPrice === null) unpriced += 1
+      if (zero) zeroPriced += 1
+      // 金额列：非正价的组**照样把记录里已有的数字打出来**，只是标注"不可信"。
+      // ⚠ 刻意不在这里做任何过滤/清零：同一型号可能同时存在"占位表时代写的 0 价记录"
+      // 与"修好后的正价记录"，按记录内 amount 求和是唯一不会把钱藏起来的口径。
+      const amountCell = priced
+        ? money(group.amount, group.currency)
+        : zero
+          ? `${money(group.amount, group.currency)}（不可信）`
+          : '未计价'
       lines.push(
-        `| ${group.provider} | ${group.model} | ${group.count} | ${unitsCell(group.units, group.unitKind)} | ${priceCell(group.unitPrice, group.currency, group.unitKind)} | ${priced ? money(group.amount, group.currency) : '未计价'} |`,
+        `| ${group.provider} | ${group.model} | ${group.count} | ${unitsCell(group.units, group.unitKind)} | ${priceCell(group.unitPrice, group.currency, group.unitKind)} | ${amountCell} |`,
       )
+      // 算术**保持原样**：所有组的 amount 都进合计（非正价组的 amount 必然是 0，
+      // 而混合组里正价记录的金额必须留下 —— 合计绝不能因为这次修复而变小）。
       totals.set(group.currency, (totals.get(group.currency) ?? 0) + group.amount)
     }
     lines.push('')
     const totalText = [...totals.entries()].map(([currency, amount]) => money(amount, currency)).join('，')
     lines.push(
-      `合计：${totalText}（只含已计价部分${unpriced > 0 ? `；另有 ${unpriced} 个型号未计价，实际花费高于此数` : ''}）`,
+      `合计：${totalText}（只含已计价部分${unpriced > 0 ? `；另有 ${unpriced} 个型号未计价，实际花费高于此数` : ''}${zeroPriced > 0 ? `；另有 ${zeroPriced} 个型号单价为 0，其金额不可信` : ''}）`,
+    )
+  }
+  if (zeroPriced > 0) {
+    lines.push('')
+    // ⚠ 措辞必须与实现一致：零价组的金额是"记录里已存的数"（通常为 0），而本次修复
+    // **不改算术、只改标注** —— 所以不能说"未计入合计"（同一型号若还有正价记录，
+    // 那些金额是照常计入的）。这里只声明"这一行的数字不可信"，并指出该去哪儿改。
+    lines.push(
+      `⚠ 有 ${zeroPriced} 个型号的记录单价是 **0**：0 不是价，是"宣称免费"，所以这一行的金额不可信。` +
+        `已经发生的记录无法回溯定价，但新调用会按现行单价表记账。` +
+        `请核对 插件页 → gpt-CN → 配置卡 的单价表：填真实单价，或填 null（= 未计价，报表会显式写「未计价」）。`,
     )
   }
   const asOf = [...new Set(Object.values(pricing).map((entry) => entry?.asOf).filter((value) => typeof value === 'string' && value.length > 0))]
@@ -643,19 +905,48 @@ export function renderCostReport({ records, config, scope = 'session', sessionId
     .filter(([model, entry]) => usedModels.has(model) && !isPriced(entry))
     .map(([model]) => model)
   lines.push('')
-  // 读图子代理这一格必须一直交代清楚，它是本报表**唯一的结构性缺口**：
-  // ask_glm / ask_qwen 的 token 由宿主 llm 服务经 pi-ai 路由产生，
-  // 而 DSH 只在工具层给插件留了钩子（ctx.tools.guard），**没有请求级钩子** ——
-  // `ctx.llm.stream()` 是"进入提供方适配器的唯一受支持路径"，插件拦不到它内部的调用。
-  // 所以这一格不能算，只能如实说"没算"，并告诉用户去哪儿看真实用量。
-  // 2026-10-15 核对：@deepseek-ai/dsh-llm 的 README.zh.md 明确写了这一点。
+  // 读图子代理的 token：**2026-10-17 起已经记账**（core/reader-usage.mjs 订阅 llm/stream
+  // 的 waterfall 观察 usage 分片）。之前这里只能自曝"未计入"，根因是当时判断
+  // "插件没有请求级钩子"——该结论在 0.2.0-rc.2 已不成立，见 reader-usage.mjs 顶部实测依据。
+  //
+  // 仍然要如实交代两件事：① 记的是 token 不是钱（单价表里 glm-4.6v / qwen3-vl-plus 若未填价，
+  // 金额仍是 null）；② 报表统计的是**观测到的**用量，插件加载之前发生的调用不在内。
   const readerRoute = config?.enableAskQwen === true ? 'qwen-vl' : config?.enableAskGlm === true ? 'glm' : '未开启'
-  lines.push(`单价表：${Object.keys(pricing).join('、')}${asOf.length > 0 ? `（取价日期 ${asOf.join('、')}）` : ''}。`)
+  // 单价表行：verbose 列出全部键名（排查用）；紧凑只说"几个型号 + 取价日期"（键名可以查配置卡）。
   lines.push(
-    `⚠ 读图子代理（ask_glm / ask_qwen，当前路由：${readerRoute}）的 token **未计入本报表**：` +
-      `它们由宿主 llm 服务经 pi-ai 路由计费，插件层面没有请求级钩子，拦不到用量。` +
-      `这一格的金额请以智谱 / 百炼控制台的用量统计为准（单价表里的 glm-4.6v 与 qwen3-vl-plus 只是给你对照用的价）。`,
+    verbose
+      ? `单价表：${Object.keys(pricing).join('、')}${asOf.length > 0 ? `（取价日期 ${asOf.join('、')}）` : ''}。`
+      : `单价表：${Object.keys(pricing).length} 个型号${asOf.length > 0 ? `（取价 ${asOf.join('/')}）` : ''}。`,
   )
+  const readerObserved = Number(readerUsage?.observed ?? 0)
+  const readerRoutes = Array.isArray(readerUsage?.routes) ? readerUsage.routes : []
+  if (readerObserved > 0) {
+    const detail = readerRoutes
+      .map((r) => `${r.provider}/${r.model} ${r.calls} 次 ${r.tokens} token`)
+      .join('；')
+    const unpricedReaders = readerRoutes.filter((r) => {
+      const entry = pricing[r.model]
+      return !isPriced(entry)
+    })
+    lines.push(
+      `读图子代理 token：✅ **已记账** ${readerObserved} 次调用` +
+        (detail.length > 0 ? `（${detail}）` : '') +
+        (unpricedReaders.length > 0
+          ? `；⚠ 其中 ${unpricedReaders.map((r) => '`' + r.model + '`').join('、')} 在单价表里未计价，金额仍为「未计价」——请按官网填入 ktoken 的 inputPrice/outputPrice`
+          : ''),
+    )
+    if (verbose) {
+      lines.push('> 口径：input + cacheRead + cacheWrite + output（与宿主 token-meter 的 usageTokens() 一致）；只观测读图员 provider，主代理与其它子代理由宿主自己计量。插件加载前发生的调用不在统计内。')
+    }
+  } else if (verbose) {
+    lines.push(
+      `读图子代理（ask_glm / ask_qwen，当前路由：${readerRoute}）尚未观测到调用：` +
+        `本插件已订阅宿主 llm 的 \`llm/stream\` waterfall 并在 usage 分片上记账，` +
+        `但统计从插件加载起算——此前发生的调用不在内。`,
+    )
+  } else {
+    lines.push(`读图子代理（ask_glm / ask_qwen，当前路由：${readerRoute}）token：尚无观测记录（记账从插件加载起算）`)
+  }
   if (unpricedNames.length > 0) {
     lines.push(
       `未计价型号：${unpricedNames.join('、')} —— 内置表里这些是「未计价」（不是 0 元）。请按各自官网价格在 Config.pricing 里填；每条单价的 source 字段就是取价页面。`,
@@ -668,10 +959,10 @@ export function renderCostReport({ records, config, scope = 'session', sessionId
 
 /**
  * 渲染健康报表（media_report action=health）。
- * @param {object} options - keyEntries / health / probes / llmProviders / config。
+ * @param {object} options - keyEntries / health / probes / llmProviders / config / switches / readerConflict / verbose。
  * @returns {string}
  */
-export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmProviders, config, switches = {}, readerConflict = false }) {
+export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmProviders, config, switches = {}, readerConflict = false, verbose = false }) {
   const lines = []
   lines.push('# 链路健康')
   lines.push('')
@@ -685,6 +976,8 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
    */
   const claimedAdapters = new Set()
   const knownProviders = Array.isArray(llmProviders) ? llmProviders : undefined
+  /** 紧凑模式下的读图路由摘要（收集后压成一行）。 */
+  const routeNotes = []
   /** 读图子代理的厂商路由（llm-pi-ai 的 providers 行）与填写位置。 */
   const READER_ROUTES = {
     ask_glm: { provider: 'glm', where: 'llm-pi-ai providers.glm', settings: '设置 → 模型 → GLM 行' },
@@ -703,9 +996,15 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
     if (readerRoute !== undefined) {
       const routeOk = knownProviders === undefined ? undefined : knownProviders.includes(readerRoute.provider)
       capability[spec.capability] = switchOn && status.configured && routeOk !== false
-      lines.push('')
-      lines.push(`读图路由（${spec.capability} → ${readerRoute.where}）：` + (routeOk === undefined ? '无法确认' : routeOk ? '✅ 已注册' : `❌ 未注册（检查 ${readerRoute.where} 配置）`))
+      // 紧凑模式把两条读图路由压成一行（每条 ~90 B 的样板）；verbose 保留逐行原文。
+      if (verbose) {
+        lines.push('')
+        lines.push(`读图路由（${spec.capability} → ${readerRoute.where}）：` + (routeOk === undefined ? '无法确认' : routeOk ? '✅ 已注册' : `❌ 未注册（检查 ${readerRoute.where} 配置）`))
+      } else {
+        routeNotes.push(`${spec.capability}→${readerRoute.provider} ` + (routeOk === undefined ? '?' : routeOk ? '✅' : `❌（查 ${readerRoute.where}）`))
+      }
       // 两个读图子代理互斥：同时开启时只有 GLM 生效，明确说清楚，避免"我开了为什么没用"。
+      // ⚠ 这是**告警**，紧凑模式也必须出现。
       if (switchOn && routeOk !== false && status.configured && knownProviders !== undefined) {
         const other = spec.capability === 'ask_glm' ? 'ask_qwen' : 'ask_glm'
         if (switches[other] === false && readerConflict === true) lines.push(`⚠ 与 ${other} 同时处于开启状态：按互斥规则当前 ${spec.capability} 生效、${other} 被压制。请在 插件页 → gpt-CN → 配置卡 关掉其中一个。`)
@@ -716,10 +1015,21 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
     }
   }
   lines.push('')
-  lines.push('## 当前能力可用性')
-  for (const [cap, ok] of Object.entries(capability)) {
-    const switchedOn = switches[cap] !== false
-    lines.push('- ' + cap + ': ' + (switchedOn === false ? '⛔ 已在设置中关闭' : ok ? '✅ 可用' : '❌ 当前不可用'))
+  if (!verbose && routeNotes.length > 0) {
+    lines.push('读图路由：' + routeNotes.join(' ｜ '))
+    lines.push('')
+  }
+  // 「当前能力可用性」是上面那张表的口语版；紧凑模式下不重复（省 ~230 B/次），
+  // 但**任何"不可用"的结论都必须在紧凑模式里也看得见** —— 所以下面只挑异常的报。
+  const unavailable = Object.entries(capability).filter(([cap, ok]) => switches[cap] !== false && !ok)
+  if (verbose) {
+    lines.push('## 当前能力可用性')
+    for (const [cap, ok] of Object.entries(capability)) {
+      const switchedOn = switches[cap] !== false
+      lines.push('- ' + cap + ': ' + (switchedOn === false ? '⛔ 已在设置中关闭' : ok ? '✅ 可用' : '❌ 当前不可用'))
+    }
+  } else if (unavailable.length > 0) {
+    lines.push('⚠ 不可用：' + unavailable.map(([cap]) => cap).join('、') + '（加 verbose=true 看逐项原因）')
   }
 
   // ---- 单价表自检（2026-10-15 加）----
@@ -732,6 +1042,7 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
   const modelRows = [
     ['qwen_draw（制图）', plainValue(config?.qwenModel)],
     ['seedance_video（出片）', plainValue(config?.seedanceModel)],
+    ['video_gen（百炼出片）', plainValue(config?.videoModel)],
   ]
   /** 单价表里的单位是机器口径（image / second），给人看要说人话。 */
   const UNIT_LABEL = { image: '张', second: '秒', call: '次' }
@@ -754,14 +1065,18 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
     lines.push('- 自检：❌ 发现 ' + pricingIssues.length + ' 个问题：')
     for (const issue of pricingIssues) lines.push('  - ' + issue)
   }
-  lines.push('')
-  lines.push('> 探测结果带 5 分钟缓存，只用于提示与建议，绝不据此自动改变行为。')
+  // 探测缓存说明：纯样板，紧凑模式下省略（结论本身已经在表格里）。
+  if (verbose) {
+    lines.push('')
+    lines.push('> 探测结果带 5 分钟缓存，只用于提示与建议，绝不据此自动改变行为。')
+  }
   return lines.join('\n')
 }
 
 function adapterOfCapability(capability) {
   if (capability === 'qwen_draw') return 'dashscope-image'
   if (capability === 'seedance_video') return 'ark-video'
+  if (capability === 'dashscope_video') return 'dashscope-video'
   return undefined
 }
 

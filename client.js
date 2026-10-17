@@ -7,7 +7,7 @@
  * getSnapshot / subscribe / mutate），不在客户端折叠会话事件。
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-mm-models',
+  id: 'dsh-mm-models',
   factory(require) {
     const React = require('react')
     const h = React.createElement
@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
         : (initial) => [typeof initial === 'function' ? initial() : initial, () => {}]
     const useEffect = typeof React.useEffect === 'function' ? React.useEffect : () => {}
 
-    const PACKAGE = '@local/dsh-mm-models'
+    const PACKAGE = 'dsh-mm-models'
     const ENTRY = 'mm-models' // Host profile 条目 id（cordis.patch.yml 的行 id）
     const NS = 'mm-models.settings'
 
@@ -112,8 +112,11 @@ window.__ModuleLoader__.load({
       ['enableAskGlm', 'boolean', 'switches'],
       ['enableAskQwen', 'boolean', 'switches'],
       ['blockMainAgentNativeVision', 'boolean', 'switches'],
+      ['blockSubagentNativeVision', 'boolean', 'switches'],
+      ['blockSubagentVideoSpend', 'boolean', 'switches'],
       ['enableQwenDraw', 'boolean', 'switches'],
       ['enableSeedanceVideo', 'boolean', 'switches'],
+      ['enableVideoGen', 'boolean', 'switches'],
       ['enableMediaTask', 'boolean', 'switches'],
       ['enableMediaReport', 'boolean', 'switches'],
       ['attachResultImages', 'boolean', 'switches'],
@@ -133,6 +136,9 @@ window.__ModuleLoader__.load({
       ['dashscopeBase', 'text', 'media'],
       ['outDir', 'text', 'media'],
       ['seedanceModel', 'text', 'media'],
+      ['videoModel', 'text', 'media'],
+      ['dashscopeWorkspaceId', 'text', 'media'],
+      ['dashscopeVideoBase', 'text', 'media'],
       ['arkBase', 'text', 'media'],
       ['videoOutDir', 'text', 'media'],
       ['taskTimeoutMs', 'number', 'task'],
@@ -142,6 +148,7 @@ window.__ModuleLoader__.load({
       ['videoCostLimitCNY', 'number', 'task'],
       ['videoSessionCostLimitCNY', 'number', 'task'],
       ['requireSpendConfirm', 'boolean', 'task'],
+      ['noConfirmUnderCNY', 'number', 'task'],
       ['maxCallsPerTurn', 'number', 'task'],
       ['callBudgetIdleResetMs', 'number', 'task'],
       ['promptSection', 'boolean', 'misc'],
@@ -248,8 +255,12 @@ window.__ModuleLoader__.load({
         'field.enableAskGlm': '允许 ask_glm（GLM 读图子代理）',
         'field.enableAskQwen': '允许 ask_qwen（Qwen-VL 读图子代理）',
         'field.blockMainAgentNativeVision': '屏蔽主代理原生读图（强制走读图子代理）',
+        'field.blockSubagentNativeVision': '屏蔽通用子代理原生读图（读图员豁免）',
+        'field.blockSubagentVideoSpend': '禁止子代理出片（出图 / 读图不受影响）',
+        'hint.subagentVision': '⚠ 前提：读图员开着，且读图员行 maxDepth ≥ 2，否则子代理会失去看图途径。读图员豁免名单取自契约文件；认不出读图员时本开关对子代理不生效（见 media_report 健康报告）。',
         'field.enableQwenDraw': '允许 qwen_draw（Qwen 制图）',
         'field.enableSeedanceVideo': '允许 seedance_video（Seedance 出片）',
+        'field.enableVideoGen': '允许 video_gen（百炼出片：可灵 / 万相）',
         'field.enableMediaTask': '允许 media_task（重查 / 补下载）',
         'field.enableMediaReport': '允许 media_report（成本 / 健康）',
         'field.attachResultImages': '把生成的图片附回模型上下文（默认关）',
@@ -301,6 +312,9 @@ window.__ModuleLoader__.load({
         'field.dashscopeBase': 'DashScope 基址',
         'field.outDir': '图片目录',
         'field.seedanceModel': 'Seedance 模型',
+        'field.videoModel': '百炼视频模型 id',
+        'field.dashscopeWorkspaceId': '百炼业务空间 ID（WorkspaceId）',
+        'field.dashscopeVideoBase': '百炼视频基址（留空自动拼）',
         'field.arkBase': 'Ark 基址',
         'field.videoOutDir': '视频目录',
         'field.taskTimeoutMs': '图片任务超时（ms）',
@@ -311,6 +325,7 @@ window.__ModuleLoader__.load({
         'field.videoCostLimitCNY': '单次出片花费上限（元，0 = 不限）',
         'field.videoSessionCostLimitCNY': '会话累计花费上限（元，0 = 不限）',
         'field.requireSpendConfirm': '付费前必须确认金额（推荐开）',
+        'field.noConfirmUnderCNY': '小额免确认阈值（元，0 = 一律要确认）',
         'field.callBudgetIdleResetMs': '空闲重置窗口（毫秒）',
         'field.promptSection': '注册分工提示词段落',
         'field.degradeToText': '读图失败给替代指引',
@@ -326,6 +341,7 @@ window.__ModuleLoader__.load({
         'hint.attachImages': '默认关：出图后只把「路径 + 规格」回给模型。打开后会把图片本身作为内容块附回上下文，由模型自己看图。注意：数 MB 的大图会触发视觉路由的上传/内联工作，失败会让整轮报 TRANSPORT；而且多数路由对单图有硬 token 上限，本来就会降采样——所以默认关。',
         'hint.keys': '密钥保存在 DSH 官方凭据文件里（<harness home>/.credentials.yaml），不进 profile 配置；写盘即重载，保存后下一次调用就用新 key，无需重启。已存的值不会显示（凭据服务按设计不回显），只报「是否已配置 + 来自哪一层」。凭据里没存过时，回退到下面的引用名 → 环境变量 / ~/.dsh/.env。',
         'hint.seedance': 'Ark 需先开通 Seedance / 提供接入点；未接通前建议保持关闭。',
+        'hint.video': '百炼出片复用 DASHSCOPE_API_KEY：先填业务空间 ID，再到百炼控制台「模型市场」搜 kling 点「立即开通」；未接通前保持关闭。',
       },
       en: {
         title: 'gpt-CN (read / draw / video)',
@@ -346,8 +362,12 @@ window.__ModuleLoader__.load({
         'field.enableAskGlm': 'Allow ask_glm (GLM image reader)',
         'field.enableAskQwen': 'Allow ask_qwen (Qwen-VL image reader)',
         'field.blockMainAgentNativeVision': 'Block native image reading (force the reader subagent)',
+        'field.blockSubagentNativeVision': 'Block native image reading for general subagents (readers exempt)',
+        'field.blockSubagentVideoSpend': 'Block subagent video generation (images and readers unaffected)',
+        'hint.subagentVision': '⚠ Requires a reader to be on and its row to have maxDepth ≥ 2, otherwise subagents lose all image access. The reader exemption list comes from the contract file; if readers cannot be identified the switch is not applied to subagents (see media_report health).',
         'field.enableQwenDraw': 'Allow qwen_draw (Qwen images)',
         'field.enableSeedanceVideo': 'Allow seedance_video (Seedance video)',
+        'field.enableVideoGen': 'Allow video_gen (Bailian video: Kling / Wan)',
         'field.enableMediaTask': 'Allow media_task (re-query / download)',
         'field.enableMediaReport': 'Allow media_report (cost / health)',
         'field.attachResultImages': 'Attach generated images back into the model context (default off)',
@@ -366,6 +386,9 @@ window.__ModuleLoader__.load({
         'field.dashscopeBase': 'DashScope base URL',
         'field.outDir': 'Image directory',
         'field.seedanceModel': 'Seedance model',
+        'field.videoModel': 'Bailian video model id',
+        'field.dashscopeWorkspaceId': 'Bailian workspace ID',
+        'field.dashscopeVideoBase': 'Bailian video base URL (blank = auto)',
         'field.arkBase': 'Ark base URL',
         'field.videoOutDir': 'Video directory',
         'field.taskTimeoutMs': 'Image task timeout (ms)',
@@ -376,6 +399,7 @@ window.__ModuleLoader__.load({
         'field.videoCostLimitCNY': 'Per-call video spend cap (CNY, 0 = unlimited)',
         'field.videoSessionCostLimitCNY': 'Per-session video spend cap (CNY, 0 = unlimited)',
         'field.requireSpendConfirm': 'Require spend confirmation (recommended)',
+        'field.noConfirmUnderCNY': 'Skip confirmation under (CNY, 0 = always confirm)',
         'field.callBudgetIdleResetMs': 'Idle reset window (ms)',
         'field.promptSection': 'Register division-of-labor prompt section',
         'field.degradeToText': 'Reader-failure fallback guidance',
@@ -416,12 +440,19 @@ window.__ModuleLoader__.load({
         'key.src.dashscope': 'Alibaba Bailian DashScope API key',
         'key.src.dashscopeHint': 'for qwen_draw images + ask_qwen reading',
         'key.src.ark': 'Volcengine Ark API key',
+        // 2026-10-15 补：这两个键中文 DICT 里有、英文段里漏了，
+        // 于是英文界面直接渲染裸 i18n key，而"必须开通模型否则 404"这条**关键排障指引**
+        // 在英文下完全失效。现在中英键集合相等（client-card.test.mjs 里有断言钉住）。
+        'key.src.arkActivate': '② Activate the model (required)',
+        'key.src.arkActivateHint':
+          'A key alone is not enough: the model must be activated in the Ark console, otherwise every call returns 404',
         'key.src.arkHint': 'for seedance_video',
         'key.src.zhipu': 'Zhipu BigModel API key',
         'key.src.zhipuHint': 'for ask_glm reading',
         'key.src.deepseek': 'DeepSeek platform API key',
         'key.src.deepseekHint': 'for the main model (configured in Settings > Models, not here)',
         'hint.seedance': 'Requires Seedance activation / an Ark endpoint; keep off until it works.',
+        'hint.video': 'Bailian video reuses DASHSCOPE_API_KEY: set the workspace ID, then activate Kling in the Model Studio marketplace. Keep off until it works.',
       },
     }
 
@@ -621,6 +652,30 @@ window.__ModuleLoader__.load({
       sourceRow: { display: 'flex', alignItems: 'baseline', gap: '6px', flexWrap: 'wrap' },
       sourceLink: { fontSize: '12px', color: 'var(--dsw-alias-state-business-primary)', textDecoration: 'underline' },
       sourceHint: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' },
+      // ---- 密钥行的样式（2026-10-15 补）----
+      // 这五个键此前**只在 JSX 里被引用、从未定义**：`style={undefined}` 不报错，
+      // 所以配置卡能渲染，但密钥行会退化成"输入框与三个按钮纵向堆叠"，徽标也没有颜色。
+      // 教训：样式键名写错/漏定义是**静默**的，React 不会提醒 —— 改样式表时要顺带
+      // 在测试里断言"被引用的每个样式键都有定义"（client-card.test.mjs 已加静态自检）。
+      keyRow: { display: 'flex', flexDirection: 'column', gap: '6px' },
+      secretRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
+      secretInput: {
+        flex: '1 1 220px',
+        width: 'auto',
+        minWidth: 0,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      },
+      // ⚠ 必须是**对象**而不是函数：使用点是 `style: styles.miniBtn`（不是 `miniBtn(disabled)`），
+      // 写成函数会让 React 收到非法 style。禁用态交给原生 `disabled` 属性表达。
+      miniBtn: {
+        padding: '4px 10px',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        borderRadius: '6px',
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-primary)',
+        fontSize: '12px',
+      },
+      badgeOn: { fontSize: '12px', color: 'var(--dsw-alias-state-success-primary, #15803d)' },
     }
 
     function FieldControl(props) {
@@ -629,7 +684,9 @@ window.__ModuleLoader__.load({
       /** 开关行的补充说明：Seedance 未接通、读图子代理二选一 / 当前未开、原生读图屏蔽。 */
       const hint = (on) => {
         if (spec.name === 'enableSeedanceVideo') return t('hint.seedance')
+        if (spec.name === 'enableVideoGen') return t('hint.video')
         if (spec.name === 'blockMainAgentNativeVision') return t('hint.nativeVision')
+        if (spec.name === 'blockSubagentNativeVision') return t('hint.subagentVision')
         if (spec.name === 'attachResultImages' || spec.name === 'maxAttachImageBytes') return t('hint.attachImages')
         if (READER_FIELDS.has(spec.name)) return on ? t('hint.reader') : t('hint.readerOff')
         return undefined

@@ -8,7 +8,7 @@
  *   ② 花钱闸门语义——被削的两个确认参数在**行为**上分毫未变；
  *   ③ 模型信息量——描述短了，但模型做错时能不能从**错误文案**里拿到同样的指引（信息不能凭空消失）；
  *   ④ 开关→掩码——签名短路不许吞掉配置变更（多 agent / 多轮 / 双向）；
- *   ⑤ guard 拦截行为——四条守卫的判定结论不受"减字节"影响；
+ *   ⑤ guard 拦截行为——六条守卫的判定结论不受"减字节"影响；
  *   ⑥ 描述变更后仍能真正出片——用真参数跑完整条提交/轮询/落盘链路。
  *
  * 运行：node --import ./tests/register.mjs ./tests/verify-functionality.mjs
@@ -86,7 +86,7 @@ await test('① 削减字节后，schema 的**功能面**一个都没少（与�
   const { tools } = await setup({ enableSeedanceVideo: true })
 
   // 1) 四个工具都还在
-  assert.deepEqual(Object.keys(tools).sort(), ['media_report', 'media_task', 'qwen_draw', 'seedance_video'])
+  assert.deepEqual(Object.keys(tools).sort(), ['media_report', 'media_task', 'qwen_draw', 'seedance_video', 'video_gen'])
 
   // 2) 与优化前的提交**逐字对比参数结构**：参数集合 / 类型 / required / enum / 输出契约
   //    为什么这么做而不是手写期望值：手写期望值会把我对设计的误解写成"规格"
@@ -259,7 +259,7 @@ await test('④ 签名短路：方向、规模、多 agent 都不会吞掉配置
   const agents = [makeAgent('a'), makeAgent('b'), makeAgent('c')]
   for (const agent of agents) created({ agent })
   for (const agent of agents) {
-    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'seedance_video'], agent.id + ' 创建时掩码不对')
+    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'], agent.id + ' 创建时掩码不对')
   }
 
   // 稳态：3 个 agent × 3 次 tick，一次都不该重复贴
@@ -273,20 +273,20 @@ await test('④ 签名短路：方向、规模、多 agent 都不会吞掉配置
   live.enableSeedanceVideo = true
   tick()
   for (const agent of agents) {
-    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen'], agent.id + ' 没跟上开关变更（多 agent 漏同步）')
+    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'video_gen'], agent.id + ' 没跟上开关变更（多 agent 漏同步）')
   }
 
   // 再翻转（反向）→ 仍必须跟上
   live.enableSeedanceVideo = false
   tick()
   for (const agent of agents) {
-    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'seedance_video'], agent.id + ' 反向变更没跟上')
+    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'], agent.id + ' 反向变更没跟上')
   }
 
   // 新增 agent（运行中出现）→ 立刻拿到当前掩码
   const late = makeAgent('late')
   created({ agent: late })
-  assert.deepEqual(applied.get('late').at(-1), ['ask_glm', 'ask_qwen', 'seedance_video'], '新 agent 没拿到当前掩码')
+  assert.deepEqual(applied.get('late').at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'], '新 agent 没拿到当前掩码')
 
   // 连续快速翻转：每次**真实变化**都必须被跟进、且最后一次必须赢。
   //
@@ -295,17 +295,17 @@ await test('④ 签名短路：方向、规模、多 agent 都不会吞掉配置
   //      所以断言必须是"末态掩码与末态开关一致"，而不是"翻转次数 = 贴掩码次数"。
   //   2. 必须记录**起点状态**，断言才严密（否则可能拿一个错误的状态当期望值）。
   const clipCountBefore = applied.get('a').length
-  let expected = ['ask_glm', 'ask_qwen', 'seedance_video'] // 当前 live.enableSeedanceVideo === false
+  let expected = ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'] // 当前 live.enableSeedanceVideo === false
   let flips = 0
   for (let i = 0; i < 6; i += 1) {
     live.enableSeedanceVideo = i % 2 === 0 // true,false,true,false,true,false
-    expected = live.enableSeedanceVideo ? ['ask_glm', 'ask_qwen'] : ['ask_glm', 'ask_qwen', 'seedance_video']
+    expected = live.enableSeedanceVideo ? ['ask_glm', 'ask_qwen', 'video_gen'] : ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen']
     tick()
     flips += 1
     assert.deepEqual(applied.get('a').at(-1), expected, `第 ${flips} 次翻转（值=${live.enableSeedanceVideo}）后掩码不对`)
   }
   assert.equal(live.enableSeedanceVideo, false, '末态应是 false')
-  assert.deepEqual(applied.get('a').at(-1), ['ask_glm', 'ask_qwen', 'seedance_video'], '末态掩码必须与末态开关一致')
+  assert.deepEqual(applied.get('a').at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'], '末态掩码必须与末态开关一致')
   // 这一串翻转里每次值都真的变了 → 每次都该被跟进（数量等于翻转次数）
   assert.equal(applied.get('a').length - clipCountBefore, flips, '每次真实变化都该被跟进')
 
@@ -316,14 +316,16 @@ await test('④ 签名短路：方向、规模、多 agent 都不会吞掉配置
 })
 
 // ================================================================ ⑤ guard 拦截行为
-await test('⑤ 四条 guard 的拦截判定不受减字节影响', async () => {
+await test('⑤ 六条 guard 的拦截判定不受减字节影响', async () => {
   // ⚠ 注意开关前置条件：blockMainAgentNativeVision=true 时读图守卫**按设计**永不拦截
   //   （主代理自己看不了图，那时派读图员是唯一正确的做法）。
   //   所以要分两种配置各测一遍，否则测的是"开关关掉了守卫"，而不是守卫本身。
   const tmp = await makeTmp()
   const fake = createFakeCtx({ credentials: { DASHSCOPE_API_KEY: 'k', ARK_API_KEY: 'k' }, llmProviders: ['glm'] })
   apply(fake.ctx, makeConfig(tmp, { enableAskGlm: true, blockMainAgentNativeVision: false }))
-  const [toolSwitch, readerGuard, imageReadGuard, delegationGuard] = fake.guards.map((entry) => entry.fn)
+  // 顺序即契约（tests/run.mjs 里对 guard 数量与顺序有显式断言）：
+  // 工具开关 → 读图守卫 → 原生读图兜底 → 图片路径守卫 → 视觉委派守卫
+  const [toolSwitch, readerGuard, nativeVisionGuard, imageReadGuard, delegationGuard] = fake.guards.map((entry) => entry.fn)
 
   const agent = { options: { provider: 'deepseek-account', model: 'deepseek-flash' }, session: { id: 's', log: [] } }
   const execOf = (name, args, log = []) => ({ name, args, agent: { ...agent, session: { id: 's', log } } })
@@ -341,6 +343,11 @@ await test('⑤ 四条 guard 的拦截判定不受减字节影响', async () => 
   assert.equal(readerGuard(execOf('ask_glm', {}, logText)), undefined, '纯文本历史不该拦读图员')
   assert.equal(readerGuard(execOf('ask_qwen', {}, [])), undefined, '空日志不该拦读图员')
 
+  // ②b 原生读图兜底（2026-10-16 加）：blockMainAgentNativeVision=false 时不该拦；
+  //     这是"行为级兜底"，即使掩码因重新装配丢失也必须拦得住 —— 见下一段的分支用例。
+  assert.equal(nativeVisionGuard(execOf('read_image', { file_path: 'C:/x/a.png' })), undefined, '开关关闭时不该拦 read_image')
+  assert.equal(nativeVisionGuard(execOf('read', { file_path: 'C:/x/a.png' })), undefined, '这条守卫只管 read_image')
+
   // ③ 图片路径守卫：read 读 png 被拦并指路；read 读 txt 放行
   const imageVerdict = imageReadGuard(execOf('read', { file_path: 'C:/x/a.png' }))
   assert.ok(typeof imageVerdict === 'string' && imageVerdict.includes('ask_glm'), '应指路到读图员：' + imageVerdict)
@@ -356,6 +363,14 @@ await test('⑤ 四条 guard 的拦截判定不受减字节影响', async () => 
   apply(blocked.ctx, makeConfig(await makeTmp(), { enableAskGlm: true, blockMainAgentNativeVision: true }))
   const blockedReaderGuard = blocked.guards[1].fn
   assert.equal(blockedReaderGuard(execOf('ask_glm', {}, logWithImage)), undefined, '原生读图被屏蔽时必须放行读图员')
+  // 同一配置下：主代理的 read_image 必须被**行为级**拦住，且文案指向读图员。
+  const blockedVisionGuard = blocked.guards[2].fn
+  const visionVerdict = blockedVisionGuard(execOf('read_image', { file_path: 'C:/x/a.png' }))
+  assert.ok(typeof visionVerdict === 'string', '屏蔽原生读图时该守卫必须拦下 read_image：' + String(visionVerdict))
+  assert.ok(visionVerdict.includes('ask_glm'), '要指向可用的读图员：' + visionVerdict)
+  // 读图员自己调用 read_image 必须放行（否则读图员会瞎）
+  const readerExec = { name: 'read_image', args: { file_path: 'C:/x/a.png' }, agent: { ...agent, options: { provider: 'glm', model: 'glm-4.6v', subagentDepth: 1 } } }
+  assert.equal(blockedVisionGuard(readerExec), undefined, '读图员的 read_image 必须放行')
 })
 
 // ================================================================ ⑥ 真实出片链路

@@ -1,5 +1,5 @@
 {
-  "name": "@local/dsh-mm-models",
+  "name": "dsh-mm-models",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -33,17 +33,23 @@
     "cordis.patch.yml"
   ],
   "peerDependencies": {
-    "@deepseek-ai/dsh-credentials": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-storage-domain": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-credentials": "^0.2.1-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "^0.2.1-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.1",
     "@deepseek-ai/schemastery": "^3.18.0",
     "zod": "^4.0.0"
+  },
+  "engines": {
+    "dsh": ">=0.2.1-rc.1 <0.3.0-0"
   },
   "devDependencies": {
     "@deepseek-ai/schemastery": "^3.18.0"
   },
   "scripts": {
-    "test": "node --import ./tests/register.mjs ./tests/run.mjs && node tests/client-card.test.mjs && node tests/_card-mutex.test.mjs && node --import ./tests/register.mjs ./tests/verify-functionality.mjs",
+    "test": "node --import ./tests/register.mjs ./tests/run.mjs && node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs && node tests/client-card.test.mjs && node tests/_card-mutex.test.mjs && node --import ./tests/register.mjs ./tests/verify-functionality.mjs && node --import ./tests/register.mjs ./tests/video-gen.test.mjs",
+    "test:video": "node --import ./tests/register.mjs ./tests/video-gen.test.mjs",
+    "probe:video": "node tests/probe-dashscope-video.mjs",
+    "test:safety": "node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs",
     "test:verify": "node --import ./tests/register.mjs ./tests/verify-functionality.mjs",
     "test:mutation": "node tests/_mutation-check.mjs",
     "test:perf": "node --import ./tests/register.mjs ./tests/_perf-bench.mjs",

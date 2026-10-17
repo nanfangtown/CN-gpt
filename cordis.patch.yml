@@ -1,5 +1,5 @@
 # ============================================================================
-# @local/dsh-mm-models bundle patch
+# dsh-mm-models bundle patch
 # 规划：dsh-创作模式插件-规划.txt v0.7（[7] 最终架构 / [8.2] 配置样例）
 #
 # 三行：
@@ -36,6 +36,16 @@
             input: [text, image]
             contextWindow: 200000
             maxTokens: 32768
+          # 2026-10-17 加：读图员换到 glm-5.3-flash。
+          # ⚠ 只改 tool-subagent-glm 的 agentOptions 是不够的 —— provider 的模型白名单
+          # 不含这个 id 时，spawn 会直接报
+          #   `pi-ai provider "glm" has no configured model "glm-5.3-flash"`
+          # （实测踩到）。两处必须同时改：这里是"允不允许调"，下面是"读图员用哪个"。
+          # 规格取自官方文档：上下文 1M，最大输出 128K，原生多模态（图像/视频/文本/文件）。
+          - id: glm-5.3-flash
+            input: [text, image]
+            contextWindow: 1000000
+            maxTokens: 128000
       # ask_qwen 用的百炼 Qwen-VL 路由（2026-10-12 实跑确证：qwen3-vl-plus 真读图）。
       qwen-vl:
         displayName: Qwen-VL (百炼·视觉)
@@ -48,59 +58,160 @@
             contextWindow: 131072
             maxTokens: 32768
 
-# ---- 读图子代理的共享定义（YAML 锚点：两个读图员必须完全一致）----
-# 2026-10-13 起读图子代理被"物理阉割"：toolFilter 只放行读图工具。
-# 以前放行 read / glob / grep / web_search，结果主模型会把"看看这个仓库""查一下配置"
-# 这类本地活派给子代理，而子代理看不到本地环境，只能反复试错烧上下文。
-# 现在除图片之外它没有任何工具可用，从物理上切断环境探查。
-#
-# 锚点定义在第一个读图行内部（不放顶层，避免多出一个会被当成 patch 条目的键）；
-# 第二个读图行用合并键 << 引用，两行的 persona 与 toolFilter 因而永远是同一份。
-
 # ---- 行2：ask_glm 视觉阅读子代理（只读，零代码）----
 - insert:
+    # ---- 读图/执行/资料三个子代理的 preset（2026-10-17 迁移）----
+    #
+    # ⚠ DSH **0.2.1** 起，`dsh-tool-subagent` 不再接受 persona / toolFilter /
+    #   backgroundMode / enableRunInBackground。带着这些键加载会直接抛：
+    #     "tool-subagent: persona is no longer supported; configure persona and tool
+    #      plugins in an Agent Preset and select it with agentPreset (spawn only)"
+    #   —— 这就是升级后 ask_glm / ask_qwen / subagent_code / subagent_research
+    #   全部消失的原因。
+    #
+    # 新契约：子代理的 **persona 与工具面**都写进 preset 的 `plugins` 列表，
+    # 工具行只用 `agentPreset` 引用它。preset 里**没列出的插件就没有对应工具**，
+    # 所以"窄工具面"从运行时的 toolFilter 变成了装配期的物理事实。
+
+    - id: preset-mm-reader
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: mm-reader
+        name: MM 读图员
+        description: 只读图片、不做任何环境探查的视觉阅读员
+        order: 91
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                你是视觉阅读员：只把图片、截图、图表、界面里的文字与结构转述成结论。
+                不臆测、不补全看不见的内容；看不清就明确说看不清。
+                除图片之外的一切请求（读代码、翻目录、查配置、跑命令）都超出你的能力：
+                直接回答"这需要主代理处理"，不要尝试、不要重试。
+                输出尽量短：先给结论，再给支撑细节。
+          # 工具面 = 只有 read_image：read/write/edit 全关，读图开关打开。
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: false
+              write: false
+              edit: false
+              readImage: true
+
+    - id: preset-mm-code
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: mm-code
+        name: MM 执行子代理
+        description: 命令 + 文件读写 + 查找
+        order: 92
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                你是执行子代理：只做交给你的那一件事，做完给结论与证据，不要扩大范围。
+                你的工具面是刻意收窄的（命令 + 文件读写 + 查找）；需要别的能力就明确回答
+                "这需要主代理处理"，不要绕道、不要反复试错。
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: true
+              write: true
+              edit: true
+              readImage: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            # 2026-10-17 实测：这个键在 0.2.1 是**必填**（schema 无默认值），缺了会让
+            # 整个 preset 激活失败 → subagent_code 一调用就报
+            # "tool-fs-search: invalid config: $.sampleOverCapGlobResults missing required value"。
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+
+    - id: preset-mm-research
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: mm-research
+        name: MM 资料子代理
+        description: 只读检索 + 联网取证
+        order: 93
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                你是资料子代理：只做检索与取证，给出结论 + 来源链接。
+                不要改动任何文件、不要跑命令；需要动手的活回答"这需要主代理处理"。
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: true
+              write: false
+              edit: false
+              readImage: false
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+
     - id: tool-subagent-glm
       name: '@deepseek-ai/dsh-tool-subagent'
       config:
         provider: spawn
         toolName: ask_glm
-        backgroundMode: one-shot
-        # 体积优化：关掉 run_in_background 参数（ask_glm schema 937→788 字符/请求）。
-        # 读图通常要等结果再继续；确实需要后台读图时改回 true 即可。
-        enableRunInBackground: false
-        # 规划原文写 maxDepth: 0（本意=读图员不能再委派）；实跑证明该 API 下 0 会把
-        # ask_glm 自身的 spawn 一起挡掉（"subagent depth 1 exceeds maxDepth 0"）。
-        # 正确写法是 1：允许本层子代理，深度 2 的嵌套委派被拒；再加上只读 toolFilter。
-        maxDepth: 1
-        agentOptions: { provider: glm, model: glm-4.6v }
-        # ↓ 共享定义（锚点 &readerCommon），第二个读图员用 << 合并同一份。
-        persona: &readerPersona >-
-          你是视觉阅读员：只把图片、截图、图表、界面里的文字与结构转述成结论。
-          不臆测、不补全看不见的内容；看不清就明确说看不清。
-          除图片之外的一切请求（读代码、翻目录、查配置、跑命令）都超出你的能力：
-          直接回答"这需要主代理处理"，不要尝试、不要重试。
-          输出尽量短：先给结论，再给支撑细节。
-        toolFilter: &readerTools
-          allow: [read_image]
+        # 2026-10-15 由 1 提到 **2**：maxDepth: 1 会让已委派的子代理调不动读图员
+        # （实测原文 "subagent depth 2 exceeds maxDepth 1"），只能自己 read_image。
+        maxDepth: 2
+        # 2026-10-17：glm-4.6v → glm-5.3-flash（A/B 实测更快更省，且认对了物种）。
+        agentOptions: { provider: glm, model: glm-5.3-flash }
+        # persona 与工具面在 preset-mm-reader 里（0.2.1 起唯一写法）。
+        agentPreset: mm-reader
 
     # ---- 行2b：ask_qwen 视觉阅读子代理（百炼 Qwen-VL；与 ask_glm 互斥）----
-    # 开关互斥由 Host 半侧强制：两个都开时 GLM 优先、ask_qwen 被压制（健康报表会标注冲突）；
-    # 设置卡里打开一个会自动关闭另一个。默认两者都不开，由用户在设置卡里选一个。
+    # 开关互斥由 Host 半侧强制：两个都开时 GLM 优先、ask_qwen 被压制。
     - id: tool-subagent-qwen
       name: '@deepseek-ai/dsh-tool-subagent'
       config:
         provider: spawn
         toolName: ask_qwen
-        backgroundMode: one-shot
-        enableRunInBackground: false
-        maxDepth: 1
+        maxDepth: 2
         agentOptions: { provider: qwen-vl, model: qwen3-vl-plus }
-        persona: *readerPersona
-        toolFilter: *readerTools
+        agentPreset: mm-reader
+
+    # ---- 行2c/2d：窄工具面的委派行（2026-10-16 加；2026-10-17 迁到 preset）----
+    # 工具面（文件读写 + 查找 + 命令）由 preset-mm-code 决定；这里只管路由与深度。
+    - id: tool-subagent-code
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent_code
+        maxDepth: 1
+        agentPreset: mm-code
+
+    - id: tool-subagent-research
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent_research
+        maxDepth: 1
+        agentPreset: mm-research
 
     # ---- 行3：自研插件本体 ----
+    #
+    # ⚠ 这条 config 是**出厂模板**，键集合必须与 index.js 的 Config **完全一致**。
+    #   tests/run.mjs 的「发布用 patch 与出厂 Config 对齐」用例会断言：不漏键、不多键、
+    #   不含零价，且 seedanceModel / qwenModel 在单价表里有正价。
+    #   2026-10-15 修：此前这份模板停留在"修复前"的值 —— seedanceModel 是**别名**而不是模型 id、
+    #   单价全是 0.0、超时还是 10/30 分钟，并且缺了 15 个新键（含花费闸门）。
+    #   后果不是"本机出问题"，而是**新装用户一出片就被 fail-closed 锁死 + 启动告警**，
+    #   而作者本机的 profile 早已手改好，所以一直没暴露。
     - id: mm-models
-      name: '@local/dsh-mm-models'
+      name: 'dsh-mm-models'
       config:
         # 三把 key：secret 字面值（null = 未设置）优先于 credential-ref 引用
         dashscopeApiKey: null
@@ -113,37 +224,169 @@
         dashscopeBase: https://dashscope.aliyuncs.com/api/v1
         dashscopeCompatBase: https://dashscope.aliyuncs.com/compatible-mode/v1
         arkBase: https://ark.cn-beijing.volces.com/api/v3
+        # 百炼视频（可灵/万相）：域名是 {WorkspaceId}.cn-beijing.maas.aliyuncs.com，
+        # 与上面的 dashscopeBase 不是同一个域；WorkspaceId 留空时 video_gen fail-closed。
+        dashscopeWorkspaceId: ''
+        dashscopeVideoBase: ''
+        videoModel: kling/kling-v3-video-generation
         qwenModel: qwen-image-3.0
         # 实跑确证（2026-10-12）：本账号不支持 DashScope 异步调用（403），
         # qwen-image 走同步 multimodal-generation；auto 会自动按模型选择。
         dashscopeImageMode: auto
-        seedanceModel: seedance-2.0
-        # 任务层
-        taskTimeoutMs: 600000
-        videoTimeoutMs: 1800000
+        # ⚠ 必须是方舟**真实可用的模型名或接入点 id**，不能写别名：
+        #   `doubao-seedance-<代>-<档>-<日期>`，日期后缀猜不出来，最省事是去控制台复制。
+        #   曾写 'seedance-2.0'（别名）→ 单价表查不到新模型 id 的价 → 闸门 fail-closed、
+        #   出片彻底不可用且没有任何告警。换 id 时**必须同步改 pricing 的 key**。
+        seedanceModel: doubao-seedance-2-5-260628
+        # 任务层（这几个"等待上限"是同步阻塞的，按"够用但早失败"定：超时可用 media_task 找回）
+        taskTimeoutMs: 180000
+        videoTimeoutMs: 900000
         taskPollIntervalMs: 5000
         taskPollMaxIntervalMs: 10000
         httpTimeoutMs: 60000
         queryRetries: 2
-        maxCallsPerTurn: 3
-        # 落盘
+        maxCallsPerTurn: 6
+        # 距上次生成超过它即视为"新一轮"、连续计数清零；超限文案里的秒数由它算出。
+        callBudgetIdleResetMs: 25000
+        # ---- 花费闸门（2026-10-15 事故后加：22 个误建任务、账单 ¥195.97）----
+        # 出片按次计费且提交即扣费，所以默认不是 0（不限）：放开限制必须是个显式动作。
+        videoCostLimitCNY: 10
+        videoSessionCostLimitCNY: 30
+        requireSpendConfirm: true
+        # 小额免确认（2026-10-16 加）：预估 ≤ 这个数就直接提交、不必复述金额。
+        # 只跳过"复述金额"这一层，单次/会话上限与"未计价 fail-closed"照旧生效。
+        # 默认 1 元：制图一批最多 4 张 = ¥0.72（免确认）；出片 1 秒 = ¥1.52（仍要确认）。
+        # 0 = 关闭该机制，一律要确认。
+        noConfirmUnderCNY: 1
+        # fail-closed：查不到单价就拒绝提交，调用方无法用"自报金额"绕过闸门。
+        allowUnpricedSpend: false
+        # 生成类工具（qwen_draw / seedance_video）的**子代理刹车**（2026-10-16）。
+        # 默认 false = **允许**子代理生成（用户策略：繁重任务里让子代理直接出图，效率优先）。
+        # 设 true = 子代理只能把生成需求回报给主代理（适合无人值守跑重活时收紧）。
+        # 配套：子代理的花费记在自己会话上，主代理的 cost(session) 现在按**会话树**汇总，
+        # 会话累计上限也一并覆盖子会话 —— 允许生成不等于看不见/管不住。
+        blockSubagentSpend: false
+        # 只拦出片、不拦出图（2026-10-17 加）：子代理可用 qwen_draw 与读图员，
+        # 但调不动 seedance_video / video_gen。默认 false；与上面的开关是"或"关系。
+        blockSubagentVideoSpend: false
+        # ---- 落盘 ----
         outDir: gen
         videoOutDir: gen/video
         maxDownloadBytes: 209715200
         maxInlineImageBytes: 10485760
         ledgerPath: ''
-        # 成本：0.0 是占位，请按各家官网填真实单价并更新 asOf（规划 [5.1]）
+        # ---- 出图缓存（同样的 prompt + 参数不重复计费）----
+        cacheResults: true
+        cacheTtlMs: 86400000
+        cacheKeySalt: ''
+        maxCacheEntries: 200
+        # ---- 单价表 ----
+        # ⚠ `pricing` 是**整体替换**语义：写了它，出厂的 DEFAULT_PRICING 就完全不生效。
+        # 规矩（index.js 的 schema description 里写着同一句）：
+        #   - key **必须是真实模型 id**，不是简称（'seedance-2.0' 这种别名查不到价）；
+        #   - 不知道价格写 null（= 未计价，报表会显式写「未计价」）；
+        #   - **不要写 0** —— 0 等于宣称"免费"：闸门会按"未计价"处理并拒绝提交，
+        #     报表也不会再把真钱显示成 0.0000（自检会在 media_report(health) 里点名）。
+        # 价格会变，请按各厂商官网核对后自行更新；source 字段就是取价页面。
         pricing:
-          qwen-image-3.0: { unit: image, unitPrice: 0.0, currency: CNY, asOf: 2026-10-12 }
-          seedance-2.0:
-            unit: second
-            unitPrice: 0.0
+          qwen-image-3.0:
+            unit: image
+            unitPrice: 0.18
             currency: CNY
-            asOf: 2026-10-12
+            asOf: 2026-10-13
+            source: https://help.aliyun.com/zh/model-studio/qwen-image-3-0
+          doubao-seedance-2-5-260628:
+            unit: second
+            unitPrice: 1.519
+            currency: CNY
+            asOf: 2026-10-15
             tiers: []
-          glm-4.6v: { unit: ktoken, inputPrice: 0.0, outputPrice: 0.0, currency: CNY, asOf: 2026-10-12 }
-          qwen3-vl-plus: { unit: ktoken, inputPrice: 0.0, outputPrice: 0.0, currency: CNY, asOf: 2026-10-12 }
-        # 工具开关（插件页 → MM Models → 配置卡 一键勾选；关闭后调用被拒、新会话不显示）
+            source: '估算：21,700 tokens/秒（实测）× 70 元/百万 token（第三方来源，未经官方页核实）'
+          doubao-seedance-2-0-fast-260128:
+            unit: second
+            unitPrice: 0.998
+            currency: CNY
+            asOf: 2026-10-15
+            tiers: []
+            source: '估算：21,700 tokens/秒（实测）× 46 元/百万 token（第三方来源，未经官方页核实）'
+          doubao-seedance-1-0-pro-fast-251015:
+            unit: second
+            unitPrice: 0.206
+            currency: CNY
+            asOf: 2026-10-15
+            tiers: []
+            source: https://www.bianews.com/news/details?id=223817
+          # ---- 百炼视频（2026-10-17）：可灵 v3 / 万相 2.5 ----
+          # 按秒计价，档位 = 模式（720P/1080P/4K）× 是否带音频。
+          # unitPrice 是兜底价（1080P 无声），实际取价走 tiers。
+          kling/kling-v3-video-generation:
+            unit: second
+            unitPrice: 0.8
+            currency: CNY
+            asOf: 2026-10-17
+            tiers:
+              - { mode: std, audio: false, unitPrice: 0.6 }
+              - { mode: std, audio: true, unitPrice: 0.9 }
+              - { mode: pro, audio: false, unitPrice: 0.8 }
+              - { mode: pro, audio: true, unitPrice: 1.2 }
+              - { mode: 4k, audio: false, unitPrice: 3 }
+              - { mode: 4k, audio: true, unitPrice: 3 }
+            source: https://help.aliyun.com/zh/model-studio/kling-v3-video-generation
+          kling/kling-v3-turbo-video-generation:
+            unit: second
+            unitPrice: 1
+            currency: CNY
+            asOf: 2026-10-17
+            tiers:
+              - { mode: std, audio: false, unitPrice: 0.8 }
+              - { mode: std, audio: true, unitPrice: 0.8 }
+              - { mode: pro, audio: false, unitPrice: 1 }
+              - { mode: pro, audio: true, unitPrice: 1 }
+            source: https://help.aliyun.com/zh/model-studio/kling-v3-turbo-video-generation
+          kling/kling-v3-omni-video-generation:
+            unit: second
+            unitPrice: 0.8
+            currency: CNY
+            asOf: 2026-10-17
+            tiers:
+              - { mode: std, audio: false, unitPrice: 0.6 }
+              - { mode: std, audio: true, unitPrice: 0.9 }
+              - { mode: pro, audio: false, unitPrice: 0.8 }
+              - { mode: pro, audio: true, unitPrice: 1.2 }
+              - { mode: 4k, audio: false, unitPrice: 3 }
+              - { mode: 4k, audio: true, unitPrice: 3 }
+            source: https://help.aliyun.com/zh/model-studio/kling-v3-omni-video-generation
+          wan2.5-t2v-preview:
+            unit: second
+            unitPrice: 1
+            currency: CNY
+            asOf: 2026-10-17
+            tiers:
+              - { mode: std, audio: false, unitPrice: 0.6 }
+              - { mode: std, audio: true, unitPrice: 0.6 }
+              - { mode: pro, audio: false, unitPrice: 1 }
+              - { mode: pro, audio: true, unitPrice: 1 }
+            source: https://help.aliyun.com/zh/model-studio/wan2-5-t2v
+          glm-4.6v:
+            unit: ktoken
+            inputPrice: null
+            outputPrice: null
+            currency: CNY
+            asOf: 2026-10-13
+            source: https://bigmodel.cn/pricing
+          qwen3-vl-plus:
+            unit: ktoken
+            inputPrice: null
+            outputPrice: null
+            currency: CNY
+            asOf: 2026-10-13
+            source: https://help.aliyun.com/zh/model-studio/model-pricing
+        # ---- 任务注册表（整轮失败/超时后还能用 media_task 找回并补下载）----
+        persistTasks: true
+        taskRegistryPath: ''
+        maxRegistryEntries: 200
+        registryTtlMs: 604800000
+        # 工具开关（插件页 → gpt-CN → 配置卡 一键勾选；关闭后调用被拒、新会话不显示）
         # 读图子代理 ask_glm / ask_qwen 互斥、必须二选一：设置卡里打开一个会自动关闭另一个；
         # 万一两个都是 true（例如手改本文件），Host 侧按 "GLM 优先" 仲裁并压制 ask_qwen，
         # media_report(action=health) 会把这次冲突标出来。默认两个都关（不预设读图员）。
@@ -154,10 +397,24 @@
         # 默认关：主代理原生读图更快、少一次调用；打开是为了"确定性路由"。
         # 改这个开关需要完整重启才生效（限制在 agent 创建时装上）。
         blockMainAgentNativeVision: false
+        # 屏蔽**通用子代理**的原生读图（2026-10-15 加，默认关 = 保持旧行为）。
+        # 原生子代理天生有 read_image，而插件的三条守卫只针对主代理 —— 繁重任务里
+        # 子代理会自己读图，绕开读图员的只读契约。打开后除读图员外，子代理都拿不到 read_image。
+        # ⚠ 前提：读图员开着，且读图员行 maxDepth ≥ 2（本文件已是 2），否则子代理会失去看图途径。
+        # 读图员豁免名单取自契约文件的 agentOptions；认不出读图员时本开关对子代理不生效。
+        blockSubagentNativeVision: false
         enableQwenDraw: true
         enableSeedanceVideo: false   # Ark 未开通/门槛高：默认关闭，接通后一键打开
+        # 百炼出片（可灵/万相）：复用 DASHSCOPE_API_KEY，零新账号；但需先填业务空间 ID
+        # 并在百炼控制台开通「可灵AI」模型卡片。默认关闭，接通后一键打开。
+        enableVideoGen: false
         enableMediaTask: true
         enableMediaReport: true
+        # ---- 生成物是否附回模型上下文 ----
+        # 默认关（只回文件路径 + 规格）：qwen_draw 默认产 2048×2048 大图，
+        # 塞回上下文会触发上传/传输失败而拖垮整轮，且多数路由本来就会降采样它。
+        attachResultImages: false
+        maxAttachImageBytes: 4194304
         # 其它
         promptSection: true
         degradeToText: false

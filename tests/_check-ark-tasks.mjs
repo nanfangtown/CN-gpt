@@ -8,8 +8,10 @@
  * 用法：node --import ./tests/register.mjs tests/_check-ark-tasks.mjs
  */
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 
-const BACKUP = 'C:/Users/陈成/.dsh/.env.bak-arkremove-20261015-135621'
+const BACKUP = join(homedir(), '.dsh', '.env.bak-arkremove-20261015-135621')
 const BASE = 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks'
 
 let key

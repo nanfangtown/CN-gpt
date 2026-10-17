@@ -72,7 +72,7 @@ const sandbox = {
   console,
 }
 vm.runInNewContext(code, sandbox, { filename: 'client.js' })
-assert.equal(sandbox.__definition.id, '@local/dsh-mm-models', 'client module id')
+assert.equal(sandbox.__definition.id, 'dsh-mm-models', 'client module id')
 const mod = sandbox.__definition.factory((name) => {
   assert.equal(name, 'react')
   return fakeReact
@@ -198,7 +198,7 @@ mod.apply(fakeCtx)
 assert.equal(registered.length, 1)
 const { options, component } = registered[0]
 assert.equal(options.name, 'plugins.bundle.config')
-assert.equal(options.key, '@local/dsh-mm-models')
+assert.equal(options.key, 'dsh-mm-models')
 assert.equal(typeof options.inject, 'function')
 const props = options.inject()
 assert.equal(typeof props.edit, 'function')
@@ -289,10 +289,10 @@ const walk = (node) => {
 }
 walk(tree)
 const switches = flat.filter((node) => node.type === 'button' && node.props?.role === 'switch')
-// 14 个布尔开关：6 个 enable* + blockMainAgentNativeVision + attachResultImages + cacheResults
-// + persistTasks + requireSpendConfirm + 3 个 misc
-assert.equal(switches.length, 14, 'fourteen boolean switches rendered')
-assert.equal(switches.filter((node) => String(node.props['aria-label']).includes('field.enable')).length, 6, 'six enable* tool switches (ask_glm + ask_qwen + draw + video + task + report)')
+// 17 个布尔开关：7 个 enable* + blockMainAgentNativeVision + blockSubagentNativeVision
+// + blockSubagentVideoSpend + attachResultImages + cacheResults + persistTasks + requireSpendConfirm + 3 个 misc
+assert.equal(switches.length, 17, 'seventeen boolean switches rendered')
+assert.equal(switches.filter((node) => String(node.props['aria-label']).includes('field.enable')).length, 7, 'seven enable* tool switches (ask_glm + ask_qwen + draw + seedance + bailian video + task + report)')
 assert.ok(
   switches.some((node) => String(node.props['aria-label']).includes('field.enableAskQwen')),
   'ask_qwen switch rendered next to ask_glm',
@@ -300,6 +300,10 @@ assert.ok(
 assert.ok(
   switches.some((node) => String(node.props['aria-label']).includes('field.blockMainAgentNativeVision')),
   'native-vision block switch rendered',
+)
+assert.ok(
+  switches.some((node) => String(node.props['aria-label']).includes('field.blockSubagentNativeVision')),
+  'subagent native-vision block switch rendered (must be visible so C can be toggled in the card)',
 )
 /** 重新渲染并拍平（describe 是异步的，需要再取一次树）。 */
 const rerenderTree = () => {
@@ -485,4 +489,64 @@ const defaultVideoWarn = rerenderTree().filter((node) => /T:unit\.longWait/.test
 assert.equal(defaultVideoWarn.length, 0, '出片默认 15 分钟不应报警（阈值必须高于所有默认值）')
 props.discard()
 
-console.log('[client-card] 全部通过：注册点 / 开关读写 / 非法值拦截 / 失败反馈 / 渲染 / Key 获取入口 / 时间单位')
+// ---------------------------------------------------------------- 静态自检（2026-10-15 补）
+// 起因是两类**静默**缺陷，渲染测试全都抓不到：
+//   ① `styles.keyRow` / `badgeOn` / `secretRow` / `secretInput` / `miniBtn` 五个键
+//      **只在 JSX 里被引用、从未定义** —— `style={undefined}` 不报错，配置卡照常渲染，
+//      但密钥行退化成"输入框与三个按钮纵向堆叠"、徽标没有颜色，一直没人发现；
+//   ② 英文 DICT 漏了 `key.src.arkActivate` / `...Hint`（中文有）—— 英文界面渲染裸 i18n key，
+//      而"方舟必须开通模型否则 404"这条关键排障指引在英文下完全失效。
+// 这两件事都靠"引用集合 ⊆ 定义集合"的断言钉住，比逐个渲染更省事也更不容易漏。
+
+/** 从 `{` 开始做花括号配对（跳过字符串字面量，避免值里的括号把深度算错）。 */
+function sliceBraces(text, openIndex) {
+  let depth = 0
+  for (let index = openIndex; index < text.length; index += 1) {
+    const char = text[index]
+    if (char === '"' || char === "'" || char === '`') {
+      index += 1
+      while (index < text.length && text[index] !== char) {
+        if (text[index] === '\\') index += 1
+        index += 1
+      }
+      continue
+    }
+    if (char === '{') depth += 1
+    else if (char === '}') {
+      depth -= 1
+      if (depth === 0) return text.slice(openIndex, index + 1)
+    }
+  }
+  throw new Error('花括号不配对：无法解析静态块')
+}
+
+// ① 样式键：被引用的必须都有定义
+const stylesOpen = code.indexOf('const styles = {') + 'const styles = '.length
+assert.ok(stylesOpen > 'const styles = '.length - 1, 'client.js 里应有 const styles = { ... }')
+const stylesBlock = sliceBraces(code, stylesOpen)
+const definedStyles = new Set([...stylesBlock.matchAll(/^ {6}([A-Za-z][A-Za-z0-9]*):/gm)].map((match) => match[1]))
+const usedStyles = new Set([...code.matchAll(/\bstyles\.([A-Za-z][A-Za-z0-9]*)/g)].map((match) => match[1]))
+const missingStyles = [...usedStyles].filter((name) => !definedStyles.has(name))
+assert.deepEqual(missingStyles, [], '引用了未定义的样式键（会静默丢样式）：' + missingStyles.join('、'))
+// 反向：定义了却没人用的键（提示可以删，避免样式表膨胀）
+const unusedStyles = [...definedStyles].filter((name) => !usedStyles.has(name))
+assert.deepEqual(unusedStyles, [], '定义了但没有任何引用的样式键：' + unusedStyles.join('、'))
+
+// ② i18n 键：zh 与 en 的键集合必须完全一致（漏翻 = 界面渲染裸 key）
+const zhStart = code.indexOf('      zh: {')
+const enStart = code.indexOf('      en: {')
+assert.ok(zhStart > 0 && enStart > zhStart, 'DICT 应有 zh / en 两段')
+const enEnd = code.indexOf('\n      },', enStart)
+assert.ok(enEnd > enStart, '应能定位 en 段的结尾')
+// 段起点要落在 `{` **之后**，否则会把 `zh:` / `en:` 这两个键名本身也算进来。
+const zhBody = code.slice(code.indexOf('{', zhStart) + 1, enStart)
+const enBody = code.slice(code.indexOf('{', enStart) + 1, enEnd)
+const keysIn = (segment) =>
+  [...segment.matchAll(/^\s*(?:'([^']+)'|([A-Za-z][A-Za-z0-9_.]*)):\s/gm)].map((match) => match[1] ?? match[2])
+const zhKeys = new Set(keysIn(zhBody))
+const enKeys = new Set(keysIn(enBody))
+assert.ok(zhKeys.size > 50, 'zh 段应有足够多的键（实际 ' + zhKeys.size + '）')
+assert.deepEqual([...zhKeys].filter((key) => !enKeys.has(key)), [], '英文 DICT 缺这些键（会渲染裸 key）')
+assert.deepEqual([...enKeys].filter((key) => !zhKeys.has(key)), [], '中文 DICT 缺这些键')
+
+console.log('[client-card] 全部通过：注册点 / 开关读写 / 非法值拦截 / 失败反馈 / 渲染 / Key 获取入口 / 时间单位 / 样式与 i18n 键闭合')

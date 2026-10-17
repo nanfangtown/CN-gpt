@@ -8,8 +8,10 @@
  * ⚠ 只读：只发 GET。
  */
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 
-const BACKUP = 'C:/Users/陈成/.dsh/.env.bak-arkremove-20261015-135621'
+const BACKUP = join(homedir(), '.dsh', '.env.bak-arkremove-20261015-135621')
 const BASE = 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks'
 
 /** 官方刊例价（元 / 百万 token，不含视频输入）。来源见 README。 */

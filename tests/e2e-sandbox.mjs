@@ -74,7 +74,7 @@ const overlay = [
   '    provider: mock',
   '    model: mock-1',
   '- id: mm-models',
-  "  name: '@local/dsh-mm-models'",
+  "  name: 'dsh-mm-models'",
   '  config:',
   '    dashscopeApiKey: null',
   '    dashscopeApiKeyEnv: DASHSCOPE_API_KEY',

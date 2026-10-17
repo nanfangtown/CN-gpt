@@ -1,6 +1,9 @@
-# @local/dsh-mm-models
+# dsh-mm-models
 
-DeepSeek 主脑 + GLM/Qwen 读图（二选一）/ Qwen 制图 / Seedance 出片。
+> **状态**：`0.1.0` · 本地优先 · **尚未发布到 npm**（`private: true`）· MIT
+> ｜ 开源准备清单见 [`SECURITY.md`](SECURITY.md)，密钥模板见 [`.env.example`](.env.example)
+
+DeepSeek 主脑 + GLM/Qwen 读图（二选一）/ Qwen 制图 / Seedance 出片 + 百炼出片（可灵/万相）。
 
 一个 dsh bundle，把三个外部模型能力做成与 `bash` / `pwsh` / `ops_*` 完全同级的顶级工具，
 并共用一层统一异步任务管理、一套多 key 管理、一份成本估算与一套容错语义。
@@ -24,23 +27,24 @@ DeepSeek 主脑 + GLM/Qwen 读图（二选一）/ Qwen 制图 / Seedance 出片�
 把这些标识符认准就行——它们在代码、配置、日志里一致且稳定：
 
 ```
-包名     @local/dsh-mm-models
+包名     dsh-mm-models
 插件 id  mm-models
 prompt 段 mm-models:division
 账本     mm-models-ledger.json
 ```
 
-> **命名说明（开源前必读）**：本包当前叫 `@local/dsh-mm-models`，因为它是从**本地 `link:` 部署**
-> 长出来的。若要发布到 npm/GitHub，建议改成无 scope 的 `dsh-mm-models`——但那会同时要求改
-> profile 的 `dependencies` 与 `dsh.profile.bundles`，属于**一次性迁移动作**，
-> 不要在同一个提交里顺手做（否则本地部署当场失效）。
+> **命名说明（2026-10-17 开源准备）**：包名已从 `@local/dsh-mm-models` 改为无 scope 的
+> `dsh-mm-models` —— 开源/发布到 npm/GitHub 时 scope 会挡住别人安装（`@local` 只在本机有意义）。
+> 本地 `link:` 部署同步改了三处：`package.json` 的 `dependencies`、`dsh.profile.bundles`、
+> profile 的 `cordis.patch.yml` 里 `name:` 字段。**改包名是"一次性迁移"**：
+> 老名字一旦还有任何一处残留，插件会直接不加载。
 
 ## 三个名字，别混（2026-10-13）
 
 | 名字 | 是什么 | 能不能改 |
 |---|---|---|
 | **`gpt-CN`** | **界面显示名**（插件页 / 配置卡标题） | ✅ 随便改，纯外观。改这三处：`package.json` 的 `meta.title` / `meta.description`、`locale/zh.json`、`locale/en.json`（`client.js` 的 `DICT` 里也各有一份） |
-| `@local/dsh-mm-models` | 包名 | ⚠ 改它要同步改 profile 的 `dependencies` + `bundles`，否则部署失效 |
+| `dsh-mm-models` | 包名 | ⚠ 改它要同步改 profile 的 `dependencies` + `bundles`，否则部署失效 |
 | `mm-models` | **插件 id**（架构标识） | ❌ 不要改：它是 patch 行的 `id`、prompt 段名 `mm-models:division`、账本文件名 `mm-models-ledger.json` 的一部分 |
 
 显示名与包名是**解耦**的：`gpt-CN` 只是给人看的，代码与配置里一切标识仍是 `mm-models`。
@@ -55,13 +59,13 @@ prompt 段 mm-models:division
 node --import ./tests/register.mjs ./tests/run.mjs
 node tests/client-card.test.mjs
 node tests/_card-mutex.test.mjs
-:: 逐项证明"性能优化没改坏功能"（93 + 6 + 8 条断言）
+:: 逐项证明"性能优化没改坏功能"（110 + 6 + 8 条断言）
 node --import ./tests/register.mjs ./tests/verify-functionality.mjs
 ```
 
 ```bat
 :: 1b) 可选：证明上面那套验证不是假绿 —— 故意改坏源码，看它会不会失败
-node tests/_mutation-check.mjs       :: 注入 4 个变异，4 个都必须被抓住
+node tests/_mutation-check.mjs       :: 注入 15 个变异，15 个都必须被抓住
 node --import ./tests/register.mjs ./tests/_perf-bench.mjs   :: 性能基准，可随时复跑
 ```
 
@@ -74,12 +78,13 @@ set DSH_CLI=<安装目录>\resources\app.asar\dsh\node_modules\@deepseek-ai\dsh\
 ```
 
 试运行痕迹（`_sandbox/`、`tests/_sandbox/`、生成的图与视频、账本）都已在 `.gitignore` 中排除。
-路径解析集中在 [`tests/_paths.mjs`](tests/_paths.mjs)：**插件本体与测试里没有任何硬编码本机路径**。
+路径解析集中在 [`tests/_paths.mjs`](tests/_paths.mjs)：**插件本体（`index.js` / `core/` / `tools/` / `tasks/` / `client.js`）里没有硬编码本机路径**；
+`tests/` 下少数一次性取证脚本（`_ark-*.mjs`、`_recover-seedance.mjs`）里写有本机绝对路径，属本地取证用途，**公开前需要占位化**。
 
 > **当前状态（2026-10-13）：已实装到 desktop profile** —— `link:` 依赖 + `dsh.profile.bundles` +
 > `~/.dsh/.env` 三把 key；`ask_glm / ask_qwen / qwen_draw / media_task / media_report` 已在工具表中生效
 > （两个读图子代理互斥，默认都不开，在配置卡里二选一）。
-> **设置入口：侧栏「插件」→ 已安装 → `@local/dsh-mm-models`（显示名 gpt-CN）→ 组合包详情里的配置卡**
+> **设置入口：侧栏「插件」→ 已安装 → `dsh-mm-models`（显示名 gpt-CN）→ 组合包详情里的配置卡**
 > （Host 半侧的开关/引用名/端点等；GLM key 在 设置 → 模型 → GLM 行）。
 > 改动 Host/客户端代码后需要**完整重启 dsh** 才加载新模块；试运行环境与证据在 `tests/`、`_sandbox/`（不参与打包）。
 
@@ -90,15 +95,64 @@ set DSH_CLI=<安装目录>\resources\app.asar\dsh\node_modules\@deepseek-ai\dsh\
 | `ask_glm` | GLM `glm-4.6v`（智谱，只读子代理） | 看图、截图、PDF、图表、手写、界面 → 结构化文字结论 |
 | `qwen_draw` | Qwen `qwen-image-3.0`（阿里云百炼 DashScope，同步；账号不支持异步时自动选择） | 文生图 → 本地图片文件 + 图片内容块 |
 | `seedance_video` | Seedance `doubao-seedance-1-0-pro-fast-251015`（火山方舟 Ark，异步） | 文生 / 图生视频 → 本地视频文件（**默认开关关闭**，接通 Ark 后一键打开） |
-| `media_task` | 本插件 | 超时 / 取消后按 `provider + task_id` 重查、补下载产物 |
-| `media_report` | 本插件 | `action=cost` 成本估算；`action=health` 三把 key 与三条链路健康 |
+| `video_gen` | 百炼托管：可灵 `kling-v3` / `kling-v3-turbo` / `kling-v3-omni`、万相 `wan2.5`（DashScope 异步，**复用 `DASHSCOPE_API_KEY`**） | 文生 / 图生视频 → 本地视频文件（**默认开关关闭**，填业务空间 ID + 开通可灵后一键打开） |
+| `media_task` | 本插件 | 超时 / 取消后按 `provider + task_id` 重查、补下载产物（Provider：`qwen` / `seedance` / `bailian`） |
+| `media_report` | 本插件 | `action=cost` 成本估算；`action=health` 三把 key 与四条链路健康 |
 
 主模型仍是 DeepSeek（由会话选择），本插件不碰 `agent-default-model`、不碰 fallback 链、
 不挂 persona、不做 preset；只注册 5 个全局工具 + 一段可关闭的分工说明提示词。
 
+## 百炼出片（可灵 / 万相，2026-10-17 加）
+
+**为什么是它**：可灵与万相在百炼上是同一套异步视频协议，且**复用 qwen_draw 已有的
+`DASHSCOPE_API_KEY`** —— 不需要新账号、新 key、外币卡。可灵官方价与百炼价一致（无转售加价）：
+
+| 模型 | 720P | 1080P | 4K | 备注 |
+| --- | --- | --- | --- | --- |
+| `kling/kling-v3-video-generation` | 0.6 元/秒 | 0.8 | 3.0 | 原生音频 ×1.5（0.9 / 1.2） |
+| `kling/kling-v3-turbo-video-generation` | 0.8 | 1.0 | — | 固定音画同出 |
+| `kling/kling-v3-omni-video-generation` | 0.6 | 0.8 | 3.0 | 参考生视频/视频编辑 |
+| `wan2.5-t2v-preview` | 0.6 | 1.0 | — | 仅文生，5/10 秒 |
+
+**接线三步**（缺任一步都会 fail-closed，且不会产生费用）：
+1. **业务空间 ID / API Host**：打开[业务空间管理（华北2 北京）](https://bailian.console.aliyun.com/cn-beijing/settings/workspace)，
+   复制 **API Host** 列（形如 `llm-xxxx.cn-beijing.maas.aliyuncs.com`），整串粘进配置卡 `dashscopeVideoBase`；
+   或只把 `llm-xxxx` 粘进 `dashscopeWorkspaceId`。两种写法都会自动补成
+   `https://{host}/api/v1`；key 也必须属华北2（北京）。
+   > **2026-10-17 实测**：存量域名 `https://dashscope.aliyuncs.com/api/v1` 上视频路由与
+   > 可灵/万相模型**当前仍可用**（不填业务空间也能跑）。最省事的接法是把
+   > `dashscopeVideoBase` 直接设成它；业务空间专属域名是官方推荐（并发/超时更好），
+   > 但暂时不是必需。两者随时可用 `--base` 切换验证。
+2. **开通模型**：百炼控制台[模型市场](https://bailian.console.aliyun.com/cn-beijing/model/market)搜 `kling` → 立即开通并授权。
+3. **打开开关** `enableVideoGen`（默认关）。改 Host 代码后需完整重启 dsh 才加载。
+
+**先探针、后花钱**（默认零费用，只发一次 GET）：
+
+```bat
+node tests/probe-dashscope-video.mjs --base=https://dashscope.aliyuncs.com/api/v1
+node tests/probe-dashscope-video.mjs --workspace=llm-xxxx --submit --yes   :: 真提交 5 秒 720P ≈ ¥3
+```
+
+> ⚠ **不要用"故意写错参数"当免费探针**（2026-10-17 实测踩到）：百炼视频是**先建任务、
+> 再做参数校验**。用 3000 字符的超长 prompt 想换一个必错的 400，结果三家全返回
+> 200 + task_id：可灵两条随后 `FAILED`（prompt 超 2500，约 ¥0），**万相照常跑完并扣约 ¥3**。
+> POST 到这个端点本身就是下单；唯一免费的探针是 `GET /tasks/{不存在}`。
+
+**计费口径**：`tiers` 按「模式 × 是否带音频」二维取价，4K 是 720P 的 5 倍，
+所以只填一个单价会让 4K 请求被低报 5 倍 —— 这是本 adapter 唯一不能省的设计。
+花费闸门、双方确认、超时补记与 seedance_video 完全同源（`core/spend-guard.mjs`）。
+
+**子代理策略（2026-10-17 加）**：`blockSubagentVideoSpend = true` 时，子代理**不能出片**
+（`video_gen` / `seedance_video`），但**可以出图**（`qwen_draw`）与读图 —— 分级刹车的理由很实际：
+出图 ¥0.18/张，出片一次 ¥1.8–¥10 且不可撤销。`blockSubagentSpend = true` 则是更粗的一档，
+连出图一起挡。两者是"或"关系。
+
+**已知边界**：首帧图只接受 http(s)（百炼未承诺接受 base64，未确证的能力不去花钱试）；
+万相只接文生（i2v 是另一个模型 id）；`media_task` 的 provider 是 `bailian`。
+
 ## 目录
 
-- [安装（本次未执行）](#安装本次未执行)
+- [安装](#安装)
 - [三把 key 在哪填](#三把-key-在哪填)
 - [配置](#配置)
 - [用起来](#用起来)
@@ -109,21 +163,96 @@ set DSH_CLI=<安装目录>\resources\app.asar\dsh\node_modules\@deepseek-ai\dsh\
 - [文件结构](#文件结构)
 - [卸载 / 回滚](#卸载--回滚)
 
-## 安装（本次未执行）
+## 安装
 
-前置：dsh Desktop（本次核对版本 0.2.0-rc.2，profile `desktop`）。
+**当前没有发布到 npm**，走本地链接安装（`link:`）或 `dsh plugin add` 本地路径。
+
+前置：dsh Desktop **0.2.1-rc.1 或更高**（0.2.x 线；profile `desktop`）。0.2.0 不支持，原因见下面的兼容性一节。
 
 方式 A（在 dsh 会话里让 Agent 装）：
 
 > 用 plugin_manager 的 `install_bundle`，target 填本目录绝对路径
-> `D:\DS WORK AREA\dsh-mm-models`，然后看返回的 `application` 字段。
+> `D:\path\to\dsh-mm-models`，然后看返回的 `application` 字段。
 
 方式 B（命令行）：
 
 ```bat
-dsh plugin --profile desktop add "D:\DS WORK AREA\dsh-mm-models"
+dsh plugin --profile desktop add "D:\path\to\dsh-mm-models"
 dsh --profile desktop --dump-config | findstr /C:"mm-models"
 ```
+
+开源版用户（把仓库 clone 到任意位置）：
+
+```bat
+git clone <repo-url> dsh-mm-models
+dsh plugin --profile desktop add ".\dsh-mm-models"
+```
+
+密钥：把 [`.env.example`](.env.example) 复制成 `~/.dsh/.env` 并填值；
+**不要**提交填好的 `.env`（`.gitignore` 已排除）。
+
+### DSH 版本兼容性（0.2.1 起的新规则）
+
+`package.json` 里声明了：
+
+```json
+"engines": { "dsh": ">=0.2.1-rc.1 <0.3.0-0" }
+```
+
+为什么必须是这个形状：
+
+- **0.2.1 改了判定顺序**：优先看 `engines.dsh`，**只有没声明时才回落** `peerDependencies`。
+  所以从 0.2.1 起，光靠 peer 范围已经不能表达"我支持哪些运行时"。
+- DSH 求值用 `semver.satisfies(..., { includePrerelease: true })`。这让预发布也参与匹配，
+  但也让 `<0.3.0` 把 `0.3.0-rc.1` 放进来 —— 所以上限写成 `<0.3.0-0`，显式排除 0.3 的预发布。
+- **下限是 `0.2.1-rc.1`，不再兼容 0.2.0**：0.2.1 的 `dsh-tool-subagent` 删除了
+  `persona` / `toolFilter` / `backgroundMode` / `enableRunInBackground`，子代理的 persona 与
+  工具面改为 **Agent Preset**（本插件的三个 `preset-mm-*` 行）；而 0.2.0 的同一个包
+  **不认识 `agentPreset`**（实测：旧包源码里 0 次出现）。两边不能同时兼容。
+
+覆盖矩阵（按 DSH 的求值方式实测）：
+
+| 运行时 | 结果 |
+| --- | --- |
+| `0.2.0-rc.1` / `0.2.0-rc.2` | ⛔ 不支持（子代理行迁移到 preset 了） |
+| `0.2.1-alpha.*` / `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1` | ✅ |
+| `0.3.0-rc.1` 及以后 | ⛔ 需重新验证 |
+
+**0.2.1 的破坏性改动与迁移**（升级后 `ask_glm` / `ask_qwen` / `subagent_code` /
+`subagent_research` 全部消失，根因就是这个）：
+
+```text
+tool-subagent: persona is no longer supported; configure persona and tool
+plugins in an Agent Preset and select it with agentPreset (spawn only)
+```
+
+旧写法（0.2.0）→ 新写法（0.2.1）：
+
+| 旧（已删除） | 新 |
+| --- | --- |
+| `persona: <文本>` | `preset.plugins[]` 里的 `@deepseek-ai/dsh-persona`（`config.prefix`） |
+| `toolFilter: { allow, deny }` | `preset.plugins[]` 里只列需要的工具包（**没列出的就没有**） |
+| `backgroundMode` / `enableRunInBackground` | 已彻底移除，无需替代 |
+
+**preset 不等於窄工具面（2026-10-17 实测）**：preset 只约束「装配进来的插件」，
+宿主**全局工具**仍会出现在子代理的工具表里（实测读图员能看到 `ops_bash` / `qwen_draw` /
+`subagent` 等约 35 个）。所以插件在 `agent/created` 时对读图员额外贴
+`restrict({ allow: ['read_image'] })` —— 白名单从"行为拒绝"升级为"可见面收窄"，
+只留看图工具（scope 注入的 `ops_bash` / `subagent` 过滤不掉，仍由运行时 guard 兜底）。
+同时把子代理判定补上第三信号 `session.header.parentSession`：0.2.1 的 preset 子代理
+不一定带 `options.subagentDepth`，只认旧信号会把读图员误判成主代理、进而屏蔽它的
+`read_image`（实测日志里出现过）。
+
+**0.2.1-rc.1 适配核对过什么**（对 npm 上公开的包逐文件对比，不是猜）：
+
+- `@deepseek-ai/dsh-tools`：`defineTool` 签名与参数完全未变；变化集中在 PTC
+  （程序化工具调用：新增 `PtcCalls`、移除 `presentationMode: 'both'`），本插件未使用。
+- `@deepseek-ai/dsh-credentials`：`credentialRef` 未变；内部优先级改为"凭据存储优先于
+  环境变量"，与插件自己的"字面值 > 凭据 > 环境变量"不冲突。
+- `@deepseek-ai/dsh-storage-domain`：只新增 locale 文件，账本用的 API 未变。
+- 客户端：插件页槽位 `plugins.bundle.config` 与 `ctx.configForms` 的
+  `getSnapshot / subscribe / mutate` 契约未变（配置卡不需要改）。
+- `@deepseek-ai/dsh-app-boot`：变化在 profile 重建流程，bundle patch 语义未变。
 
 安装会在 profile 里加三行：
 
@@ -165,11 +294,12 @@ dsh --profile desktop --dump-config | findstr /C:"mm-models"
 
 ## 配置
 
-设置入口：**侧栏「插件」（插件管理）→ 已安装 → `@local/dsh-mm-models`（显示名 gpt-CN）→ 组合包详情里的配置卡**。
+设置入口：**侧栏「插件」（插件管理）→ 已安装 → `dsh-mm-models`（显示名 gpt-CN）→ 组合包详情里的配置卡**。
 该卡由本包的客户端半侧 `client.js` 渲染（注册进插件页的 `plugins.bundle.config` slot）：
 只使用 `--dsw-alias-*` 主题 token、自绘控件、数据读写走 Host 的 `ctx.configForms`。
 （说明：本 dsh 版本的"内置设置 UI 自动表单"并不渲染第三方插件，所以 v1 的"0 行前端代码"假设不成立，此卡是规划 P5 的唯一前端代码。）
-所有字段都标了 `volatile`，改完下一次调用即生效（无需重启）。
+所有字段都标了 `volatile`，改完下一次调用即生效——**唯一的例外是 `blockMainAgentNativeVision`**：
+它是在 agent 创建时装上的掩码，改完需要重启（见下节《主代理原生读图开关》）。
 
 | 分组 | 字段 | 默认 | 说明 |
 | --- | --- | --- | --- |
@@ -179,23 +309,23 @@ dsh --profile desktop --dump-config | findstr /C:"mm-models"
 | 端点 | `dashscopeBase` | `https://dashscope.aliyuncs.com/api/v1` | 异步任务端点 |
 | 端点 | `dashscopeCompatBase` | `.../compatible-mode/v1` | 仅健康探测（GET /models） |
 | 端点 | `arkBase` | `https://ark.cn-beijing.volces.com/api/v3` | 方舟端点 |
-| 型号 | `qwenModel` / `seedanceModel` | `qwen-image-3.0` / `doubao-seedance-1-0-pro-fast-251015` | `qwen-image-3.0` 已实跑确证 |
+| 型号 | `qwenModel` / `seedanceModel` | `qwen-image-3.0` / `doubao-seedance-2-5-260628` | `qwen-image-3.0` 已实跑确证；出片还有更省的两个 id 见 `index.js` 的 description |
 | 制图 | `dashscopeImageMode` | `auto` | `auto`：qwen-image 走同步、其余走异步；也可强制 `sync` / `async`（本账号不支持异步） |
-| 任务 | `taskTimeoutMs` | 600000 | 图片任务等待上限（10 分钟） |
-| 任务 | `videoTimeoutMs` | 1800000 | 视频任务等待上限（30 分钟） |
+| 任务 | `taskTimeoutMs` | 180000 | 图片任务等待上限（3 分钟；超时可用 `media_task` 找回） |
+| 任务 | `videoTimeoutMs` | 900000 | 视频任务等待上限（15 分钟） |
 | 任务 | `taskPollIntervalMs` / `taskPollMaxIntervalMs` | 5000 / 10000 | 5s 起、退避到 10s 封顶 |
 | 任务 | `httpTimeoutMs` | 60000 | 单次 HTTP 超时 |
 | 任务 | `queryRetries` | 2 | 只对幂等 GET 生效；POST 永不自动重发 |
-| 任务 | `maxCallsPerTurn` | 3 | 同会话连续生成调用上限；0 = 不限；距上次调用 > 60s 视为新一轮 |
+| 任务 | `maxCallsPerTurn` / `callBudgetIdleResetMs` | 6 / 25000 | 同会话连续生成调用上限；0 = 不限；距上次调用 > 25s 视为新一轮（文案秒数由该值算出） |
 | 落盘 | `outDir` / `videoOutDir` | `gen` / `gen/video` | 相对会话工作目录，或绝对路径 |
 | 落盘 | `maxDownloadBytes` | 209715200 | 单产物下载上限（200 MiB，视频可能较大） |
 | 落盘 | `maxInlineImageBytes` | 10485760 | 图生视频时本地首帧图内联上限 |
-| 成本 | `pricing` | 内置占位表（0.0） | 单价表，务必按官网改 |
+| 成本 | `pricing` | 出厂 `DEFAULT_PRICING`（真价；**不是** 0.0 占位表） | 单价表，务必按官网核对；写 `0` 会被闸门当"未计价"拒绝提交，写 `null` = 未计价 |
 | 开关 | `enableAskGlm` / `enableAskQwen` | **关 / 关** | 两个读图子代理互斥、二选一（打开一个自动关另一个）；见下节《工具开关》 |
 | 开关 | `blockMainAgentNativeVision` | 关 | 屏蔽主代理原生读图，把读图强制路由到读图子代理（**需完整重启**）；见《主代理原生读图开关》 |
-| —— | —— | —— | **线上 desktop profile 把 `enableAskQwen` 与 `blockMainAgentNativeVision` 钉成了 `true`**，位置在 profile 用户层 `cordis.patch.yml`（原因见《配置持久化》） |
+| —— | —— | —— | **线上 desktop profile 把 `enableAskGlm` 与 `blockMainAgentNativeVision` 钉成了 `true`**（`enableAskQwen` 为 `false`，两个读图员互斥），位置在 profile 用户层 `cordis.patch.yml`（原因见《配置持久化》） |
 | 开关 | `enableQwenDraw` / `enableSeedanceVideo` / `enableMediaTask` / `enableMediaReport` | 开 / **关** / 开 / 开 | 其余四个能力的一键开关 |
-| 开关 | `promptSection` | true | 是否注册"分工说明"提示词段落（只讲分工与边界，不列工具名） |
+| 开关 | `promptSection` | true | 是否注册"分工说明"提示词段落（只讲分工与**读图路由**策略，并明列 `ask_glm` / `ask_qwen`；不重复宿主已有的禁令） |
 | 开关 | `degradeToText` | false | 读图子代理（ask_glm / ask_qwen）失败时，把结果替换成"不要卡住"的替代指引 |
 | 开关 | `healthProbe` / `healthProbeTtlMs` | true / 300000 | 健康探测与 5 分钟缓存 |
 | 其它 | `ledgerPath` | 空 | 账本 JSON 回退路径；留空 = `%USERPROFILE%\.dsh\mm-models-ledger.json` |
@@ -234,7 +364,8 @@ pricing:
 13:34:20 `cordis.yml` 就带上新值了（3 秒），不需要重启就能看到文件收敛。
 
 **注意是整体替换语义**：用户层给某个 id 写 `config:` 会**替换整份 config**，不是深合并。
-所以 `cordis.patch.yml` 里那一份 `mm-models` 写的是**完整 36 个键**，只把两个读图开关钉成想要的值；
+所以 `cordis.patch.yml` 里那一份 `mm-models` 写的是**整份配置**（当前与出厂模板同键集，见
+`tests/run.mjs` 的「发布用 patch 与出厂 Config 对齐」用例：漏键就会让测试红），只把两个读图开关钉成想要的值；
 如果哪天只写两个键，其余字段会掉回 schema 默认值（例如 `outDir` 回默认，产物就不落在你原来的目录）。
 
 **副作用（诚实说明）**：被钉住的两个开关，在配置卡里改了只对当前进程有效，重启会被这一层拉回来。
@@ -547,6 +678,89 @@ unitPriceOf(pricingOf(config)['doubao-seedance-2-5-260628'] ?? {})  →  null
 去哪儿看真实用量（智谱 / 百炼控制台的用量统计）。要真正计量，得给宿主加钩子
 （或写一个包装 `ctx.llm` 服务的插件），那是另一个工程。
 
+## 2026-10-16 修复：制图闸门 / 任务注册表 / 会话累计（详见 `REPORT-2026-10-16.md`）
+
+四个"运行时实测发现"的问题，改法都尽量小、不动既有功能面（4 个工具、schema 结构、默认值语义都不变）：
+
+| # | 问题（实测证据） | 修法 |
+| --- | --- | --- |
+| 1 | **制图完全没有金额闸门**：`qwen_draw` 不传任何确认参数即可出图扣费，未计价模型照常提交（`spend-guard.mjs` 里那句"任何付费路径都必须先过这里"当时是假的） | `qwen_draw` 接上同一套三层闸门（`noun: 出图` / `unitLabel: 张`，上限复用 `videoCostLimitCNY` / `videoSessionCostLimitCNY`，**不新增配置项**） |
+| 2 | **任务注册表 storage 后端是死的**：实机 `media_task(list)` 恒报「后端：file」而账本同时是 storage；根因是注册表 `open()` 传了裸 JSON-Schema，宿主契约要 `defineDomain + domainTable(zod)`；`.all()` 宿主也没有 | 与账本**同源**改法（`defineDomain` + `domainTable(zod)` + `invalidRecords` + `entries()`）；并把降级原因写进 `media_report(health)`（以前只有一句 `file`，没有线索） |
+| 3 | **会话累计上限看不到已花的钱**：记账只在产物落盘后发生，超时/取消后远端已计费却零记录（事故形态）；账本读不到时 `spentInSession` **静默 `return 0`**，等于无声关掉上限 | ① 读不到账本就**拒绝提交**（新 `sessionSpentOrThrow`，fail-closed，报 `UNAVAILABLE`）；② 超时/取消补记一笔**预估**（`accountUnretrievedSpend`，按 taskId 去重，防补下载后重复计费） |
+| 4 | **运行时跑的是旧模块**：改动要重启 DSH 才生效（进程内不会热重载插件） | 代码就位 + 本文档与报告同步；**重启后**才生效 |
+| 5 | **（应要求新增）确认层对制图太贵**：确认流程天然是两次调用，而制图单张 ¥0.18、一批最多 4 张 → 每次多一轮往返 | 新增 **`noConfirmUnderCNY`**（默认 1 元，**设置卡里可改**）：预估不超过它就免复述金额。**只跳过"复述"这一层**——单次/会话上限与"未计价 fail-closed"照旧，且阈值判定被放在两个上限**之后**，不许变成绕过上限的后门（变异测试专门盯它） |
+
+验收（全部可复跑）：`run.mjs` **110 通过 / 0 失败**（新增 8 条专用回归用例）、`verify-functionality` **6/6**、
+`client-card` 全通过、`_card-mutex` **8/8**、变异测试 **注入 15 个 / 抓到 15 个**（新增三个专门盯这次的修复）。
+
+第 5 条的边界：默认阈值 1 元正好覆盖"制图任何一批"（≤¥0.72），而出片 1 秒就是 ¥1.52 → **出片仍然每次都确认**；
+调成 0 = 关闭该机制（一律确认）。台账照旧：免确认不等于不记账。
+
+代价如实记：`qwen_draw` 的 schema **538 B → 691 B**（+153 B/请求，≈+38 token），换"制图也要先报价再确认"。
+
+## 2026-10-17 修复：读图 token 终于进账 + 测试「间歇性假绿」
+
+### 1. 主要成本项不在账上 → 已记账
+
+**问题**：`media_report(cost)` 长期自曝「读图子代理（ask_glm / ask_qwen）的 token **未计入本报表**」。
+理由写的是「DSH 只在工具层给插件留了钩子，**没有请求级钩子**」。
+
+**这个结论在 0.2.0-rc.2 上已经不成立。** 实测 `@deepseek-ai/dsh-llm/lib/index.js`：
+
+```js
+streamWithRegistration(options, prepared) {
+  return this.ctx.waterfall(this, 'llm/stream', options, () => this.adapterStream(options, prepared))
+}
+```
+
+而 cordis 的 `dispatch()` 会把开头的 service 剥成 `this`：
+
+```js
+const thisArg = typeof args[0] === 'object' || typeof args[0] === 'function' ? args.shift() : null
+const name = args.shift()
+… hook.callback.bind(thisArg)
+```
+
+→ 所以插件订阅 `ctx.on('llm/stream', function (options, next) { … })` 就能拿到完整请求对象与 `next`，
+**并包住返回的流**去观察 `usage` 分片（协议顺序：`usage` 先于终止 `finish`）。
+
+**实现**：新增 `core/reader-usage.mjs`，在 `llm/stream` 上只读观察，把 usage 落成账本记录。
+
+| 维度 | 取值 | 依据 |
+| --- | --- | --- |
+| 记哪些调用 | 只记 `provider` ∈ {`glm`, `qwen-vl`} | 这两个 provider 是**读图员专属**（在 `llm-pi-ai` 里只被读图子代理使用），所以按 provider 归因是证据支持的；主代理与其它子代理的 token 由宿主自己计量，重复记账只会弄脏报表 |
+| 记什么 | `unitKind: 'ktoken'`、`inputTokens` / `outputTokens` / `units` | 字段形状**对齐 `amountOf()` 的读法**——它读的是 `record.inputTokens`（不是 `units`）与记录自带的 `inputPrice`/`outputPrice`。只写 `units + unitPrice` 的话金额会被静默算成 0 |
+| 单价 | 落账时按**模型 id** 从单价表解析并写进记录 | 单价表的键是模型 id（`glm-4.6v`），而 `options.provider` 是路由名（`glm`）——按 provider 查必然查空。写进记录让账本自包含，日后改价不篡改历史 |
+| 金额 | 一律 `null`，由账本按 `unitKind` 统一计算 | 避免"记录里预算一次、报表里再算一次"两处口径漂移 |
+
+**边界（刻意收窄，都有单测）**：分片原样透出（同一个对象，不拷贝）；观察者抛错不影响原流异常；
+终结语义由 `for await` 保持；落账失败（同步抛 / 异步 reject）只记日志，**绝不打断模型调用**；
+环缓冲有上限（`maxEntries`，默认 200），`observed` 计数器不受限。
+
+**验证**：`tests/_reader-usage.test.mjs` **20 通过 / 0 失败**，含一条用**真实 `amountOf`** 反验字段形状的用例
+（入 1000 × 0.5 + 出 100 × 1.5 = **0.65**，若字段写错会被算成 0 —— 那正是 2026-10-15 那个"真钱显示成免费"的同一个坑）。
+
+**仍未解决的部分（如实记）**：单价的**数字**还是空的 —— 出厂表里 `glm-4.6v` 与 `qwen3-vl-plus` 的
+`inputPrice`/`outputPrice` 都是 `null`（未计价）。所以现在报表口径是「**token 已记账、金额仍为未计价**」，
+按官网把价填进单价表后，金额会自动算出来（`amountOf` 这条路已经通了）。
+`renderCostReport` 里那句「未计入」已删除，替换为实际观测摘要；**没观测到就如实说"尚无观测记录"**，
+绝不谎报已记账（回归里钉了这条）。
+
+### 2. 测试「间歇性假绿」→ 测试目录改为每轮唯一
+
+**问题**：`tests/run.mjs` 用**固定**子目录 `tmpdir()/mm-models-test-home` + `rm(recursive, force)` 清空。
+该清理在 Windows 上会因文件锁失败，而 `force: true` 把失败**静默吞掉** → 上一轮的出图缓存残留，
+本轮直接命中缓存、真实提交链路根本没被测到。
+
+实测症状（同一份代码连跑）：一会儿 `123 通过 / 0 失败`，一会儿
+`default qwen-image mode should be sync, got cache:dce34907e1d5`。
+仓库注释里 2026-10-14 记过同一个坑（"8 条用例挂"），当时补的是"清空"——**没根治，因为清理本身会失败**。
+
+**修法**：改用 `mkdtempSync(join(tmpdir(), 'mm-models-test-home-'))`。每轮唯一，**不依赖清理成功**，
+也不与其它进程抢目录。
+
+**验证**：连跑 3 次，全部 `123 通过 / 0 失败`（改之前是间歇的）。
+
 ## 工具开关（插件页 → gpt-CN → 配置卡，一键设置）
 
 六个能力各有一个开关，用来允许/禁止主 agent 使用对应工具（零前端代码，复用内置设置 UI）：
@@ -560,6 +774,7 @@ unitPriceOf(pricingOf(config)['doubao-seedance-2-5-260628'] ?? {})  →  null
 | `enableMediaTask` | ✅ 开 | `media_task` 任务重查/补下载 |
 | `enableMediaReport` | ✅ 开 | `media_report` 成本/健康 |
 | `blockMainAgentNativeVision` | ⛔ 关 | 屏蔽主代理原生读图，强制走读图子代理（**需完整重启**） |
+| `blockSubagentNativeVision` | ⛔ 关 | 屏蔽**通用子代理**原生读图（读图员豁免）；打开前请确认读图员 `maxDepth ≥ 2`，见《通用子代理原生读图开关》 |
 | `attachResultImages` | ⛔ 关 | 把生成的图附回模型上下文（默认只回路径，原因见下节） |
 | `maxAttachImageBytes` | 4194304 | 附图字节上限（默认 4 MiB，`0` = 不限） |
 
@@ -594,6 +809,74 @@ unitPriceOf(pricingOf(config)['doubao-seedance-2-5-260628'] ?? {})  →  null
 `tests/e2e-readers.mjs` 阶段 A 就是为此加的回归：它同时断言"主代理没有 `read_image`"
 **和**"读图子代理仍然真读到『左红右蓝』"——只测前者会漏掉这个 bug。
 
+### 通用子代理原生读图开关（`blockSubagentNativeVision`，2026-10-15）
+
+**问题（实测确认，不是推测）**：原生子代理**天生就有 `read_image`**。实测一个 `subagent`
+子代理的工具清单是 32 项，含 `read_image`、`ask_glm`、`subagent`、`subagent_fork`；
+让它真的读一张图，返回的是**真实图像内容块**（含 sha256、归一化副本路径），不是占位符。
+而本插件的三条守卫**全都只针对主代理**（`read_image` 掩码只对非子代理下、
+`read` 拦图只对主代理、委派审计只对主代理）。于是繁重任务里主代理派出的子代理会自己读图，
+绕开读图员的只读契约与路由策略。
+
+**开关**：`blockSubagentNativeVision`（配置卡里：屏蔽通用子代理原生读图），默认 **关**。
+
+| 值 | 行为 |
+|---|---|
+| `false`（默认） | 通用子代理保留 `read_image`（= 2026-10-15 之前的既有行为，不偷偷改语义） |
+| `true` | 除**读图员**外，子代理的工具表里不再有 `read_image`，看图必须走 `ask_glm` / `ask_qwen` |
+
+**打开前必须满足两个前提**（否则等于把看图能力整体掐掉）：
+
+1. 读图员开着（`ask_glm` 或 `ask_qwen`）；
+2. 读图员行的 `maxDepth ≥ 2` —— 见下节《读图子代理的深度》。
+
+**读图员怎么被认出来（这是本开关最危险的地方）**：判错的代价是**读图员一起瞎**。
+所以豁免名单**不是硬编码**，而是从契约文件里**读出来**的（`core/reader-guard.mjs` 的
+`inspectReaderRoutes()`）：任何"`toolFilter.allow` 里放了 `read_image`"的 `dsh-tool-subagent` 行
+都会被认出来，取它的 `agentOptions` 里的 `provider` / `model` 作白名单。
+判据命中的是 provider **或** model 任一个，所以改路由名也能豁免。
+一处契约行都扫不到时，插件**放弃对子代理的屏蔽**（fail-open）并告警 ——
+宁可少屏蔽一次，也不赌"读图员是不是被我弄瞎了"。
+
+**判定过程可见**：`media_report(action=health)` 会报出屏蔽状态、豁免名单（含契约声明处数）、
+当前挂掩码的 agent 数，以及**最近 5 次判定快照**（谁是主代理 / 子代理 / 读图员，
+provider、model、结果）。起因是本插件自己的教训："看不见的告警等于没有告警"。
+
+### 读图子代理的深度（`maxDepth: 2`，2026-10-15 由 1 改）
+
+宿主语义是"**子 agent 的深度必须 ≤ maxDepth**"（数值型 `maxDepth` 要求提供方具备
+`depthLimit` 能力，`spawn` 有；宿主另有 `subagent.maxDepth` 设置、初始值 1）。
+所以 `maxDepth: 1` 的实际后果是：主代理能调读图员（深度 1 ✅），但**已委派的子代理调不动**
+读图员（深度 2 ❌，实测错误原文：`Error: subagent depth 2 exceeds maxDepth 1`）。
+
+**这意味着在 C 打开之前，子代理"自己读图"是繁重任务里唯一可用的看图途径** ——
+不是漏网，而是配置决定的结果。把两行读图员都改成 `maxDepth: 2` 之后：
+主代理调读图员（1 ✅）、子代理调读图员（2 ✅）、读图员再往下委派（3 ❌ ——
+它本来也没有委派工具，`toolFilter` 只放行了 `read_image`）。
+
+### ⚠ 重新装配会丢掩码 —— 所以行为层必须有 guard 兜底（2026-10-16 实测）
+
+**现场**：profile 用户层写着 `blockMainAgentNativeVision: true`，
+装配产物 `cordis.yml` 里同样是 `true`，但**主代理仍然成功调用了 `read_image`**（实测读到了图）。
+
+**根因**：`read_image` 的屏蔽是"**按 agent 贴掩码**"（`agent.ctx.tools.restrict`），
+而掩码表只由 `agent/created` 填充、插件卸载时会被 `dispose` 掉。于是
+**任何一次重新装配 / 热重载之后**，早已存在的 agent 永远不会再触发 `agent/created`，
+它的掩码就**永久丢失**——每秒对账也救不回来，因为它只遍历表里已有的 agent。
+本机 18:27 的重新装配（改 profile 配置会自动触发）正是这样把主代理的屏蔽弄丢的。
+同一个原因也会让"关闭的六个工具开关"重新出现在**已存在会话**的工具表里
+（那六个有 guard 兜底，调用仍被拒，只是 schema 可见性失真）。
+
+**对策**：加一条**行为层兜底守卫**（`ctx.tools.guard`），在每次调用前判定 `read_image`：
+
+- guard 读的是**实时配置**、与"agent 是哪一轮创建的"无关，因此**重载后依然生效**；
+- 文案比"工具不存在"更有用：直接告诉模型改用哪个读图员；
+- 判据与掩码**同源**（同一个 `desiredDeny` 语义），避免两处打架。
+
+这也是本插件既有的架构原则："guard 那一层仍然兜底'调用被拒立即生效'
+（schema 可见性与行为拒绝是两件事）"。掩码仍然保留 —— 它的作用是让新会话**看不见**这个工具，
+而 guard 保证**调不动**。
+
 ### 图像任务禁令（2026-10-13 按使用要求加）
 
 **问题**：模型宁可 spawn 一个通用子代理替它读图，也不用 `ask_glm` / `ask_qwen`。
@@ -617,6 +900,10 @@ unitPriceOf(pricingOf(config)['doubao-seedance-2-5-260628'] ?? {})  →  null
   两种情况都明确禁止重试；
 - **门槛故意收窄**：不认单个"图"字 —— 所以"帮我画一张图"（出图）不会被误伤；
 - 只审主代理；读图员自己、子代理、其它工具都不受影响。
+  **2026-10-15 补充**：这条审计**拦不住**"子代理在自己那轮任务里顺手读图"——
+  它只在主代理发起委派的那一刻看任务描述，而繁重任务里子代理拿到的往往是一个宽泛任务，
+  读图只是其中一步。要覆盖那种情形得用 `blockSubagentNativeVision`（见《通用子代理原生读图开关》），
+  那是**按 agent 屏蔽能力**，不是审计措辞。
 
 **同时改了 system prompt**（`PROMPT_SECTION` 新增两行）：一切图像识别 / 分析 / 审查
 **只能**走 `ask_glm` 或 `ask_qwen`；严禁用 `subagent` / `subagent_fork` 委派读图、
@@ -625,6 +912,152 @@ unitPriceOf(pricingOf(config)['doubao-seedance-2-5-260628'] ?? {})  →  null
 > ⚠ **已知边界（不假装完备）**：这是**语义审计**，靠文字线索判定。模型若用既不含路径、
 > 也不含词表字眼的措辞，理论上仍可能绕过。零漏网的唯一办法是彻底禁用委派工具，
 > 代价是主代理失去一切委派能力 —— 本项目当前选择"只禁视觉用途"。
+
+#### 2026-10-16：`blockSubagentNativeVision` 打开时，这条审计**整体让位**
+
+**为什么**：C 打开后，通用子代理**没有 `read_image`**，它想看懂图只能调 `ask_glm` / `ask_qwen`
+—— 那正是这条审计想促成的路由。**绕不过去了，拦措辞就不再提供任何保护，只剩误伤。**
+
+**误伤有多大（实测，不是估计）**：拿 10 条真实的、与识图无关的委派文本喂给这条守卫：
+
+| 委派文本 | C 关 | C 开 |
+| --- | --- | --- |
+| 帮我写一段关于**读图**路由的设计文档 | ⛔ 误伤 | ✅ 放行 |
+| 把 README 里所有"**读图员**"改成"识图子代理" | ⛔ 误伤 | ✅ 放行 |
+| 把 `assets/logo.png` 转成 webp 并压缩 | ⛔ 误伤 | ✅ 放行 |
+| 把 `D:\shots\old.png` 从 git 里删掉 | ⛔ 误伤 | ✅ 放行 |
+| 把 `D:\shots\a.png` 的分辨率改成 512x512 | ⛔ 误伤 | ✅ 放行 |
+| 这段报错里的**图中**路径怎么拼出来的 | ⛔ 误伤 | ✅ 放行 |
+| 普通重构 / 排查 / 查文档 / 分析 README | ✅ 放行 | ✅ 放行 |
+| **误伤率** | **6/10** | **0/10** |
+
+**代价不对称**：真·视觉委派被放过时，子代理会自己去调读图员（多一跳，但结果正确、仍受契约约束）；
+误伤则是纯损失 —— 一次废调用 + 一段**永久留在会话里、每轮都重发**的错误文案 + 可能打断多步计划。
+
+**实现**：guard 里一行前置条件 `if (subagentVisionBlocked()) return undefined`。
+**C 关着时行为完全不变**（那时这条审计是唯一防线，误伤是它的必要代价）。
+回归断言在 `tests/run.mjs`（C 开：6 条误伤文本必须全部放行；C 关：仍被拦），
+并有对应变异（把这一行删掉必须被抓住）。
+
+#### 2026-10-16：读图员契约的**运行时兜底**（第六条 guard）
+
+**现场（实测，很不好看）**：契约写的是 `toolFilter: { allow: [read_image] }`，
+而读图员的**运行时**工具表是：
+
+```
+ops_bash, read_image, subagent
+```
+
+我们让读图员执行 `echo OK` —— **它真的返回了 OK**。也就是说"读图员被物理阉割、
+除图片外没有任何工具"这句承诺在生产里是假的：
+
+- 持有 shell ⇒ 图片里的**提示注入**可以诱导它在本机执行命令（真实的越权面）；
+- 持有 `subagent` ⇒ 它还能再往下委派。
+
+而插件的启动自检只校验**配置文本**（`allow` 是否恰好 `[read_image]`），所以它一直报"合规"。
+
+**修法（两层，缺一不可）**：
+
+1. **配置层**：给两行读图员补 `deny` 黑名单（`allow` 管白名单、`deny` 管黑名单），
+   显式 deny 掉 `ops_bash / pwsh / subagent / read / write / edit / glob / grep / web_search / qwen_draw …`；
+2. **行为层**：新增第六条 guard —— **读图员只能调 `read_image`**，其它一律拒绝并说明边界。
+   理由与本项目这一天的两条教训同源：*配置/掩码说的不等于运行时真的*。
+   判据复用读图员白名单（契约文件里的 provider/model），所以改路由名也不会误伤。
+
+**回归**：`tests/run.mjs` 有两条用例（读图员调 `ops_bash`/`subagent`/写文件必须被拒、
+`read_image` 必须放行、主代理与通用子代理不受影响；发布 patch 里读图员**必须显式 deny**、
+两条窄委派行的工具面 **≤ 6 个**），另有三条变异盯着（去掉守卫、删 deny、放宽窄委派）。
+
+> 这条也顺带解释了为什么读图员"便宜"：它每请求只背 **3 个工具 / 2.3 KB**，
+> 而通用子代理要背 **35 个 / 32 KB**。所以"窄工具面"既是安全边界，也是性能杠杆。
+
+#### 两条窄工具面的委派行（`subagent_code` / `subagent_research`，2026-10-16 加）
+
+**动机（实测）**：通用 `subagent` 的子代理每请求要背**全部 35 个工具的 schema ≈ 32 KB**
+（`pwsh` 3450 B、`workflow` 3405 B 是大头），而缓存只对**同一 agent 的后续请求**生效 ——
+**每个新子代理的首个请求都是冷前缀、全价**。所以按用途开两个窄工具面的委派工具：
+
+| 委派工具 | 工具面（`allow`，只能写全局工具名） | **实测**真实工具表 | 用途 |
+| --- | --- | --- | --- |
+| `subagent_code` | `read, edit, write, glob, grep` | **7 个 / 5716 B**（+ 恒常的 `ops_bash`、`subagent`） | 跑命令 / 改代码 |
+| `subagent_research` | `web_search, web_fetch, read` | **5 个 / 2950 B**（+ 同上两个） | 检索取证（明确不许改文件） |
+| （对照）通用 `subagent` | — | 35 个 / **32507 B** | 什么都能干，但每请求背全表 |
+
+⇒ 实测每请求省 **26.8 KB / 29.6 KB**（相对通用子代理 −82% / −91%）。读图员是 3 个 / 2332 B。
+
+- 两行都**不设 `agentOptions`**：代码/资料类子代理继承主代理的路由（deepseek），
+  只有读图员才需要把路由换成 glm / qwen-vl；
+- `maxDepth: 1` + `one-shot`：不能再嵌套委派；
+- 分工说明段落（`PROMPT_SECTION`）里点名了这两个工具 —— 否则主模型不知道该用它们，
+  会继续无脑用通用 `subagent`（工具描述由官方包生成，插件改不了）。
+
+> ⚠⚠ **`toolFilter` 的硬约束（2026-10-16 实测；踩它的代价是读图链路整个打挂）**：
+> `allow` / `deny` **只能引用「全局工具」**，写成非全局或保留名会在**每次 spawn 直接抛错**：
+> `run_code` → `cannot name reserved PTC mode presentation transport`；
+> `ops_bash` / `subagent` → `names unknown global tool`。
+> 实测语义是 **`allow` = 全局工具白名单 ∪ {`ops_bash`, `subagent`}** —— 后两个是按 scope
+> 注入的**恒常项，过滤不掉**（读图员 `allow` 只写 `read_image`，实际仍拿到这 3 个）。
+> 所以"读图员不许跑 shell"**只能**由插件里的运行时 guard 保证，配置层管不到它们。
+> 这条约束已钉进测试（`tests/run.mjs`：allow/deny 不得出现 `ops_bash`/`subagent`/`run_code`/`bash`），
+> 免得下次又踩。
+
+#### 子代理能不能自己生成？——**能，默认允许**（2026-10-16 策略）
+
+**实测事实**：会话日志里 **通用/原生子代理 19/28 手里有 `qwen_draw`**（读图员 0/59，白名单挡住了）。
+也就是说子代理**确实能自己出图**，而制图在默认配置下是"**免确认**"的
+（`noConfirmUnderCNY` 默认 1 元 > 一批最多 ¥0.72 → 直接提交、不用复述金额）。
+
+**策略决定（用户 2026-10-16 明确）**：**不禁止**。
+理由：繁重任务里"只让主代理发指令"效率太低，而普通任务基本用不到子代理出图。
+
+但"允许"不等于"放任"，补的是**可见性与上限**（都不牺牲效率）：
+
+| 补的东西 | 作用 | 实现 |
+| --- | --- | --- |
+| **会话树汇总** | 子代理花费记在它自己的会话上，主代理 `cost(session)` 现在会连**后代子代理会话**一起汇总，标题写明"含 N 个子代理会话" | `agent/created` 时记 `parentSession` 边（实测子会话 header 里确实有），`renderCostReport` 加 `childSessionCount` |
+| **会话累计上限覆盖会话树** | 把花费挪进子会话**绕不过** `videoSessionCostLimitCNY` | `sessionSpentOrThrow({ sessionIds })` + `qwen_draw`/`seedance_video` 传入会话树 |
+| **刹车开关** | 无人值守跑重活、或要临时收紧时：`blockSubagentSpend: true` → 子代理只能把生成需求回报给主代理 | 第七条 guard（默认 `false` = 允许） |
+
+> ⚠ 注意配套：`videoSessionCostLimitCNY: 0` 表示**不限**。会话树接上之后这个值才真正
+> "管得住整棵树"，想有总闸就设成比如 `30`。
+> 回归：`tests/run.mjs` 有三条用例（默认允许 / 刹车生效 / 上限覆盖树 + 报表汇总），
+> 三条变异盯着（把默认改回禁止、把 `sessionIds` 去掉、把报表汇总去掉）。
+
+### ⛔⛔ 最严重的一次"测试全绿但生产失效"：守卫读错了入参字段名（2026-10-16 实测修复）
+
+**这条值得单独记一节，因为它一次性让两条守卫变成死代码，而 CI 一直是绿的。**
+
+- harness 的守卫签名是
+  `type ToolGuard = (execution: Readonly<ToolExecution>) => string | undefined`；
+- `ToolExecution`（继承 `ToolExecutionInput`）里，**入参字段叫 `arguments`**：
+  `{ callId, rootCallId?, name, schema?, arguments: unknown, agent?, parent?, signal }`
+  —— **没有 `args`**；
+- 本插件早期（2026-10-13 起）按 **`exec.args`** 读取入参。于是：
+  - **第三条守卫**（`read` 读图片 → 拦住并指路）：`pathArgOf(undefined)` → 永远放行；
+  - **第四条守卫**（委派读图审计）：`delegationTextOf(undefined)` → 永远放行。
+  两条都**在生产里从未生效过**，而 `run.mjs` / `verify-functionality.mjs` 全绿 ——
+  因为 fixtures 手搓的执行对象是 `{ name, args, agent }`，**测试契约与真实契约不一致**。
+
+**现场证据（都是 2026-10-16 实测）**：
+
+1. 主代理 `read` 一张真实的 `.jpg`，收到的是 harness 原生的
+   `Error: cannot read "…jpg": binary file` —— 而不是本插件那条"看图请改用读图子代理"的指路文案；
+2. 主代理发起一次**明显的**读图委派（任务描述里带 `.png` 路径 + "看看这张图"），
+   **没有被拦下**，子代理照常执行。
+
+**修法**：新增 `argsOf(exec) = exec?.arguments ?? exec?.args`，
+两处调用点统一走它（兼容既有 fixtures，优先真实契约）。
+
+**回归保护**（缺一不可）：
+
+- `tests/run.mjs` 的「⚠ 守卫必须读 harness 真实字段名 `arguments`」用例**只用 harness 形状**
+  `{ name, arguments, agent }` 构造执行对象，并同时覆盖"旧形态仍可用"与"入参缺失不炸"；
+- 变异测试新增一条：把 `argsOf` 改回只读 `exec?.args` → 该用例必须失败（已确认能抓住）。
+
+> **教训（比这个 bug 本身更重要）**：只要测试自己手搓"宿主对象"，就必须**照着宿主类型定义**
+> 手搓，而不能照着"我以为的形状"。这次两条守卫失效 4 天、跨两次报告都没被发现，
+> 根因就是**没有任何一条断言在真实形状上跑过**。凡是新增/修改与宿主交互的字段，
+> 都值得先回去核对一次那份 `interface`。
 >
 > 另外：prompt 段落原本**刻意不列任何工具名**（不泄漏能力），图像禁令是**唯一有意的例外**
 > —— 不点名 `ask_glm` / `ask_qwen` 就无法下达"只许走这两条路"的指令。
@@ -711,6 +1144,14 @@ timeout（600 秒）。日志里其实早就写着 `Aborting batchmode due to fa
 
 实测回归：砍到只剩 `read_image` 之后，`glm-4.6v` 与 `qwen3-vl-plus` 仍然都能真读到
 「左红右蓝」（`tests/e2e-readers.mjs` 两阶段全绿）。
+
+**深度也要一起看（2026-10-15 修）**：这两行原本是 `maxDepth: 1`，而宿主语义是
+"子 agent 深度 ≤ maxDepth"，于是**已委派的子代理调不动读图员**（实测
+`subagent depth 2 exceeds maxDepth 1`）。在 `blockSubagentNativeVision` 打开时这会变成
+"子代理彻底没有看图途径"，所以两行都已改成 **`maxDepth: 2`**，
+并且 `tests/run.mjs` 里钉了断言（自带 patch 的每个读图行都必须 `≥ 2`）。
+另外，抠取配置值时**必须先去掉整行注释**——这两行的注释里就写着"规划原文写 `maxDepth: 0`"，
+不排除注释会把注释里的示例值当成真实配置读出来（实测踩到，已修 + 有变异测试盯着）。
 
 ### 系统提示词的「环境探查禁令」
 
@@ -828,7 +1269,15 @@ PTC（`run_code`）路径为源码级确认，未做端到端实跑。
 - 花了多少：`media_report(action=cost, scope=session|today|all)`
 - 现在能不能出图：`media_report(action=health)`
 
-产物落 `gen\`（视频 `gen\video\`）。图片会同时作为**图片内容块**返回，
+> **报告默认紧凑，明细按需**（2026-10-16 加 `verbose`）：工具返回会**永久留在会话里、
+> 之后每轮都重发**，所以 health/cost 默认只出结论与告警（实测 health 2667 → 2092 B、
+> cost 895 → 584 B，固定样板 274 → 92 B）。要看图例、逐项原因、原生读图判定快照时：
+> `media_report(action=health, verbose=true)`。
+> **紧凑模式只删样板，不删告警** —— 降级、缺 key、未计价、代理冲突一个都不会少。
+
+产物落 `gen\`（视频 `gen\video\`）。**默认只回"路径 + 规格"文本**（`attachResultImages: false`）：
+避免 2048×2048 大图触发上传/传输失败而拖垮整轮，而且多数路由本来就会把它降采样。
+打开 `attachResultImages` 后图片会作为**图片内容块**返回，
 是否真的"看到图"取决于当前会话模型是否声明 `input: [text, image]`；
 文本模型会收到 `[image omitted ...]` 占位，这是 harness 的正常行为。
 
@@ -850,7 +1299,7 @@ PTC（`run_code`）路径为源码级确认，未做端到端实跑。
 - **超时 / 取消保留 `task_id`**：远端任务不取消，文案直接给出
   `media_task(provider=..., task_id=...)` 的下一步。
 - **失败一律是可读的工具结果**：归一化错误码（MISSING_CREDENTIAL / AUTH / RATE_LIMIT /
-  QUOTA / BAD_REQUEST / POLICY_REJECTED / UNAVAILABLE / TIMEOUT / ABORTED / UNKNOWN）
+  QUOTA / BAD_REQUEST / POLICY_REJECTED / MODEL_UNAVAILABLE / UNAVAILABLE / TIMEOUT / ABORTED / UNKNOWN）
   各自映射到固定人话文案；绝不吞错、不伪装成"已完成但没内容"。
 - **同步模式（qwen-image）没有 task_id / 轮询**：POST 本身就是生成请求，数秒内直接返回签名图片 URL，
   拿到后立即下载；单次 HTTP 上限用 `taskTimeoutMs`（不是 `httpTimeoutMs`）。此时 `media_task`
@@ -859,7 +1308,7 @@ PTC（`run_code`）路径为源码级确认，未做端到端实跑。
 
 ## 本次试运行结论
 
-环境（全部在 `D:\DS WORK AREA\dsh-mm-models\_sandbox`，**没有碰 desktop profile**）：
+环境（全部在 `D:\path\to\dsh-mm-models\_sandbox`，**没有碰 desktop profile**）：
 
 - 本地假厂商 + 假 LLM（`tests/mock-providers.mjs`、`tests/mock-llm.mjs`）；
 - 用 dsh 自带 CLI 建了一个沙箱 profile `mmtest`（headless 模板），
@@ -869,7 +1318,7 @@ PTC（`run_code`）路径为源码级确认，未做端到端实跑。
 
 结果：
 
-1. `node --import ./tests/register.mjs ./tests/run.mjs` —— **40 项全部通过**：配置面、注册面、
+1. `node --import ./tests/register.mjs ./tests/run.mjs` —— **110 项全部通过**：配置面、注册面、
    工具开关（guard/restrict/健康报表/提示词）、设置卡离线测试（`tests/client-card.test.mjs`）、
    submit/poll/fetch、n 张图、size 归一化、7 类失败映射、提交重试策略、超时/取消保留 task_id、
    media_task 补下载、seedance 文生/图生、两种账本后端、成本报表、健康探测、预算保护、
@@ -944,6 +1393,12 @@ PTC（`run_code`）路径为源码级确认，未做端到端实跑。
 为确认 `duration` 的合法范围，我用"返回 **200** 即视为通过"当判据，逐个试了
 `2,3,4,…,30`。**但 200 意味着任务真的被创建了**——探完两轮，账上多了
 **22 个视频生成任务、224 秒素材，估算约 ¥259**。
+
+> 💡 **三个数字别混**（此前 README 里出现过三个值，被误读成互相矛盾）：
+> **¥259** 是按"22 任务 / 224 秒 × 当时假定的单价"算的**上界估算**；
+> **¥212.98** 是按 token 数（3.69M × 70/46 元每百万）算的另一套估算，**已被判定高估 3–5 倍**（见本节末尾）；
+> **¥195.97** 才是**实际账单**，也是 `core/spend-guard.mjs` 与 `index.js` 注释里引用的那个数。
+> 做闸门默认值时用的是实际账单，不是估算。
 
 ```
 错误判据： 200 = "参数合法" → 以为无副作用
@@ -1032,11 +1487,11 @@ PTC（`run_code`）路径为源码级确认，未做端到端实跑。
 | 项 | 优化前 | 优化后 | 说明 |
 | --- | --- | --- | --- |
 | 四个自研工具 schema（本地投影） | 2056 字符 | **1663 字符** | 描述与参数说明逐条精简 |
-| 分工提示词段落 | 391 字符 | **108 字符** | 只留"分工 + 边界"，不再列工具名（工具能力由各自 schema 呈现；顺带杜绝提示词泄漏已关闭能力） |
+| 分工提示词段落 | 391 字符 | **108 字符** | 只留"分工 + 边界"，不再列工具名（工具能力由各自 schema 呈现；顺带杜绝提示词泄漏已关闭能力）。⚠ 本表是 2026-10-12 的快照；现行段落见 `index.js` 的 `PROMPT_SECTION`（2026-10-16 第二次瘦身后约 555 B / 206 字符，见下节《性能》） |
 | 小计（固定成本） | 2447 字符 | **1771 字符（−27.6%）** | |
 | `ask_glm` schema（真实 harness） | 937 字符 | **788 字符（−149）** | 关闭 `enableRunInBackground`：去掉 `run_in_background` 参数；需要后台读图时在 `cordis.patch.yml` 改回 `true` |
 | 默认配置下本插件贡献（真实 harness） | ~2307 字符 | **2158 字符** | ask_glm 788 + qwen_draw 452 + media_task 509 + media_report 409；`seedance_video` 默认开关关闭，不在清单里（开启后 +~560） |
-| 分工提示词段落（2026-10-13 加环境红线后） | 108 字符 | **270 字符** | 加了两条"环境探查禁令"；固定成本随之 1771 → **1934 字符**。这是主动换来的：红线省下的是子代理乱试错烧掉的上下文，那笔账远大于 162 字符 |
+| ~~分工提示词段落（2026-10-13 加环境红线后）~~ | ~~108 字符~~ | ~~**270 字符**~~ | ❌ **这一行已作废**：那两条"环境探查禁令"与宿主自己注入的系统指令**逐字重合**（同一套规则在上下文里出现两遍），2026-10-15 已删除，见 `index.js:40-43`。现行数值以下节《性能》的实测为准 |
 
 磁盘体量：**插件本体 213 KB**（`tests/`、`_sandbox/` 是试运行环境，已从 `package.json` 的
 `files` 白名单排除，安装时不打包；整个工作目录 1.2 MB）。
@@ -1063,9 +1518,21 @@ node tests/confirm-fields.mjs               :: 真实字段确证报告（图 1 
 
 | 项 | 实测 | 性质 |
 | --- | --- | --- |
-| 系统提示词段落 | **710 B ≈ 159 token** | 每个请求都发 |
-| 4 个工具 schema | **2777 B ≈ 835 token** | 每个请求都发 |
-| 合计 | **3487 B ≈ 994 token / 请求** | 约占 10 万 token 会话的 1% |
+| 系统提示词段落 | **约 555 B ≈ 140 token**（2026-10-16 由 710 B 瘦身） | 每个请求都发 |
+| 4 个工具 schema | **约 2930 B ≈ 880 token** | 每个请求都发 |
+| 合计 | **约 3485 B ≈ 1020 token / 请求** | 约占 10 万 token 会话的 1% |
+
+> 2026-10-16：`qwen_draw` 从 **538 B 增到 691 B**（+153 B/请求）——制图也接上花钱闸门，
+> 多了 `confirm_estimate` / `confirm_unpriced` 两个参数。这是"钱"买到的东西，不为省这 153 字节省略。
+>
+> 2026-10-16 第二轮（实测驱动，见 `REPORT-2026-10-16-subagent-vision.md` 第八/九节）：
+> 用真实会话日志量到**三类 agent 的 prompt 构成**，据此做了三件事 ——
+> ① 段落去掉"你是主创兼工程师…"这类**身份声明**（它会注入到每个 agent，实测 57/57 个读图员
+> 会话都带着、占其 prompt 的 11.9%，且与读图员 persona 直接矛盾），压到约 555 B；
+> ② `media_report` 报告默认走**紧凑模式**（health 2667 → 2092 B、cost 895 → 584 B，
+> 固定样板 274 → 92 B；明细与图例移入 `verbose=true`，**告警一个字都不省**）；
+> ③ 新增两条**窄工具面**的委派行（`subagent_code` / `subagent_research`），
+> 因为它们每请求只背 6 / 3 个工具的 schema，而通用 `subagent` 要背 35 个 ≈ 32 KB。
 
 **优化动作**：`seedance_video` 的 schema 从 **1663 B 压到 1098 B**（-34%）。
 原因是两个确认参数写了近 600 B 的小作文（`confirm_unpriced` 一个就 377 B）——
@@ -1135,6 +1602,14 @@ node tests/confirm-fields.mjs               :: 真实字段确证报告（图 1 
       全部实跑命中（`tests/field-report-*.md`）；工具体 `tests/e2e-real-qwen.mjs` 真实跑通
 - [ ] DashScope（异步模式）：本账号 403 不支持；`dashscopeImageMode: async` 只在假厂商验证过，
       换支持异步的账号/模型（如 wanx 系列）后按同法确证
+- [x] 百炼视频（可灵 v3 / 万相 2.5，2026-10-17 实跑确证）：提交路径
+      `/services/aigc/video-generation/video-synthesis` + `X-DashScope-Async: enable`，
+      查询 `GET /tasks/{id}`；`input.prompt`、`parameters.mode|size|duration|audio`、
+      `output.task_status`（PENDING/RUNNING/SUCCEEDED/FAILED/CANCELED/UNKNOWN）、
+      `output.video_url` 全部命中。两条实测边角：**可灵 prompt 上限 2500 且校验发生在任务创建之后**
+      （超长会留下 FAILED 任务，不扣费）；万相对同一 prompt 不设该上限（会正常计费）。
+      存量域名 `dashscope.aliyuncs.com/api/v1` 与业务空间专属域名都可用
+- [ ] 百炼视频的 `billing` 字段（能否回写真实扣费）尚未核对，当前账本记的是估算
 - [ ] Ark（被账号权限阻塞）：先开通 Seedance 或提供 `ep-...` 接入点 ID；之后核对提交路径、
       `content` 数组形状、首帧图字段（URL / base64）、`duration` / `resolution` / `ratio` 字段名与
       取值域、任务 id、状态取值、`video_url` 路径、计价单位
@@ -1146,14 +1621,14 @@ node tests/confirm-fields.mjs               :: 真实字段确证报告（图 1 
 
 ```
 dsh-mm-models/
-  package.json                @local/dsh-mm-models / dsh.bundle.patch / icon / peerDependencies
+  package.json                dsh-mm-models / dsh.bundle.patch / icon / peerDependencies
   cordis.patch.yml            补丁层：llm-pi-ai 覆盖（glm + qwen-vl）+ tool-subagent-glm/-qwen + mm-models
   .gitignore / .gitattributes 试运行痕迹排除、跨平台换行统一
   LICENSE                     MIT
-  index.js                    Host 半侧：Config + 注册 4 个自研工具 + 分工/环境红线段落
+  index.js                    Host 半侧：Config + 注册 5 个自研工具 + 分工/环境红线段落
                               + 工具开关 guard/restrict + 读图守卫 + 原生读图屏蔽 + 读图契约自检
   client.js                   Client 半侧：插件页里的 gpt-CN 配置卡（唯一前端代码）
-  core/fields.mjs             两家网关字段映射（唯一事实源，待实跑冻结）
+  core/fields.mjs             三家网关字段映射（DashScope 图 / DashScope 视频 / Ark）
   core/errors.mjs             归一化错误码 + 固定人话文案
   core/keys.mjs               三把 key 的解析与只读状态（字面值 > 引用名 > 环境变量）
   core/cost.mjs               单价表 + 账本（storageDomain / JSON）+ 报表
@@ -1177,7 +1652,7 @@ dsh-mm-models/
 
 - 还没装：什么都不用做。
 - 已装（假设）：`plugin_manager` 的 `remove_bundle` 删除本 bundle，或
-  `dsh plugin --profile desktop remove @local/dsh-mm-models`；随后重启。
+  `dsh plugin --profile desktop remove dsh-mm-models`；随后重启。
 - 只覆盖了 `llm-pi-ai` 与新增两行，删除 bundle 后 profile 回到原状；
   需要保留 GLM 路由的话，按上面的说明把 `providers.glm` 搬到用户补丁层。
 - `_sandbox`、`tests/field-report-*`、`gen\`、账本文件都可以直接删；插件不会自动删用户文件。
@@ -1213,7 +1688,7 @@ dsh-mm-models/
   （`[poll429] [poll503] [pollfail]`）与产物下载故障注入
   （`[art404] [art5xx-then-ok] [artbig-header] [artbig-stream]`）。
   在此之前 `manager.mjs` 的退避重试与 `deliver.mjs` 的体积上限在测试里**一次都没被执行过**
-  ——上面那条"重下三遍"的 bug 就是这么穿过 59 个绿灯的。用例数 59 → 70。
+  ——上面那条"重下三遍"的 bug 就是这么穿过当时的绿灯的。用例数：59 → 70 → 102 → 109 → **110（现行）**。
 - **CI 不再静默使用 schemastery 替身**。替身把 `.volatile()/.role()` 实现成 no-op，
   而生产里 `.volatile()` 会让字段变成引用对象（`index.js` 靠 liveConfig 解包）。
   现在：`package.json` 加 `@deepseek-ai/schemastery` 为 devDependency，
@@ -1236,10 +1711,16 @@ dsh-mm-models/
    （`fixtures.mjs` 已暴露 `disposers`，但没人调用）；
 3. JPEG / GIF 尺寸解析（`deliver.mjs` 的 SOF 扫描分支）、`slugify` / `uniquePath`、
    `maxInlineImageBytes`（图生视频内联上限）；
-4. `index.js:289` 的 `isSubagent` 仍把 `agent.parent` 当第一判据，而同一处的注释写着它不可靠、
+4. `index.js:497` 的 `isSubagent` 仍把 `agent.parent` 当第一判据，而同一处的注释写着它不可靠、
    测试也从不构造带 `parent` 的 agent。若某个 harness 版本给主 agent 挂上 `parent`，
    该 agent 会被当成子代理（拿不到 restrict 名单、又保住 `read_image`）而 CI 全绿；
-5. 健康探测的 5 分钟缓存、账本损坏回退、并发调用（所有工具都是 `isConcurrencySafe: false`）。
+5. 健康探测的 5 分钟缓存、账本损坏回退、并发调用（除 `media_report` 声明 `isConcurrencySafe: () => true` 外，其余工具都是 `false`）。
+6. **重新装配后掩码丢失**：只有单测证明"guard 能兜住"（`原生读图兜底守卫…` 用例 + 变异测试），
+   没有端到端用例能真的触发一次宿主重载再断言行为——那要求重启 harness。
+   另：`blockSubagentNativeVision` 的**读图员判别**在真实 harness 上只验证到
+   "读图行的 provider/model 能被扫出来"（`media_report(action=health)` 的判定快照可查），
+   没有用例能构造一个真实的读图员 agent 来断言它的 `agent.options` 形状——
+   所以每次改读图行路由后，**请看一眼 health 的判定快照**再依赖这个开关。
 
 ## 不在本期范围
 

@@ -8,9 +8,9 @@
  *   - 签名 URL 只用于下载，绝不写进工具结果。
  */
 import { createHash } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, realpath, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { basename, extname, isAbsolute, join, resolve } from 'node:path'
+import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path'
 
 import { CODES, MediaError } from './errors.mjs'
 
@@ -125,6 +125,52 @@ export function extensionFor(mediaType, fallback = '.bin') {
   return EXT_BY_MEDIA_TYPE[mediaType] ?? fallback
 }
 
+/**
+ * 路径是否落在某个根目录之内（**读本地文件 / 写产物前的 containment 断言**）。
+ *
+ * 为什么必须有：插件用 `node:fs` 直接读写，**不受宿主工作区沙箱约束**。
+ * 一旦允许任意绝对路径，就等于开了一条"读本机任意文件并外发 / 往任意位置写文件"的通道
+ * （2026-10-16 评审实测：`seedance_video` 的 `image` 可指向 `~/.dsh/.env`）。
+ *
+ * 细节：
+ *   - 先 `realpath` 解析符号链接再比较（软链指向外面时不能算通过）；路径不存在时回退到字面解析；
+ *   - Windows 大小写不敏感；
+ *   - 比较时补上分隔符，避免 `/a/bc` 被误判成在 `/a/b` 之内。
+ *
+ * @param {string} target - 待检查的路径。
+ * @param {string} root - 允许的根目录。
+ * @returns {Promise<boolean>} 是否在根目录内。
+ */
+export async function isInside(target, root) {
+  const normalize = (value) => (process.platform === 'win32' ? value.toLowerCase() : value)
+  const resolveReal = async (value) => {
+    try {
+      return await realpath(value)
+    } catch {
+      return resolve(value)
+    }
+  }
+  const inner = normalize(await resolveReal(String(target)))
+  const outer = normalize(await resolveReal(String(root)))
+  const withSep = outer.endsWith(sep) ? outer : outer + sep
+  return inner === outer || inner.startsWith(withSep)
+}
+
+/**
+ * 下载产物的扩展名**白名单**：媒体类型认不出来时只接受已知扩展名，其余一律 `.bin`。
+ *
+ * 为什么不能用 URL 里的任意扩展名：`uniquePath` 会做 `join`，而被污染 URL 的
+ * `pathname` 可能带出分隔符与 `..`，从而把产物写到 outDir 之外。
+ */
+const SAFE_DOWNLOAD_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov', '.webm', '.mkv', '.bin'])
+
+export function safeDownloadExt(mediaType, urlExt) {
+  const fromType = EXT_BY_MEDIA_TYPE[mediaType]
+  if (fromType !== undefined) return fromType
+  const lower = typeof urlExt === 'string' ? urlExt.toLowerCase() : ''
+  return SAFE_DOWNLOAD_EXTS.has(lower) ? lower : '.bin'
+}
+
 /** 读出 PNG/JPEG/GIF 的像素尺寸；识别不了返回 undefined（用于无附件服务时的文字结果）。 */
 export function imageSize(bytes) {
   if (!bytes || bytes.length < 16) return undefined
@@ -211,8 +257,21 @@ export async function downloadToFile(url, options = {}) {
   } catch {
     urlExt = extname(String(url)) || '.bin'
   }
-  const ext = extensionFor(mediaType, urlExt)
+  const ext = safeDownloadExt(mediaType, urlExt)
   const path = uniquePath(options.outDir, options.name ?? `artifact-${shortHash(url)}`, ext)
+  // 落盘前再断言一次：最终路径必须仍在目标目录内（防被污染的 URL 借扩展名/文件名穿越）。
+  // 这里用**字面** resolve 而不是 realpath：outDir 本身可能是软链（macOS 的 /var→/private/var），
+  // 用 realpath 比较会把合法写入误判为越界。
+  const outDirResolved = resolve(options.outDir)
+  const prefix = outDirResolved.endsWith(sep) ? outDirResolved : outDirResolved + sep
+  const finalResolved = resolve(path)
+  const inside =
+    process.platform === 'win32'
+      ? finalResolved.toLowerCase().startsWith(prefix.toLowerCase())
+      : finalResolved.startsWith(prefix)
+  if (!inside) {
+    throw new MediaError(CODES.BAD_REQUEST, '产物落盘路径越出目标目录，已拒绝写入', { retriable: false })
+  }
   await writeFile(path, buffer)
   return { path, bytes: buffer.byteLength, mediaType, ...(contentType === undefined ? {} : { contentType }) }
 }

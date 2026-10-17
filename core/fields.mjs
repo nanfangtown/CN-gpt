@@ -70,6 +70,62 @@ export const DASHSCOPE_FIELDS = Object.freeze({
   }),
 })
 
+/**
+ * 百炼视频生成（可灵 v3 / 万相 wan2.5）—— 2026-10-17 按官方文档落地。
+ *
+ * 协议形态（与 Ark 的 content 数组完全不同，别照抄）：
+ *   POST {base}/services/aigc/video-generation/video-synthesis
+ *        headers: X-DashScope-Async: enable
+ *        body: { model, input:{ prompt, negative_prompt?, media?[] },
+ *                parameters:{ mode|size, duration, aspect_ratio, audio, watermark } }
+ *   GET  {base}/tasks/{task_id}   →  output.task_status / output.video_url
+ *
+ * ⚠ 待实跑确证的四处（探针脚本 tests/probe-dashscope-video.mjs）：
+ *   ① `input.media[].url` 是否接受 base64 data URL（文档只写 http/https）；
+ *   ② 万相用的是 `parameters.size`（"1280*720"）还是 `parameters.resolution`；
+ *   ③ `output.video_url` 之外是否还有 `output.results[].url` 形态；
+ *   ④ 错误体是 `code/message` 还是 `output.code/output.message`。
+ * 本文件把这些差异收口，实跑只改这里。
+ */
+export const DASHSCOPE_VIDEO_FIELDS = Object.freeze({
+  /** 提交路径（华北2 北京地域；域名随业务空间 ID 变化，见 adapter）。 */
+  submitPath: '/services/aigc/video-generation/video-synthesis',
+  /** 查询：GET {base}/tasks/{task_id}。 */
+  queryPath: (taskId) => `/tasks/${encodeURIComponent(taskId)}`,
+  asyncHeader: 'X-DashScope-Async',
+  /** 请求体字段。 */
+  bodyModel: 'model',
+  bodyPrompt: 'input.prompt',
+  bodyNegative: 'input.negative_prompt',
+  bodyMedia: 'input.media',
+  bodyMode: 'parameters.mode',
+  bodySize: 'parameters.size',
+  bodyDuration: 'parameters.duration',
+  bodyRatio: 'parameters.aspect_ratio',
+  bodyAudio: 'parameters.audio',
+  bodyWatermark: 'parameters.watermark',
+  bodyPromptExtend: 'parameters.prompt_extend',
+  /** 响应里的任务 id / 状态。 */
+  taskIdPaths: ['output.task_id', 'task_id', 'data.task_id'],
+  statusPaths: ['output.task_status', 'task_status', 'status'],
+  /** 成功后的视频 URL（30 天时效；立即下载）。 */
+  videoUrlPaths: ['output.video_url', 'video_url', 'output.results.0.url', 'output.video_urls.0'],
+  resultsPaths: ['output.results', 'results'],
+  resultUrlPaths: ['url', 'video_url'],
+  /** 失败原因。 */
+  errorCodePaths: ['code', 'output.code', 'error.code'],
+  errorMessagePaths: ['message', 'output.message', 'error.message'],
+  /** 用量（若返回）。 */
+  usageSecondsPaths: ['output.usage.video_duration', 'usage.video_duration'],
+  /** 状态取值集合（百炼全大写，实测 PENDING/RUNNING/SUCCEEDED/FAILED/CANCELED/UNKNOWN）。 */
+  statusValues: Object.freeze({
+    queued: ['PENDING', 'QUEUED', 'SUSPENDED'],
+    running: ['RUNNING', 'PROCESSING'],
+    succeeded: ['SUCCEEDED', 'SUCCESS', 'SUCCEED'],
+    failed: ['FAILED', 'CANCELED', 'CANCELLED', 'UNKNOWN', 'REJECTED'],
+  }),
+})
+
 /** 方舟 Ark（火山引擎）视频生成。 */
 export const ARK_FIELDS = Object.freeze({
   /** 提交：POST {base}/contents/generations/tasks */
@@ -151,6 +207,8 @@ export const DASHSCOPE_SYNC_FIELDS = Object.freeze({
   roleUser: 'user',
   bodyContent: 'content',
   bodyText: 'text',
+  /** 图生图（I2I）：content 数组里的图片项。qwen-image-3.0 支持 1–3 张输入图。 */
+  bodyImage: 'image',
   bodyParameters: 'parameters',
   bodySize: 'size',
   bodyN: 'n',

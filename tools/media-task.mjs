@@ -13,6 +13,7 @@ import { asMediaError } from '../core/tool-kit.mjs'
 const PROVIDERS = Object.freeze({
   qwen: { adapterId: 'dashscope-image', key: keySpec('dashscope'), label: 'DashScope', outDirKey: 'outDir' },
   seedance: { adapterId: 'ark-video', key: keySpec('ark'), label: '方舟 Ark', outDirKey: 'videoOutDir' },
+  bailian: { adapterId: 'dashscope-video', key: keySpec('dashscope-video'), label: '百炼（可灵/万相）', outDirKey: 'videoOutDir' },
 })
 
 /**
@@ -27,7 +28,7 @@ export function createMediaTaskTool(deps) {
     description: '重查/补下载异步媒体任务，或列出最近提交过的任务。用于超时/取消/整轮失败之后；一次性查询。',
     parameters: {
       action: { type: 'string', enum: ['status', 'download', 'list'], description: '默认 status；download 补下载；list 列出最近任务（找回 task_id）' },
-      provider: { type: 'string', enum: ['qwen', 'seedance'], description: 'qwen=制图；seedance=出片（list 时可省略作筛选）' },
+      provider: { type: 'string', enum: ['qwen', 'seedance', 'bailian'], description: 'qwen=制图；seedance=方舟出片；bailian=百炼出片（可灵/万相）（list 时可省略作筛选）' },
       task_id: { type: 'string', description: '任务 id（status/download 必填）' },
       out_dir: { type: 'string', description: '补下载目录；默认配置值' },
       limit: { type: 'integer', description: 'list 返回条数上限（默认 10）' },
@@ -125,7 +126,7 @@ export function createMediaTaskTool(deps) {
         }
       }
       const provider = PROVIDERS[args.provider]
-      if (provider === undefined) throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：provider 必须是 qwen 或 seedance')
+      if (provider === undefined) throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：provider 必须是 qwen / seedance / bailian')
       const taskId = typeof args.task_id === 'string' ? args.task_id.trim() : ''
       if (taskId.length === 0) throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：task_id 不能为空')
       try {

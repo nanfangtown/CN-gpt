@@ -75,7 +75,7 @@ const overlay = [
   // 隔离持久化：不隔离的话会写进用户真实的 ~/.dsh；而且**上一轮的出图缓存会让本次命中**，
   // 于是"用无效 key 触发 401"的场景根本不会发请求，AUTH 映射就测不到了（2026-10-14 实测）。
   '- id: mm-models',
-  "  name: '@local/dsh-mm-models'",
+  "  name: 'dsh-mm-models'",
   '  config:',
   '    imageCachePath: ' + JSON.stringify(join(WORK, 'image-cache.json')),
   '    taskRegistryPath: ' + JSON.stringify(join(WORK, 'tasks.json')),
@@ -97,7 +97,7 @@ await writeFile(
   SEEDANCE_OVERLAY,
   [
     '- id: mm-models',
-    "  name: '@local/dsh-mm-models'",
+    "  name: 'dsh-mm-models'",
     '  config:',
     '    enableSeedanceVideo: true',
     // 形态合法（方舟接入点就是 ep- 开头）但必然不存在 → 稳定复现 MODEL_UNAVAILABLE
@@ -112,7 +112,7 @@ await writeFile(
 const ASKGLM_OFF_OVERLAY = join(SANDBOX, 'overlay-askglm-off.yml')
 await writeFile(
   ASKGLM_OFF_OVERLAY,
-  ['- id: mm-models', "  name: '@local/dsh-mm-models'", '  config:', '    enableAskGlm: false', '    enableAskQwen: false', '    maxCallsPerTurn: 0', ''].join('\n'),
+  ['- id: mm-models', "  name: 'dsh-mm-models'", '  config:', '    enableAskGlm: false', '    enableAskQwen: false', '    maxCallsPerTurn: 0', ''].join('\n'),
   'utf8',
 )
 

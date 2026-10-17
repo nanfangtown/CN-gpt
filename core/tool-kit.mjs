@@ -91,6 +91,100 @@ export function asMediaError(error, info) {
 }
 
 /**
+ * 读"本次会话已花金额"，**读不到就抛**。
+ *
+ * ⚠ 2026-10-16 修：调用方原来写的是 `catch { return 0 }`。那不是"读不到就不管"，
+ * 而是**把会话累计上限静默关掉**：账本一旦打不开，`已花 0 + 本次` 永远不超上限，
+ * 正是本项目两次栽过的"静默降级 = 静默放行"。付费路径必须 fail-closed。
+ *
+ * @param {object} input - { getLedger, sessionId, sessionIds, providerLabel }
+ *   `sessionIds`（2026-10-16 加）：要一起汇总的会话集合（自己 + 后代子代理会话）。
+ *   给了它就按它算，否则退回 `[sessionId]`。这样"会话累计上限"不会被"把花费塞进子代理会话"绕过。
+ * @returns {Promise<number>} 已花金额（元）。
+ * @throws {MediaError} 账本不可用时。
+ */
+export async function sessionSpentOrThrow({ getLedger, sessionId, sessionIds, providerLabel }) {
+  let ledger
+  try {
+    ledger = await getLedger()
+  } catch (error) {
+    throw new MediaError(
+      CODES.UNAVAILABLE,
+      `⛔ 用量账本打不开（${clip(String(error?.message ?? error))}），**无法校验"本次会话已花多少"**，` +
+        `所以这次调用已在提交前拦下、**未产生任何费用**。` +
+        `付费路径不赌账本：读不到花销就等于上限失效（${providerLabel}）。请先修好账本（见 media_report(action=health) 的账本后端说明）再重试。`,
+      { cause: error },
+    )
+  }
+  if (ledger === null || ledger === undefined || typeof ledger.list !== 'function') {
+    throw new MediaError(
+      CODES.UNAVAILABLE,
+      `⛔ 本环境没有可用的用量账本（getLedger 未返回 list 接口），**无法校验"本次会话已花多少"**，` +
+        `所以这次调用已在提交前拦下、**未产生任何费用**（${providerLabel}）。请先用 media_report(action=health) 看账本后端。`,
+    )
+  }
+  let records
+  try {
+    // ⚠ strict：花钱路径**不接受**"读失败 = 0 元"。
+    // lenient 的 list() 会在内部吞掉读取/解析错误并返回空数组，那样会话累计上限就静默失效了
+    // （2026-10-16 复核确认的 fail-open 通路，现由 list(filter, { strict: true }) 堵住）。
+    // 会话集合：优先用调用方给的"会话树"，否则退回单个 sessionId。
+    const scopeIds = Array.isArray(sessionIds) && sessionIds.length > 0 ? sessionIds : sessionId === undefined ? undefined : [sessionId]
+    const filter = scopeIds === undefined ? {} : scopeIds.length === 1 ? { sessionId: scopeIds[0] } : { sessionIds: scopeIds }
+    records = await ledger.list(filter, { strict: true })
+  } catch (error) {
+    throw new MediaError(
+      CODES.UNAVAILABLE,
+      `⛔ 用量账本读取失败（${clip(String(error?.message ?? error))}），**无法校验"本次会话已花多少"**，` +
+        `所以这次调用已在提交前拦下、**未产生任何费用**（${providerLabel}）。请先修好账本再重试。`,
+      { cause: error },
+    )
+  }
+  if (!Array.isArray(records)) {
+    throw new MediaError(
+      CODES.UNAVAILABLE,
+      `⛔ 用量账本返回了不可用的结果（不是记录数组），**无法校验"本次会话已花多少"**，` +
+        `所以这次调用已在提交前拦下、**未产生任何费用**（${providerLabel}）。请先用 media_report(action=health) 看账本后端。`,
+    )
+  }
+  return records.filter((row) => Number.isFinite(row?.amount)).reduce((sum, row) => sum + row.amount, 0)
+}
+
+/**
+ * 任务**已提交但没能取回产物**时的预估记账。
+ *
+ * 为什么必须有这一步：成功路径的记账发生在产物落盘之后，而远端在"提交成功"那一刻
+ * 就已经计费了。于是 TIMEOUT / ABORTED（以及整轮失败）之后，钱花了、账上却是零 ——
+ * 会话累计上限因此永不触顶，正是 2026-10-15 事故的形态（反复"提交完就放弃"）。
+ *
+ * 同一个 taskId 只记一次：之后用 media_task(action=download) 把产物补回来时不会重复计费。
+ * 登记失败绝不影响主流程（与注册表同一原则）。
+ *
+ * @param {object} input - { getLedger, taskId, entry, logger }
+ * @returns {Promise<boolean>} 是否真的记了一笔。
+ */
+export async function accountUnretrievedSpend({ getLedger, taskId, entry, logger }) {
+  if (typeof taskId !== 'string' || taskId.length === 0) return false
+  try {
+    const ledger = await getLedger()
+    if (ledger === null || ledger === undefined || typeof ledger.record !== 'function') return false
+    if (typeof ledger.list === 'function') {
+      const rows = await ledger.list({})
+      if (rows.some((row) => row?.taskId === taskId)) return false
+    }
+    await ledger.record({
+      ...entry,
+      taskId,
+      note: '预估：任务已提交（远端可能已计费）但本次未取回产物；取回后不重复记账',
+    })
+    return true
+  } catch (error) {
+    logger?.warn?.('[mm-models] 预估记账失败（不影响主流程）：' + clip(String(error?.message ?? error)))
+    return false
+  }
+}
+
+/**
  * 工具开关（插件页 → gpt-CN → 配置卡 里的复选框，一键设置）。
  *
  * 语义：
@@ -103,6 +197,7 @@ export const TOOL_SWITCHES = Object.freeze([
   Object.freeze({ tool: 'ask_qwen', field: 'enableAskQwen', capability: 'ask_qwen', label: 'Qwen 读图子代理' }),
   Object.freeze({ tool: 'qwen_draw', field: 'enableQwenDraw', capability: 'qwen_draw', label: 'Qwen 制图' }),
   Object.freeze({ tool: 'seedance_video', field: 'enableSeedanceVideo', capability: 'seedance_video', label: 'Seedance 出片' }),
+  Object.freeze({ tool: 'video_gen', field: 'enableVideoGen', capability: 'dashscope_video', label: '百炼出片（可灵/万相）' }),
   Object.freeze({ tool: 'media_task', field: 'enableMediaTask', capability: 'media_task', label: '任务重查/补下载' }),
   Object.freeze({ tool: 'media_report', field: 'enableMediaReport', capability: 'media_report', label: '成本/健康报告' }),
 ])
@@ -124,7 +219,7 @@ export function createSwitches(config) {
     const spec = specOf(tool)
     if (spec === undefined) return true
     const value = config?.[spec.field]
-    if (spec.tool === 'seedance_video' || spec.tool === 'ask_glm' || spec.tool === 'ask_qwen') return value === true
+    if (spec.tool === 'seedance_video' || spec.tool === 'video_gen' || spec.tool === 'ask_glm' || spec.tool === 'ask_qwen') return value === true
     return value !== false
   }
   /** 两个读图子代理同时开启：GLM 优先，ask_qwen 被压制。 */

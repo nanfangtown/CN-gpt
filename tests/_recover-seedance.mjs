@@ -11,9 +11,10 @@
  */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-const BACKUP = 'C:/Users/陈成/.dsh/.env.bak-arkremove-20261015-135621'
+const BACKUP = join(homedir(), '.dsh', '.env.bak-arkremove-20261015-135621')
 const BASE = 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks'
 const OUT = join(process.cwd(), '_sandbox', 'video', 'recovered')
 

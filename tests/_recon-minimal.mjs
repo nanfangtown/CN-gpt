@@ -129,7 +129,7 @@ async function run(label, { defaultPreset, toolFilterLine }) {
     READER_ROWS(toolFilterLine),
     // 读图子代理默认关，这里显式打开 ask_glm —— 否则它即使在 preset 里也不会出现。
     '- id: mm-models',
-    "  name: '@local/dsh-mm-models'",
+    "  name: 'dsh-mm-models'",
     '  config:',
     '    enableAskGlm: true',
     '    enableAskQwen: false',

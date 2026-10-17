@@ -44,6 +44,24 @@ jobs:
       - name: Settings card mutex + API-key fields
         run: node tests/_card-mutex.test.mjs
 
+      # 安全不变量：密钥闸门、花费闸门、账本降级语义
+      - name: Safety invariants
+        env:
+          DSH_REQUIRE_REAL_SCHEMASTERY: '1'
+        run: node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs
+
+      # 功能验证：削减字节没有动到 schema 的对外契约
+      - name: Functional verification
+        env:
+          DSH_REQUIRE_REAL_SCHEMASTERY: '1'
+        run: node --import ./tests/register.mjs ./tests/verify-functionality.mjs
+
+      # 百炼出片链路（可灵 / 万相）：本地假厂商跑完 提交→轮询→下载→记账
+      - name: Bailian video suite
+        env:
+          DSH_REQUIRE_REAL_SCHEMASTERY: '1'
+        run: node --import ./tests/register.mjs ./tests/video-gen.test.mjs
+
       # 每请求固定成本（工具 schema + 提示词段落）
       - name: Request-size report
         env:

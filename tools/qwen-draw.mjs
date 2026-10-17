@@ -10,9 +10,11 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { CODES, MediaError, STATES, fixedMessage } from '../core/errors.mjs'
 import { attachImage, imageContentBlock, imageSize, resolveOutDir, shouldAttachImage, shortHash, slugify, stamp } from '../core/deliver.mjs'
 import { keySpec } from '../core/keys.mjs'
-import { pricingOf } from '../core/cost.mjs'
+import { pricingOf, unitPriceOf } from '../core/cost.mjs'
+import { authorizeSpend, estimateSpend } from '../core/spend-guard.mjs'
 import { cacheKeyOf } from '../core/cache.mjs'
-import { asMediaError, budgetMessage, sessionIdOf, stateFailureToError } from '../core/tool-kit.mjs'
+import { resolveImageArg, sizeForEdit } from '../core/image-input.mjs'
+import { accountUnretrievedSpend, asMediaError, budgetMessage, sessionIdOf, sessionSpentOrThrow, stateFailureToError } from '../core/tool-kit.mjs'
 
 const KEY = keySpec('dashscope')
 const ADAPTER_ID = 'dashscope-image'
@@ -31,17 +33,20 @@ function normalizeSize(value) {
  * @param {object} deps - ctx / config / manager / keys / getLedger / getTaskRegistry / getImageCache / budget。
  */
 export function createQwenDrawTool(deps) {
-  const { ctx, config, manager, keys, getLedger, getTaskRegistry, getImageCache, budget } = deps
+  const { ctx, config, manager, keys, getLedger, getTaskRegistry, getImageCache, budget, logger } = deps
 
   return defineTool({
     name: 'qwen_draw',
-    description: '文生图（Qwen）：按提示词生成图片，返回本地路径与图片内容块；失败给出原因与建议。',
+    description: '文生图/图生图（Qwen）：给 image 即编辑该图。',
     parameters: {
       prompt: { type: 'string', required: true, description: '画面描述，越具体越好' },
+      image: { type: 'string', description: '输入图 URL/路径' },
       negative: { type: 'string', description: '负向提示词' },
       size: { type: 'string', description: '如 1024*1024；留空用模型默认' },
       n: { type: 'integer', description: '张数，默认 1，最大 4' },
       out_dir: { type: 'string', description: '产物目录，默认 gen' },
+      confirm_estimate: { type: 'number', description: '复述预估金额才提交' },
+      confirm_unpriced: { type: 'boolean', description: '未计价需 true' },
     },
     output: {
       schema: {
@@ -108,6 +113,10 @@ export function createQwenDrawTool(deps) {
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       const sessionId = sessionIdOf(exec)
+      /** 闸门算出的预估——catch 里"提交了但没取回"时复用同一组数字补记。 */
+      let plannedEstimate
+      /** 已提交任务的 id（提交一旦发生就记下来，超时/取消的补记靠它）。 */
+      let plannedTaskId
       try {
         const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : ''
         if (prompt.length === 0) throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：prompt 不能为空；请提供画面描述后重试')
@@ -117,8 +126,36 @@ export function createQwenDrawTool(deps) {
         const size = normalizeSize(args.size)
         if (size !== undefined) spec.size = size
 
+        // 图生图（I2I，2026-10-17 加）：给了 image 就把原图放进请求，模型以它为条件编辑。
+        // 本地路径的安全约束与 seedance 的"首帧图"完全一致（工作目录内 + 内容签名验证）。
+        if (typeof args.image === 'string' && args.image.trim().length > 0) {
+          spec.images = [await resolveImageArg(args.image, { exec, maxBytes: config.maxInlineImageBytes, label: '输入图' })]
+          // 图生图的输出尺寸：用户给了 size 就用用户的；没给就**沿用原图尺寸**
+          // （按面积夹进 512×512 ~ 2048×2048）。不这么做，模型会自选推荐分辨率 ——
+          // 实测 256×256 的输入被输出成 2048×2048，又慢又贵，还把图放大了 8 倍。
+          if (size === undefined) {
+            const editSize = sizeForEdit(spec.images[0]?.width, spec.images[0]?.height)
+            if (editSize !== undefined) spec.size = editSize
+          }
+        }
+
+        const adapter = manager.get(ADAPTER_ID)
+        const mode = typeof adapter.modeFor === 'function' ? adapter.modeFor(config) : 'async'
+        // 异步端点（text2image/image-synthesis）不接受输入图。在这里就拦下：
+        // 既不浪费一次凭据读取，也不让调用方以为"图生图成功了"却拿到一张无关的新图。
+        if (spec.images !== undefined && mode !== 'sync') {
+          throw new MediaError(
+            CODES.BAD_REQUEST,
+            '参数不被接受：图生图需要**同步模式**（qwen-image 系列），当前模型 ' +
+              spec.model +
+              ' 走异步 text2image、不接受输入图。请在 插件页 → gpt-CN → 配置卡 把 qwenModel 设为 qwen-image-3.0（或其它 qwen-image 系列）后重试。',
+          )
+        }
+
         const credential = await keys.resolve(KEY)
-        if (credential === undefined) {
+        // 只有"确实拿到非空字符串凭据"才算过：`null` 或 `{ value: undefined }` 都必须落回缺凭据，
+        // 否则后面 `credential.value` 会炸成语义不明的错误（2026-10-16 加固）。
+        if (credential === undefined || credential === null || typeof credential.value !== 'string' || credential.value.length === 0) {
           throw new MediaError(CODES.MISSING_CREDENTIAL, fixedMessage(CODES.MISSING_CREDENTIAL, { ref: KEY.ref }))
         }
 
@@ -133,13 +170,46 @@ export function createQwenDrawTool(deps) {
           }
         }
 
-        // 配额在**校验与凭据都通过之后**才扣：一次 prompt 写错、或 key 没配的调用
-        // 不会花掉用户的 maxCallsPerTurn 名额（那些调用根本没发出去、也没计费）。
+        // ⛔ 付费收口（2026-10-16 补）：制图与出片一样，提交前必须过金额闸门 + 显式确认。
+        //
+        // 这里以前是一段空白：制图只受"次数预算"（budget.take）约束，没有任何金额层面的拦截。
+        // 后果有两个，2026-10-16 实测确认：
+        //   ① 未计价 / 单价写成 0 的制图模型**照常提交并扣费**（出片那条路是 fail-closed）；
+        //   ② 调用方不传任何确认参数就能直接出图 —— "无意识花钱"在制图这条路上没有任何阻力。
+        // 现在复用出片那套三层语义（单次上限 / 会话累计 / 复述金额），
+        // 上限沿用同一对配置项（videoCostLimitCNY / videoSessionCostLimitCNY），不新增配置。
+        plannedEstimate = estimateSpend({
+          model: spec.model,
+          duration: spec.n,
+          unitPrice: unitPriceOf(pricingOf(config)[spec.model] ?? {}),
+        })
+        const verdict = await authorizeSpend({
+          estimate: plannedEstimate,
+          config,
+          noun: '出图',
+          unitLabel: '张',
+          providerLabel: 'DashScope',
+          // 会话累计：把"自己 + 后代子代理会话"一起算（2026-10-16）。
+          // 子代理默认**允许**出图（效率优先），代价是它的花费记在自己会话上 ——
+          // 只按 sessionId 汇总就等于"把花费挪进子会话即可绕过累计上限"。
+          spentInSession: () =>
+            sessionSpentOrThrow({
+              getLedger,
+              sessionId,
+              sessionIds: deps.sessionIdsForSpend?.(sessionId),
+              providerLabel: 'DashScope',
+            }),
+          confirmed: { confirm_estimate: args.confirm_estimate, confirm_unpriced: args.confirm_unpriced },
+        })
+        if (!verdict.ok) throw new MediaError(CODES.BAD_REQUEST, verdict.message)
+
+        // 配额在**校验、凭据与金额闸门都通过之后**才扣：一次 prompt 写错、key 没配、
+        // 或"只报价还没确认"的调用，都不该花掉用户的 maxCallsPerTurn 名额。
+        // ⚠ 顺序要求：闸门必须在 budget.take **之前**。确认流程天然是两次调用（先报价、再确认），
+        // 若报价也吃配额，maxCallsPerTurn=6 就只剩 3 张图 —— 那是我修闸门时差点引入的功能退化。
         const grant = budget.take(sessionId)
         if (!grant.ok) throw new MediaError(CODES.RATE_LIMIT, budgetMessage(grant))
 
-        const adapter = manager.get(ADAPTER_ID)
-        const mode = typeof adapter.modeFor === 'function' ? adapter.modeFor(config) : 'async'
         const { taskRef, state } = await manager.run({
           adapterId: ADAPTER_ID,
           spec,
@@ -162,6 +232,9 @@ export function createQwenDrawTool(deps) {
             })
           },
         })
+        // 走到这里说明提交已经发生（taskRef 一定存在）——先把 id 记下来，
+        // 后面无论超时还是取消，补记那笔钱时都要用它。
+        plannedTaskId = taskRef.taskId
         if (state.status === STATES.TIMEOUT) {
           throw new MediaError(CODES.TIMEOUT, fixedMessage(CODES.TIMEOUT, { provider: 'DashScope', providerKey: 'qwen', taskId: taskRef.taskId, timeoutMs: config.taskTimeoutMs }))
         }
@@ -231,6 +304,27 @@ export function createQwenDrawTool(deps) {
       } catch (error) {
         const mediaError = asMediaError(error, { provider: 'DashScope', ref: KEY.ref, where: 'query' })
         if (mediaError.code !== CODES.MISSING_CREDENTIAL) {
+          // 超时/中断：任务**已经提交**、远端可能已计费，而成功路径的记账在产物落盘之后 ——
+          // 不补这一笔，"反复提交完就放弃"就永远不会体现在会话累计上限与报表里
+          // （2026-10-15 的事故正是这个形态）。同一个 taskId 只记一次。
+          if ((mediaError.code === CODES.TIMEOUT || mediaError.code === CODES.ABORTED) && typeof plannedTaskId === 'string' && plannedEstimate !== undefined) {
+            await accountUnretrievedSpend({
+              getLedger,
+              taskId: plannedTaskId,
+              logger,
+              entry: {
+                adapter: ADAPTER_ID,
+                provider: 'DashScope',
+                model: config.qwenModel,
+                unitKind: 'image',
+                units: plannedEstimate.duration,
+                unitPrice: plannedEstimate.unitPrice,
+                currency: 'CNY',
+                amount: plannedEstimate.estimated,
+                ...(sessionId === undefined ? {} : { sessionId }),
+              },
+            })
+          }
           try {
             const ledger = await getLedger()
             await ledger.noteHealth(ADAPTER_ID, false, mediaError.code + (mediaError.taskId === undefined ? '' : ' task=' + mediaError.taskId))

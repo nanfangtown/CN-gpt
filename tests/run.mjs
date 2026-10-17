@@ -15,10 +15,15 @@ import { join } from 'node:path'
 // ⚠ 隔离 DSH_HOME（必须在任何插件代码 import 之前设好）。
 // 不隔离的话，没显式传 imageCachePath / taskRegistryPath / ledgerPath 的用例会回落到
 // `homedir()/.dsh`，**把测试数据写进用户真实的家目录**（2026-10-14 实测）。
-// 指向进程临时目录下一个固定子目录；下面还会**先清空**它——否则上一轮残留的
-// 出图缓存会让本轮命中缓存，真实提交链路就测不到了（2026-10-14 踩到，8 条用例挂）。
-const TEST_HOME = join(tmpdir(), 'mm-models-test-home')
-await rm(TEST_HOME, { recursive: true, force: true })
+//
+// 2026-10-17 改：原来用**固定**子目录 + `rm(recursive, force)` 清空。
+// 那个清空在 Windows 上会因文件锁而失败，而 `force: true` 把失败吞掉 ——
+// 于是上一轮的出图缓存残留，本轮直接命中缓存、真实提交链路根本没被测到
+// （实测：同一份代码连跑，一会儿 123 通过，一会儿"default qwen-image mode should be sync,
+//   got cache:dce34907e1d5"）。固定目录 + 静默失败的清理 = 间歇性假绿。
+// 现在改用 mkdtempSync：每轮唯一，**不依赖清理成功**，也不与任何其它进程抢目录。
+import { mkdtempSync } from 'node:fs'
+const TEST_HOME = mkdtempSync(join(tmpdir(), 'mm-models-test-home-'))
 process.env.DSH_HOME = TEST_HOME
 
 import { startMockProviders } from './mock-providers.mjs'
@@ -28,10 +33,11 @@ import { createTaskManager } from '../tasks/manager.mjs'
 import { dashscopeImageAdapter } from '../tasks/adapters/dashscope-image.mjs'
 import { arkVideoAdapter } from '../tasks/adapters/ark-video.mjs'
 import { CODES, MediaError, classifyHttpError, fixedMessage, isPreSendError } from '../core/errors.mjs'
+import { cacheKeyOf } from '../core/cache.mjs'
 import { DEFAULT_PRICING, isPriced, pricingOf, pricingWarnings, renderCostReport, zeroPriceOverrides } from '../core/cost.mjs'
 import { authorizeSpend, estimateSpend } from '../core/spend-guard.mjs'
-import { createCallBudget, createSwitches, normalizeSettingsOps } from '../core/tool-kit.mjs'
-import { READER_FORBIDDEN_TOOLS, inspectReaderFilters, readerFilterViolation } from '../core/reader-guard.mjs'
+import { createCallBudget, createSwitches, normalizeSettingsOps, accountUnretrievedSpend, sessionSpentOrThrow } from '../core/tool-kit.mjs'
+import { READER_FORBIDDEN_TOOLS, inspectReaderFilters, isReaderAgent, readerFilterViolation, readerRouteAllowlist } from '../core/reader-guard.mjs'
 import { downloadToFile, imageSize, mediaTypeFromBytes, shouldAttachImage } from '../core/deliver.mjs'
 
 const stats = { passed: 0, failed: 0 }
@@ -61,8 +67,11 @@ async function test(name, fn) {
  */
 const GUARD_TOOL_SWITCH = 'tool-switch'
 const GUARD_READER = 'reader-guard'
+const GUARD_NATIVE_VISION = 'native-vision-guard'
 const GUARD_IMAGE_READ = 'image-read-guard'
 const GUARD_VISION_DELEGATION = 'vision-delegation-guard'
+const GUARD_READER_CONTRACT = 'reader-contract-guard'
+const GUARD_SUBAGENT_SPEND = 'subagent-spend-guard'
 
 function guardOf(fake, label) {
   const hit = (fake.guards ?? []).find((entry) => entry?.label === label)
@@ -82,6 +91,10 @@ function makeConfig(mock, tmp, overrides = {}) {
     httpTimeoutMs: 5000,
     queryRetries: 1,
     maxCallsPerTurn: 0,
+    // 确认层是**给测试的逃生口**（index.js 的 requireSpendConfirm 描述里写着同一句）：
+    // 单测要覆盖"提交→轮询→落盘→记账"整条链路，不该被每次都要复述金额挡住。
+    // 生产默认 true。确认层本身由专门用例覆盖（含 2026-10-16 新增的**制图**闸门用例）。
+    requireSpendConfirm: false,
     outDir: join(tmp, 'gen'),
     videoOutDir: join(tmp, 'gen', 'video'),
     ledgerPath: join(tmp, 'ledger.json'),
@@ -102,11 +115,18 @@ function setup(mock, tmp, options = {}) {
   apply(fake.ctx, config)
   // 给 guard 打标签。这是**测试侧对注册顺序的显式断言**：顺序一变就在这里报错，
   // 而不是让后面某条用例拿着错误的 guard 静默跑出假绿。
-  assert.equal(fake.guards.length, 4, 'apply() 应恰好注册四个 guard（工具开关 + 读图守卫 + 图片路径守卫 + 视觉委派守卫）')
+  assert.equal(
+    fake.guards.length,
+    7,
+    'apply() 应恰好注册七个 guard（工具开关 + 读图守卫 + 原生读图兜底 + 图片路径守卫 + 视觉委派守卫 + 读图员契约守卫 + 子代理生成刹车）',
+  )
   fake.guards[0].label = GUARD_TOOL_SWITCH
   fake.guards[1].label = GUARD_READER
-  fake.guards[2].label = GUARD_IMAGE_READ
-  fake.guards[3].label = GUARD_VISION_DELEGATION
+  fake.guards[2].label = GUARD_NATIVE_VISION
+  fake.guards[3].label = GUARD_IMAGE_READ
+  fake.guards[4].label = GUARD_VISION_DELEGATION
+  fake.guards[5].label = GUARD_READER_CONTRACT
+  fake.guards[6].label = GUARD_SUBAGENT_SPEND
   const tools = Object.fromEntries(fake.tools.map((definition) => [definition.name, definition]))
   return { config, fake, tools }
 }
@@ -275,18 +295,26 @@ async function main() {
     assert.ok(!text.includes('undefined'), '不得出现 undefined 单位：' + text)
   })
 
-  await test('apply() 注册 4 个工具 + 分工说明段落（ask_glm 由配置行提供）', async () => {
+  await test('apply() 注册 5 个工具 + 分工说明段落（ask_glm 由配置行提供）', async () => {
     const tmp = await makeTmp()
     const { fake, tools } = setup(mock, tmp)
-    assert.deepEqual(Object.keys(tools).sort(), ['media_report', 'media_task', 'qwen_draw', 'seedance_video'])
+    assert.deepEqual(Object.keys(tools).sort(), ['media_report', 'media_task', 'qwen_draw', 'seedance_video', 'video_gen'])
     assert.equal(fake.sections.length, 1)
     assert.equal(fake.sections[0].name, 'mm-models:division')
     const sectionText = typeof fake.sections[0].text === 'function' ? fake.sections[0].text({}) : fake.sections[0].text
-    assert.ok(sectionText.includes('主创') && sectionText.includes('不要为了使用工具而使用工具'))
-    // 段落基本不列工具名（不泄漏能力）。**唯一有意的例外**是读图员：
-    // 「图像任务禁令」必须点名 ask_glm / ask_qwen，否则没法下达"只许走这两条路"的指令。
+    // 2026-10-16 第二次瘦身：段落不再做"身份声明"（那对读图员是错的，实测 57/57 个读图员
+    // 会话都带着它、占其 prompt 11.9%），只留三条可执行策略。
+    assert.ok(sectionText.includes('【媒体分工】'), '要保留分工与成本纪律：' + sectionText)
+    assert.ok(sectionText.includes('【读图路由】'), '要保留读图路由策略：' + sectionText)
+    assert.ok(sectionText.includes('【窄委派】'), '要保留窄委派建议：' + sectionText)
+    assert.ok(!sectionText.includes('你是主创兼工程师'), '不该再有"你是主创兼工程师"这类身份声明（读图员也收得到）：' + sectionText)
+    // 段落基本不列工具名（不泄漏能力）。**有意的例外**是读图员与两条窄委派工具：
+    // 不点名就没法下达"只许走这两条路"的指令。
     assert.ok(!/qwen_draw|seedance_video|media_task|media_report/.test(sectionText), '提示词段落不应出现其它工具名')
     assert.ok(sectionText.includes('ask_glm') && sectionText.includes('ask_qwen'), '读图路由策略必须点名两个读图员')
+    // 字节预算：实测原版 710 B（274 字符），瘦身后必须显著更小，且不许再长回去。
+    const bytes = Buffer.byteLength(sectionText, 'utf8')
+    assert.ok(bytes <= 560, '提示词段落必须 ≤ 560 B（实测瘦身前 710 B），当前 ' + bytes + ' B')
   })
 
   await test('提示词段落与开关无关：打开 seedance 后仍不出现其它工具名', async () => {
@@ -344,13 +372,13 @@ async function main() {
     }
     createdListener.callback({ agent, source: 'test' })
     // 顺序无关比较：deny 名单的语义是集合，"谁先谁后"不是契约。
-    assert.deepEqual([...denyLists.at(-1)].sort(), ['ask_qwen'], '开了 ask_glm 之后只有互斥的 ask_qwen 在 deny 名单里')
+    assert.deepEqual([...denyLists.at(-1)].sort(), ['ask_qwen', 'video_gen'], '开了 ask_glm 之后只有互斥的 ask_qwen 与默认关闭的 video_gen 在 deny 名单里')
 
     const tmp2 = await makeTmp()
     const offSetup = setup(mock, tmp2)
     const offListener = offSetup.fake.listeners.find((entry) => entry.event === 'agent/created')
     offListener.callback({ agent, source: 'test' })
-    assert.deepEqual([...denyLists.at(-1)].sort(), ['ask_glm', 'ask_qwen', 'seedance_video'].sort(), '关闭的工具应进入该 agent 的 deny 名单')
+    assert.deepEqual([...denyLists.at(-1)].sort(), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'].sort(), '关闭的工具应进入该 agent 的 deny 名单')
   })
 
   // ---------------------------------------------------------------- 读图子代理互斥
@@ -542,6 +570,75 @@ async function main() {
     // 真实单价 0.18 元/张 × 2 张 = 0.36（此前内置表是占位 0，所以这里才断言到金额）
     assert.equal(ledger.records.at(-1).unitPrice, 0.18)
     assert.equal(ledger.records.at(-1).amount, 0.36)
+  })
+
+  await test('qwen_draw 图生图：给 image 时请求体带图片项（先图后文），缓存键按原图区分', async () => {
+    const tmp = await makeTmp()
+    const { tools } = setup(mock, tmp, { overrides: { imageCachePath: join(tmp, 'cache.json') } })
+    const { exec } = newExec(tmp)
+    await writeFile(join(tmp, 'base.png'), makePng(8, 8))
+    await tools.qwen_draw.execute({ prompt: '给这个角色补上猫耳', image: 'base.png' }, exec)
+    const submit = mock.state.requests.filter((entry) => entry.method === 'POST' && entry.path.includes('multimodal-generation')).at(-1)
+    const content = submit.body.input.messages[0].content
+    assert.equal(content.length, 2, '图生图的 content 必须是 [image, text]')
+    assert.ok(String(content[0].image).startsWith('data:image/png;base64,'), '本地图必须转成 data URL 发出去')
+    assert.equal(content[1].text, '给这个角色补上猫耳')
+
+    // 同一句 prompt 换一张原图 → 必须是不同的缓存键；图生图也不能与文生图共用缓存。
+    const cfg = plain(new Config({}))
+    const keyOf = (spec) => cacheKeyOf({ model: 'qwen-image-3.0', prompt: 'p', n: 1, ...spec }, cfg)
+    const keyA = keyOf({ images: [{ dataUrl: 'data:image/png;base64,AAA' }] })
+    const keyB = keyOf({ images: [{ dataUrl: 'data:image/png;base64,BBB' }] })
+    const keyNoImage = keyOf({})
+    assert.notEqual(keyA, keyB, '不同原图必须是不同的缓存键（否则会返回上一张原图的产物）')
+    assert.notEqual(keyA, keyNoImage, '图生图与文生图不能共用缓存')
+  })
+
+  await test('qwen_draw 图生图：本地图越出会话工作目录 → 拒绝且不提交', async () => {
+    const tmp = await makeTmp()
+    const { tools } = setup(mock, tmp)
+    const { exec } = newExec(tmp)
+    const outside = join(tmpdir(), 'mm-outside-' + Date.now().toString(36) + '.png')
+    await writeFile(outside, makePng(4, 4))
+    try {
+      const before = mock.state.requests.filter((entry) => entry.method === 'POST').length
+      const error = await expectError(tools.qwen_draw.execute({ prompt: 'x', image: outside }, exec), CODES.BAD_REQUEST)
+      assert.match(String(error.message), /工作目录/u)
+      assert.equal(mock.state.requests.filter((entry) => entry.method === 'POST').length, before, '被拒绝的调用绝不能提交')
+    } finally {
+      await rm(outside, { force: true })
+    }
+  })
+
+  await test('qwen_draw 图生图：异步模式明确拒绝（不静默丢图）', async () => {
+    const tmp = await makeTmp()
+    const { tools } = setup(mock, tmp, { overrides: { dashscopeImageMode: 'async' } })
+    const { exec } = newExec(tmp)
+    await writeFile(join(tmp, 'base.png'), makePng(8, 8))
+    const error = await expectError(tools.qwen_draw.execute({ prompt: 'x', image: 'base.png' }, exec), CODES.BAD_REQUEST)
+    assert.match(String(error.message), /同步模式/u)
+  })
+
+  await test('qwen_draw 图生图：未给 size 时沿用原图尺寸，不自动放大到 2K', async () => {
+    const tmp = await makeTmp()
+    const { tools } = setup(mock, tmp, { overrides: { imageCachePath: join(tmp, 'cache.json') } })
+    const { exec } = newExec(tmp)
+    const lastSubmit = () =>
+      mock.state.requests.filter((entry) => entry.method === 'POST' && entry.path.includes('multimodal-generation')).at(-1)
+
+    // 1024×1024 已在合法区间内 → 原样沿用（实测不传 size 时模型会自选 2048×2048，又慢又贵）
+    await writeFile(join(tmp, 'big.png'), makePng(1024, 1024))
+    await tools.qwen_draw.execute({ prompt: '改个颜色', image: 'big.png' }, exec)
+    assert.equal(lastSubmit().body.parameters.size, '1024*1024', '图生图应沿用原图尺寸')
+
+    // 64×64 小于面积下限 → 等比放大到 512×512
+    await writeFile(join(tmp, 'tiny.png'), makePng(64, 64))
+    await tools.qwen_draw.execute({ prompt: '再改一次', image: 'tiny.png' }, exec)
+    assert.equal(lastSubmit().body.parameters.size, '512*512', '小于下限的原图要等比放大到 512×512')
+
+    // 用户显式给了 size 时，原图尺寸不得覆盖它
+    await tools.qwen_draw.execute({ prompt: '再改第三次', image: 'big.png', size: '768*768' }, exec)
+    assert.equal(lastSubmit().body.parameters.size, '768*768', '显式 size 必须优先')
   })
 
   await test('qwen_draw 同步模式：一次 POST 直接出图，不轮询 /tasks', async () => {
@@ -816,6 +913,198 @@ async function main() {
     assert.ok(noReader.includes('没有任何看图途径'), '要说明没有途径：' + noReader)
   })
 
+  await test('⚠ 守卫必须读 harness 真实字段名 `arguments`（2026-10-16 生产级缺陷回归）', async () => {
+    // 现场：harness 的类型是
+    //   `type ToolGuard = (execution: Readonly<ToolExecution>) => string | undefined`
+    // 而 `ToolExecutionInput` 里入参字段叫 **`arguments`**，**没有 `args`**。
+    // 本插件早期按 `exec.args` 读 → 用到入参的两条守卫（read 读图片指路、委派读图审计）
+    // 在生产里拿到 undefined，**等于从未生效**；而单测一直绿，因为 fixtures 手搓的
+    // 执行对象是 `{ name, args, agent }` —— **测试与真实契约不一致**，这才是根因。
+    // 本用例**只用 harness 形状**构造执行对象，把这件事钉死。
+    const tmp = await makeTmp()
+    const { fake } = setup(mock, tmp, { overrides: { enableAskGlm: true, blockMainAgentNativeVision: true } })
+    const mainAgent = { options: { provider: 'deepseek-account', model: 'deepseek-flash' } }
+    const harnessExec = (name, args) => ({ name, arguments: args, agent: mainAgent })
+
+    // ① 第三条守卫：read 读图片必须被拦（用真实字段名）
+    const imageGuard = guardOf(fake, GUARD_IMAGE_READ)
+    const readVerdict = imageGuard(harnessExec('read', { file_path: 'C:/x/a.png' }))
+    assert.ok(
+      typeof readVerdict === 'string' && readVerdict.includes('ask_glm'),
+      'harness 形状（arguments）下 read 读图片必须被拦并指路：' + String(readVerdict),
+    )
+    assert.equal(imageGuard(harnessExec('read', { file_path: 'C:/x/a.txt' })), undefined, '文本文件不该被拦')
+
+    // ② 第四条守卫：委派读图必须被拦（用真实字段名）
+    const delegationGuard = guardOf(fake, GUARD_VISION_DELEGATION)
+    const delegationVerdict = delegationGuard(
+      harnessExec('subagent', { description: '读图', prompt: '看一下 D:/work/a.png 画的是什么' }),
+    )
+    assert.ok(
+      typeof delegationVerdict === 'string' && delegationVerdict.includes('已拦截'),
+      'harness 形状（arguments）下委派读图必须被拦：' + String(delegationVerdict),
+    )
+    assert.equal(delegationGuard(harnessExec('subagent', { prompt: '重构 core/cost.mjs' })), undefined, '正常委派不该被拦')
+
+    // ③ 兼容旧形态：`args` 也要继续能读（既有 fixtures 依赖它）
+    assert.ok(
+      typeof imageGuard({ name: 'read', args: { file_path: 'C:/x/a.png' }, agent: mainAgent }) === 'string',
+      '`args` 形态必须继续工作',
+    )
+
+    // ④ 空/缺失入参不能炸，也不能误拦
+    assert.equal(imageGuard({ name: 'read', arguments: undefined, agent: mainAgent }), undefined, '入参缺失时放行而不是抛错')
+    assert.equal(imageGuard({ name: 'read', agent: mainAgent }), undefined, '完全没有入参字段时放行')
+  })
+
+  await test('C 打开时委派审计整体让位（已冗余 + 实测 6/10 误伤）；C 关着时行为不变', async () => {
+    // 2026-10-16：C（blockSubagentNativeVision）打开后，通用子代理**没有 read_image**，
+    // 想看懂图只能调 ask_glm / ask_qwen —— 正是这条审计想促成的路由。所以"按措辞拦截"
+    // 不再提供任何保护，只剩误伤（实测：10 条非视觉委派里 6 条被拦）。
+    const mainAgent = { options: { provider: 'deepseek-account', model: 'deepseek-flash' } }
+    const vision = '看一下 D:/work/a.png 画的是什么'
+    /** 与识图无关、但会命中词表的真实委派文本（就是那 6 条误伤）。 */
+    const nonVisionTasks = [
+      '帮我写一段关于读图路由的设计文档',
+      '把 README 里所有"读图员"改成"识图子代理"',
+      '把 assets/logo.png 转成 webp 并压缩到 50KB 以内',
+      '把 D:\\shots\\old.png 从 git 里删掉并提交',
+      '把 D:\\shots\\a.png 的分辨率统一改成 512x512',
+      '这段报错信息里的图中路径是怎么拼出来的？帮我定位代码',
+    ]
+
+    // C 关（默认）：审计照旧 —— 视觉委派要拦，"含读图字样的非视觉文本"也拦（这就是它的误伤代价）
+    const off = setup(mock, await makeTmp(), { overrides: { enableAskGlm: true } })
+    const offGuard = guardOf(off.fake, GUARD_VISION_DELEGATION)
+    assert.ok(
+      typeof offGuard({ name: 'subagent', arguments: { prompt: vision }, agent: mainAgent }) === 'string',
+      'C 关时视觉委派仍应被拦',
+    )
+    assert.ok(
+      typeof offGuard({ name: 'subagent', arguments: { prompt: nonVisionTasks[1] }, agent: mainAgent }) === 'string',
+      'C 关时含"读图"字样的文本仍被拦（既有行为，不改）',
+    )
+
+    // C 开：整体让位 —— 误伤清零，保护不减（子代理已经绕不过去了）
+    const on = setup(mock, await makeTmp(), { overrides: { enableAskGlm: true, blockSubagentNativeVision: true } })
+    const onGuard = guardOf(on.fake, GUARD_VISION_DELEGATION)
+    for (const prompt of nonVisionTasks) {
+      assert.equal(
+        onGuard({ name: 'subagent', arguments: { prompt }, agent: mainAgent }),
+        undefined,
+        'C 开时不该拦非视觉委派（误伤）：' + prompt,
+      )
+    }
+    assert.equal(
+      onGuard({ name: 'subagent', arguments: { prompt: vision }, agent: mainAgent }),
+      undefined,
+      'C 开时视觉委派也放行 —— 子代理没有眼睛，它只能去调读图员（多一跳但结果仍受契约约束）',
+    )
+  })
+
+  // ---------------------------------------------------------------- 读图员契约守卫（2026-10-16 实测后加）
+  await test('读图员契约守卫：读图员调不通 shell / 委派 / 写文件，只能 read_image', async () => {
+    // 现场（实测）：配置写的是 `toolFilter: { allow: [read_image] }`，但读图员的运行时工具表是
+    // `ops_bash, read_image, subagent` —— 我们让它执行 `echo OK`，它**真的返回了 OK**。
+    // 所以契约的最终保证必须落在 guard 层（配置/掩码在今天已经两次被证明不可信）。
+    const tmp = await makeTmp()
+    const { fake } = setup(mock, tmp, { overrides: { enableAskGlm: true } })
+    const guard = guardOf(fake, GUARD_READER_CONTRACT)
+    const reader = { options: { provider: 'glm', model: 'glm-4.6v', subagentDepth: 1 } }
+    const mainAgent = { options: { provider: 'deepseek-account', model: 'deepseek-flash' } }
+    const generic = { options: { provider: 'deepseek-account', model: 'deepseek-flash', subagentDepth: 1 } }
+
+    for (const tool of ['ops_bash', 'pwsh', 'subagent', 'subagent_code', 'read', 'write', 'edit', 'glob', 'grep', 'web_search', 'qwen_draw']) {
+      const verdict = guard({ name: tool, arguments: {}, agent: reader })
+      assert.ok(
+        typeof verdict === 'string' && verdict.includes('读图员只被允许'),
+        '读图员不该能调用 ' + tool + '：' + String(verdict),
+      )
+    }
+    assert.equal(
+      guard({ name: 'read_image', arguments: { file_path: 'a.png' }, agent: reader }),
+      undefined,
+      'read_image 必须放行 —— 那是读图员唯一的眼睛',
+    )
+    // 不误伤：这条守卫只管读图员
+    assert.equal(guard({ name: 'ops_bash', arguments: {}, agent: mainAgent }), undefined, '主代理不受影响')
+    assert.equal(guard({ name: 'ops_bash', arguments: {}, agent: generic }), undefined, '通用子代理不受影响（它归 C 管）')
+    assert.equal(guard({ name: 'read_image', arguments: {}, agent: generic }), undefined, '这条守卫不管 read_image 的屏蔽（那是 C 的职责）')
+  })
+
+  await test('发布 patch：子代理已迁到 Agent Preset（0.2.1 起 persona/toolFilter 会拒绝加载）', async () => {
+    const text = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    // ① 0.2.1 的 dsh-tool-subagent 对退役键**直接抛错**：
+    //    "tool-subagent: persona is no longer supported; configure persona and tool
+    //     plugins in an Agent Preset and select it with agentPreset (spawn only)"
+    //    带这些键的行会整行 mount 失败 —— 2026-10-17 升级后 ask_glm 等四个工具消失的根因。
+    for (const banned of ['persona:', 'toolFilter:', 'backgroundMode:', 'enableRunInBackground:']) {
+      assert.ok(!text.includes(banned), '不能残留退役键：' + banned)
+    }
+    // ② 四个工具行都必须用 agentPreset 引用 preset
+    for (const [id, preset] of [
+      ['tool-subagent-glm', 'mm-reader'],
+      ['tool-subagent-qwen', 'mm-reader'],
+      ['tool-subagent-code', 'mm-code'],
+      ['tool-subagent-research', 'mm-research'],
+    ]) {
+      const at = text.indexOf('- id: ' + id)
+      assert.ok(at >= 0, '应有 ' + id + ' 行')
+      const block = text.slice(at, at + 900)
+      assert.ok(block.includes('agentPreset: ' + preset), id + ' 应引用 preset ' + preset)
+    }
+    // ③ 读图员 preset 的工具面 = 只有 read_image（read/write/edit 全关）
+    const readerAt = text.indexOf('- id: preset-mm-reader')
+    assert.ok(readerAt >= 0, '应有 preset-mm-reader')
+    const readerBlock = text.slice(readerAt, text.indexOf('- id: preset-mm-code'))
+    assert.ok(readerBlock.includes("name: '@deepseek-ai/dsh-persona'"), '读图员 preset 必须有 persona')
+    assert.ok(/read:\s*false/.test(readerBlock), '读图员 preset 应关闭 read')
+    assert.ok(/write:\s*false/.test(readerBlock), '读图员 preset 应关闭 write')
+    assert.ok(/edit:\s*false/.test(readerBlock), '读图员 preset 应关闭 edit')
+    assert.ok(/readImage:\s*true/.test(readerBlock), '读图员 preset 应打开 readImage')
+    assert.ok(!/dsh-tool-bash|dsh-tool-pwsh|dsh-tool-web|dsh-tool-fs-search/.test(readerBlock), '读图员 preset 不能包含命令/联网/查找工具')
+    // ④ 执行与资料 preset 也要有 persona 与对应工具面
+    const codeAt = text.indexOf('- id: preset-mm-code')
+    const codeBlock = text.slice(codeAt, text.indexOf('- id: preset-mm-research'))
+    assert.ok(codeBlock.includes("name: '@deepseek-ai/dsh-persona'") && codeBlock.includes('dsh-tool-fs-search'), '执行 preset 应有 persona + 查找工具')
+    const researchAt = text.indexOf('- id: preset-mm-research')
+    const researchBlock = text.slice(researchAt, researchAt + 1200)
+    assert.ok(researchBlock.includes("name: '@deepseek-ai/dsh-tool-web'"), '资料 preset 应有 web 工具')
+    assert.ok(/write:\s*false/.test(researchBlock), '资料 preset 不该有写权限')
+  })
+
+  await test('报告体积预算：health/cost 默认紧凑，明细只在 verbose（工具结果会永久留在会话里）', async () => {
+    const tmp = await makeTmp()
+    const { tools } = setup(mock, tmp, { overrides: { healthProbe: false } })
+    const { exec } = newExec(tmp)
+    const health = (await tools.media_report.execute({ action: 'health' }, exec)).report
+    const healthVerbose = (await tools.media_report.execute({ action: 'health', verbose: true }, exec)).report
+    const cost = (await tools.media_report.execute({ action: 'cost', scope: 'all' }, exec)).report
+    const bytes = (text) => Buffer.byteLength(text, 'utf8')
+
+    // 2026-10-17 新增一条能力行（dashscope_video），+95 B；上限同步上浮，仍然挡"把报表写成小作文"。
+    assert.ok(bytes(health) <= 2350, '紧凑 health 超预算：' + bytes(health) + ' B（实测原版 2667 B / 线上约 3.5 KB）')
+    assert.ok(bytes(cost) <= 700, '紧凑 cost 超预算：' + bytes(cost) + ' B（实测原版 895 B）')
+    assert.ok(bytes(healthVerbose) > bytes(health), 'verbose 必须比紧凑更长（否则等于没实现）')
+    // 红线：紧凑模式只删样板/明细，**告警一个都不能省**
+    assert.ok(health.includes('原生读图：'), '紧凑模式仍要报屏蔽状态：' + health)
+    assert.ok(health.includes('单价表'), '紧凑模式仍要报单价表：' + health)
+    assert.ok(!health.includes('掩码只在 agent 创建时贴'), '掩码注意事项应移入 verbose')
+    assert.ok(healthVerbose.includes('掩码只在 agent 创建时贴'), 'verbose 要给出完整说明')
+    // 图例最多出现一次（原来"账本"和"任务注册表"各带一句图例，同一次报告里重复两遍）
+    assert.ok(health.split('storage = 宿主服务').length - 1 <= 1, '后端图例不能在同一份报告里重复：' + health)
+    assert.ok(health.includes('账本/注册表后端：'), '两个后端应压在同一行：' + health)
+    // 2026-10-17 起：读图子代理 token **已记账**（core/reader-usage.mjs 订阅 llm/stream
+    // 的 waterfall 观察 usage 分片）。所以这里不能再断言"未计入"那句——
+    // 但也不能只断言"有读图字样"：报告**谎报已计入**才是新的风险。
+    // 判据取"没观测到时不谎报"这一支：本用例里没有任何读图调用，报告必须如实说"尚无观测记录"。
+    assert.ok(cost.includes('读图子代理'), 'cost 必须交代读图子代理的计量口径')
+    assert.ok(!cost.includes('**未计入**'), '已经能记账了，不能再说"未计入"')
+    assert.ok(!cost.includes('**已记账**'), '本次没有任何读图调用，绝不能谎报已记账：' + cost)
+    assert.ok(cost.includes('尚无观测记录'), '没观测到就要如实说：' + cost)
+    assert.ok(cost.includes('估算值，非账单'), 'cost 仍要保留免责声明')
+  })
+
   // ---------------------------------------------------------------- 模型未开通：404 ≠ 参数错误
   await test('模型未开通/接入点不存在（404）→ MODEL_UNAVAILABLE，而不是"参数不被接受"', async () => {
     // 起因（2026-10-15 实测）：方舟对"模型 id 不对或账号没权限"返回 **HTTP 404**，
@@ -939,6 +1228,316 @@ async function main() {
     assert.ok(mismatch.message.includes('6.08'), '要给出正确金额供复述：' + mismatch.message)
   })
 
+  // ------------------------------------------- 制图花钱闸门（2026-10-16 补：这半边以前是敞开的）
+  await test('制图花钱闸门：不确认就一分钱都不该花（含"未计价 fail-closed"与上限）', async () => {
+    // 实机实测过的洞：出片有三层闸门，**制图一条都没有**——只受次数预算（maxCallsPerTurn）约束，
+    // 于是"不传任何确认参数就能直接出图扣费"、"未计价模型照常提交"。
+    // 现在出图这条路径必须和出片一样：先报价 → 复述金额 → 才提交。
+    const tmp = await makeTmp()
+    const pricing = { ...plain(new Config({}).pricing), 'qwen-image-3.0': { unit: 'image', unitPrice: 0.18, currency: 'CNY', asOf: '2026-10-16' } }
+    const { tools } = setup(mock, tmp, {
+      // noConfirmUnderCNY: 0 → 关掉"小额免确认"，否则 ¥0.72 会被自动放行、测不到确认层本身
+      overrides: { requireSpendConfirm: true, noConfirmUnderCNY: 0, videoCostLimitCNY: 0, videoSessionCostLimitCNY: 0, pricing },
+    })
+    const { exec } = newExec(tmp)
+    const before = mock.submitCount('qwen')
+
+    // (a) 不传确认 → 只报价、零提交，且文案按"张"计价
+    const quote = await expectError(
+      tools.qwen_draw.execute({ prompt: '制图闸门', n: 4 }, exec),
+      CODES.BAD_REQUEST,
+      ['未产生任何费用', 'confirm_estimate=0.72', '张'],
+    )
+    assert.equal(mock.submitCount('qwen'), before, '没有确认就不该有任何提交到达厂商')
+    // (b) 金额对不上 → 拦下，仍然零提交
+    await expectError(tools.qwen_draw.execute({ prompt: '制图闸门', n: 4, confirm_estimate: 1 }, exec), CODES.BAD_REQUEST, ['对不上'])
+    assert.equal(mock.submitCount('qwen'), before, '金额不符也不该提交')
+    // (c) 金额对得上 → 真出图并记账
+    const ok = await tools.qwen_draw.execute({ prompt: '制图闸门', n: 2, confirm_estimate: 0.36 }, exec)
+    assert.equal(ok.images.length, 2)
+    const ledger = await readJson(join(tmp, 'ledger.json'))
+    assert.equal(ledger.records.length, 1)
+    assert.equal(ledger.records[0].unitKind, 'image')
+    assert.equal(ledger.records[0].units, 2)
+    assert.equal(ledger.records[0].unitPrice, 0.18)
+    assert.equal(ledger.records[0].amount, 0.36)
+    // (d) 缓存命中不需要确认（本来就没花钱，闸门不该多收一道手续）
+    const cached = await tools.qwen_draw.execute({ prompt: '制图闸门', n: 2 }, exec)
+    assert.equal(cached.cached, true, '相同参数第二次应命中缓存')
+    assert.equal(mock.submitCount('qwen') - before, 1, '缓存命中不该再提交')
+
+    // (e) 报价不吃配额：确认流程天然是两次调用，maxCallsPerTurn=1 时这一对仍应出图
+    //     （闸门若排在 budget.take 之后，这里会先撞 RATE_LIMIT —— 那是我修闸门时差点引入的功能退化）
+    const quotaTmp = await makeTmp()
+    const quotaSetup = setup(mock, quotaTmp, { overrides: { requireSpendConfirm: true, noConfirmUnderCNY: 0, maxCallsPerTurn: 1, pricing } })
+    const quotaExec = newExec(quotaTmp).exec
+    await expectError(quotaSetup.tools.qwen_draw.execute({ prompt: '报价不吃配额' }, quotaExec), CODES.BAD_REQUEST, ['confirm_estimate=0.18'])
+    const okQuota = await quotaSetup.tools.qwen_draw.execute({ prompt: '报价不吃配额', confirm_estimate: 0.18 }, quotaExec)
+    assert.equal(okQuota.images.length, 1, '报价那次不该消耗 maxCallsPerTurn 名额')
+  })
+
+  await test('制图花钱闸门：未计价模型 fail-closed（自报金额不作数）', async () => {
+    const tmp = await makeTmp()
+    // 阈值故意开到 10 元：**"小额免确认"救不了未计价** —— 未计价在函数开头就 fail-closed 了，
+    // 根本走不到阈值那一步（否则"把阈值调大"就成了绕过单价表的后门）。
+    const { tools } = setup(mock, tmp, { overrides: { requireSpendConfirm: true, noConfirmUnderCNY: 10, pricing: {}, allowUnpricedSpend: false } })
+    const { exec } = newExec(tmp)
+    const before = mock.submitCount('qwen')
+    await expectError(tools.qwen_draw.execute({ prompt: '未计价制图', confirm_estimate: 1 }, exec), CODES.BAD_REQUEST, ['自报金额', '未产生任何费用'])
+    assert.equal(mock.submitCount('qwen'), before, '未计价就绝不能提交（出片那边的洞不能从制图这边绕回来）')
+  })
+
+  await test('制图花钱闸门：单次上限与会话累计上限同样管制图（阈值再大也绕不过上限）', async () => {
+    const tmp = await makeTmp()
+    // 单价故意调高到 0.6/张，好让整数上限（配置项 step=1）能够咬到。
+    const pricing = { ...plain(new Config({}).pricing), 'qwen-image-3.0': { unit: 'image', unitPrice: 0.6, currency: 'CNY', asOf: '2026-10-16' } }
+    const { tools } = setup(mock, tmp, {
+      // 阈值 10 元 ≫ 本次 1.20 元：若"小额免确认"被放在上限之前，这里就会放行 —— 测试专门盯这个顺序
+      overrides: { requireSpendConfirm: true, noConfirmUnderCNY: 10, videoCostLimitCNY: 1, videoSessionCostLimitCNY: 1, pricing },
+    })
+    const { exec } = newExec(tmp)
+    // 单次上限：2 张 = 1.20 > 1 → 拦下，并点名是哪个配置项
+    const perCall = await expectError(tools.qwen_draw.execute({ prompt: '单次上限', n: 2, confirm_estimate: 1.2 }, exec), CODES.BAD_REQUEST)
+    assert.ok(perCall.message.includes('videoCostLimitCNY'), '要指出是哪个配置项：' + perCall.message)
+    // 会话累计：先花 0.60（放行），再花 0.60 就超 1 元 → 拦下
+    await tools.qwen_draw.execute({ prompt: '第一张', confirm_estimate: 0.6 }, exec)
+    const perSession = await expectError(tools.qwen_draw.execute({ prompt: '第二张', confirm_estimate: 0.6 }, exec), CODES.BAD_REQUEST)
+    assert.ok(perSession.message.includes('videoSessionCostLimitCNY'), '要指出是哪个配置项：' + perSession.message)
+    assert.ok(perSession.message.includes('0.60'), '要报出"已花多少"：' + perSession.message)
+  })
+
+  await test('子代理生成刹车：默认允许（效率优先），开关打开后只允许主代理', async () => {
+    // 策略来自用户 2026-10-16 的决定：繁重任务里让子代理直接出图，效率优先；
+    // 普通任务基本用不到子代理出图。所以默认**不拦**，只留一个刹车开关。
+    const tmp = await makeTmp()
+    const def = setup(mock, tmp, { overrides: { requireSpendConfirm: false } })
+    const allow = guardOf(def.fake, GUARD_SUBAGENT_SPEND)
+    const mainAgent = { options: { provider: 'deepseek-account', model: 'deepseek-flash' } }
+    const subAgent = { options: { provider: 'deepseek-account', model: 'deepseek-flash', subagentDepth: 1 } }
+    assert.equal(allow({ name: 'qwen_draw', arguments: {}, agent: subAgent }), undefined, '默认必须允许子代理生成')
+    assert.equal(allow({ name: 'seedance_video', arguments: {}, agent: subAgent }), undefined, '默认必须允许子代理出片')
+    assert.equal(allow({ name: 'video_gen', arguments: {}, agent: subAgent }), undefined, '默认必须允许子代理用百炼出片')
+    assert.equal(allow({ name: 'qwen_draw', arguments: {}, agent: mainAgent }), undefined, '主代理永远允许')
+    assert.equal(allow({ name: 'media_report', arguments: {}, agent: subAgent }), undefined, '这条守卫只管生成类工具')
+
+    const blocked = setup(mock, await makeTmp(), { overrides: { requireSpendConfirm: false, blockSubagentSpend: true } })
+    const brake = guardOf(blocked.fake, GUARD_SUBAGENT_SPEND)
+    for (const tool of ['qwen_draw', 'seedance_video', 'video_gen']) {
+      const verdict = brake({ name: tool, arguments: {}, agent: subAgent })
+      assert.ok(typeof verdict === 'string' && verdict.includes('只允许主代理调用'), tool + ' 应被刹车拦下：' + String(verdict))
+    }
+    assert.equal(brake({ name: 'qwen_draw', arguments: {}, agent: mainAgent }), undefined, '刹车不该影响主代理')
+
+    // 分级刹车（2026-10-17）：只挡出片，不挡出图与读图。
+    const videoOnly = setup(mock, await makeTmp(), { overrides: { requireSpendConfirm: false, blockSubagentVideoSpend: true } })
+    const videoBrake = guardOf(videoOnly.fake, GUARD_SUBAGENT_SPEND)
+    for (const tool of ['video_gen', 'seedance_video']) {
+      const verdict = videoBrake({ name: tool, arguments: {}, agent: subAgent })
+      assert.ok(typeof verdict === 'string' && verdict.includes('只允许主代理调用'), tool + ' 应被"只挡出片"拦下：' + String(verdict))
+    }
+    assert.equal(videoBrake({ name: 'qwen_draw', arguments: {}, agent: subAgent }), undefined, '只挡出片时，出图必须放行')
+    assert.equal(videoBrake({ name: 'media_task', arguments: {}, agent: subAgent }), undefined, '补下载不是生成，不该拦')
+    assert.equal(videoBrake({ name: 'video_gen', arguments: {}, agent: mainAgent }), undefined, '主代理永远可以出片')
+  })
+
+  await test('会话树汇总：子代理的花费计入主代理的 cost(session)（否则是看不见的黑洞）', async () => {
+    const tmp = await makeTmp()
+    const { tools, fake } = setup(mock, tmp, {
+      overrides: { requireSpendConfirm: false, videoCostLimitCNY: 0, videoSessionCostLimitCNY: 0 },
+    })
+    const created = fake.listeners.find((entry) => entry.event === 'agent/created')
+    // 真实形状（实测）：子会话 header 里带 parentSession。
+    const childAgent = {
+      session: { id: 'child-1', header: { id: 'child-1', parentSession: 'parent-1' } },
+      options: { provider: 'deepseek-account', model: 'deepseek-flash', subagentDepth: 1 },
+      ctx: { effect: (cb) => cb() ?? (() => {}), tools: { restrict: () => () => {} } },
+    }
+    created.callback({ agent: childAgent })
+    // 子代理自己出一张图（记在 child-1 会话上）
+    await tools.qwen_draw.execute({ prompt: '子代理出图' }, makeExec({ cwd: tmp, sessionId: 'child-1' }))
+
+    const report = (
+      await tools.media_report.execute({ action: 'cost', scope: 'session' }, makeExec({ cwd: tmp, sessionId: 'parent-1' }))
+    ).report
+    assert.ok(report.includes('含 1 个子代理会话'), '标题必须写清汇总范围：' + report)
+    assert.ok(report.includes('qwen-image-3.0'), '必须包含子代理那一笔：' + report)
+
+    // 对照：子会话自己查，不该声称"含子代理会话"
+    const childReport = (
+      await tools.media_report.execute({ action: 'cost', scope: 'session' }, makeExec({ cwd: tmp, sessionId: 'child-1' }))
+    ).report
+    assert.ok(!childReport.includes('个子代理会话'), '子会话自己查不该带汇总说明：' + childReport)
+  })
+
+  await test('会话累计上限覆盖会话树：把花费挪进子会话也绕不过上限', async () => {
+    const tmp = await makeTmp()
+    const pricing = {
+      ...plain(new Config({}).pricing),
+      'qwen-image-3.0': { unit: 'image', unitPrice: 0.6, currency: 'CNY', asOf: '2026-10-16' },
+    }
+    const { tools, fake } = setup(mock, tmp, {
+      overrides: { requireSpendConfirm: true, noConfirmUnderCNY: 0, videoCostLimitCNY: 0, videoSessionCostLimitCNY: 1, pricing },
+    })
+    const created = fake.listeners.find((entry) => entry.event === 'agent/created')
+    created.callback({
+      agent: {
+        session: { id: 'child-2', header: { id: 'child-2', parentSession: 'parent-2' } },
+        options: { provider: 'deepseek-account', model: 'deepseek-flash', subagentDepth: 1 },
+        ctx: { effect: (cb) => cb() ?? (() => {}), tools: { restrict: () => () => {} } },
+      },
+    })
+    // 子代理先花 0.60（记在 child-2 会话）
+    await tools.qwen_draw.execute({ prompt: '子代理第一张', confirm_estimate: 0.6 }, makeExec({ cwd: tmp, sessionId: 'child-2' }))
+    // 主代理再花 0.60：只看自己的会话（0 + 0.6 ≤ 1）会放行；覆盖会话树则应拦下
+    const blocked = await expectError(
+      tools.qwen_draw.execute({ prompt: '主代理第二张', confirm_estimate: 0.6 }, makeExec({ cwd: tmp, sessionId: 'parent-2' })),
+      CODES.BAD_REQUEST,
+    )
+    assert.ok(blocked.message.includes('videoSessionCostLimitCNY'), '要指出是会话累计上限：' + blocked.message)
+    assert.ok(blocked.message.includes('0.60'), '要报出"已花多少"（含子代理那笔）：' + blocked.message)
+  })
+
+  await test('小额免确认（2026-10-16 加）：阈值内的制图一次调用直接出图', async () => {
+    // 动机：确认流程天然是两次调用，而制图单张 ¥0.18、一批最多 4 张 → 每次多一轮往返不划算。
+    // 默认阈值 1 元覆盖"制图任何一批"，出片 1 秒 ¥1.52 仍然要确认（下面第 2 段钉住）。
+    const tmp = await makeTmp()
+    const pricing = { ...plain(new Config({}).pricing), 'qwen-image-3.0': { unit: 'image', unitPrice: 0.18, currency: 'CNY', asOf: '2026-10-16' } }
+    const { tools } = setup(mock, tmp, {
+      overrides: { requireSpendConfirm: true, videoCostLimitCNY: 0, videoSessionCostLimitCNY: 0, pricing },
+    })
+    const { exec } = newExec(tmp)
+    const before = mock.submitCount('qwen')
+    // (a) n=4 = ¥0.72 ≤ 1 → 一次调用直接出图，不需要 confirm_estimate
+    const ok = await tools.qwen_draw.execute({ prompt: '小额免确认', n: 4 }, exec)
+    assert.equal(ok.images.length, 4, '阈值内的批量出图应一次调用完成：' + JSON.stringify(ok.images.length))
+    assert.equal(mock.submitCount('qwen') - before, 1, '应恰好提交一次')
+    // 记账照旧（免确认不等于不记账）
+    const ledger = await readJson(join(tmp, 'ledger.json'))
+    assert.equal(ledger.records[0].amount, 0.72)
+    assert.equal(ledger.records[0].units, 4)
+
+    // (b) 阈值关成 0 → 同一批又要报价了（证明这个开关真的在起作用，而不是"永远免确认"）
+    const tmp2 = await makeTmp()
+    const off = setup(mock, tmp2, { overrides: { requireSpendConfirm: true, noConfirmUnderCNY: 0, videoCostLimitCNY: 0, videoSessionCostLimitCNY: 0, pricing } })
+    const offBefore = mock.submitCount('qwen')
+    await expectError(off.tools.qwen_draw.execute({ prompt: '小额免确认关闭', n: 4 }, newExec(tmp2).exec), CODES.BAD_REQUEST, ['confirm_estimate=0.72'])
+    assert.equal(mock.submitCount('qwen'), offBefore, '关掉阈值后不该提交')
+
+    // (c) 阈值只救"小额"：出片 5 秒 = ¥7.60 仍要确认（默认 threshold 1 元对出片无效）
+    const tmp3 = await makeTmp()
+    const videoSetup = setup(mock, tmp3, {
+      overrides: { enableSeedanceVideo: true, requireSpendConfirm: true, videoCostLimitCNY: 0, videoSessionCostLimitCNY: 0 },
+    })
+    const videoExec = newExec(tmp3).exec
+    const videoBefore = mock.submitCount('seedance')
+    await expectError(videoSetup.tools.seedance_video.execute({ prompt: '出片仍要确认', duration: 5 }, videoExec), CODES.BAD_REQUEST, ['confirm_estimate=7.6'])
+    assert.equal(mock.submitCount('seedance'), videoBefore, '大额（≥¥1.52/秒）仍必须确认')
+  })
+
+  // ------------------------------------------- 账本读不到时不许静默放行（2026-10-16 补）
+  await test('会话累计上限不赌账本：读不到花销就抛错，绝不 return 0 放行', async () => {
+    const thrown = async (fn) => {
+      try {
+        await fn()
+      } catch (error) {
+        return error
+      }
+      return undefined
+    }
+    // ① getLedger 抛错（例如 storage 领域打不开）
+    let error = await thrown(() => sessionSpentOrThrow({ getLedger: async () => { throw new Error('storage down') }, sessionId: 's', providerLabel: 'X' }))
+    assert.equal(error?.code, CODES.UNAVAILABLE, '账本打不开必须报 UNAVAILABLE：' + String(error))
+    assert.ok(error.message.includes('未产生任何费用'), 'fail-closed 要明确这次没花钱：' + error.message)
+    // ② 环境里根本没有账本（getLedger 返回空）
+    error = await thrown(() => sessionSpentOrThrow({ getLedger: async () => undefined, sessionId: 's', providerLabel: 'X' }))
+    assert.equal(error?.code, CODES.UNAVAILABLE)
+    // ③ 账本在，但读失败
+    error = await thrown(() =>
+      sessionSpentOrThrow({ getLedger: async () => ({ list: async () => { throw new Error('IO') } }), sessionId: 's', providerLabel: 'X' }),
+    )
+    assert.equal(error?.code, CODES.UNAVAILABLE)
+    // ④ 正常账本：求和；金额为 null（未计价）的记录不计入，也不能让整个求和变成 NaN
+    const sum = await sessionSpentOrThrow({
+      getLedger: async () => ({ list: async () => [{ amount: 1.5 }, { amount: null }, { amount: 0.25 }] }),
+      sessionId: 's',
+      providerLabel: 'X',
+    })
+    assert.equal(sum, 1.75)
+  })
+
+  await test('提交了但没取回产物，也要把那笔钱记上（且同一 taskId 只记一次）', async () => {
+    const rows = []
+    const ledger = { list: async () => rows.slice(), record: async (entry) => { rows.push(entry); return true } }
+    const entry = { adapter: 'ark-video', provider: '方舟 Ark', model: 'doubao-seedance-2-5-260628', unitKind: 'second', units: 5, unitPrice: 1.519, currency: 'CNY', amount: 7.595 }
+    const first = await accountUnretrievedSpend({ getLedger: async () => ledger, taskId: 't-1', entry })
+    assert.equal(first, true)
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].taskId, 't-1')
+    assert.equal(rows[0].amount, 7.595)
+    assert.ok(String(rows[0].note).includes('预估'), '要标明这是预估、不是已取回产物的实付：' + rows[0].note)
+    // 同一个 taskId 再来一次 → 不重复记账（media_task 补下载后不会把钱算两遍）
+    const second = await accountUnretrievedSpend({ getLedger: async () => ledger, taskId: 't-1', entry })
+    assert.equal(second, false, '同一 taskId 不该重复记账')
+    assert.equal(rows.length, 1)
+    // 没有 taskId 时什么也不做（拿不到 id 就不猜）
+    assert.equal(await accountUnretrievedSpend({ getLedger: async () => ledger, taskId: '', entry }), false)
+    assert.equal(rows.length, 1)
+  })
+
+  await test('qwen_draw：等待超时 → TIMEOUT 文案照旧，但那笔钱要进账本', async () => {
+    // 事故形态：反复"提交完就放弃"——远端已经计费，而成功路径的记账在产物落盘之后，
+    // 所以账上永远是零、会话累计上限永不触顶。超时/取消这两条路必须补记预估。
+    const tmp = await makeTmp()
+    const pricing = { ...plain(new Config({}).pricing), 'qwen-image-3.0': { unit: 'image', unitPrice: 0.18, currency: 'CNY', asOf: '2026-10-16' } }
+    const { tools } = setup(mock, tmp, {
+      overrides: { dashscopeImageMode: 'async', taskTimeoutMs: 2000, taskPollIntervalMs: 500, taskPollMaxIntervalMs: 500, pricing },
+    })
+    const { exec } = newExec(tmp)
+    const error = await expectError(tools.qwen_draw.execute({ prompt: '[stall] 钱也要记上' }, exec), CODES.TIMEOUT)
+    const match = /task_id=([A-Za-z0-9_-]+)/.exec(error.message)
+    assert.ok(match, '超时文案仍要带 task_id：' + error.message)
+    const ledger = await readJson(join(tmp, 'ledger.json'))
+    const row = ledger.records.find((record) => record.taskId === match[1])
+    assert.ok(row, '超时也要把那笔"可能已计费"的钱记上：' + JSON.stringify(ledger.records))
+    assert.equal(row.unitPrice, 0.18)
+    assert.equal(row.amount, 0.18)
+    assert.equal(row.units, 1)
+    assert.ok(String(row.note).includes('预估'))
+    // 再超时一次：那是**另一次提交、另一个任务**（每次都新建远端任务），所以各记一笔、互不覆盖
+    const second = await expectError(tools.qwen_draw.execute({ prompt: '[stall] 钱也要记上' }, exec), CODES.TIMEOUT)
+    const secondId = /task_id=([A-Za-z0-9_-]+)/.exec(second.message)[1]
+    assert.notEqual(secondId, match[1], '两次提交应是两个不同的远端任务')
+    const ledger2 = await readJson(join(tmp, 'ledger.json'))
+    assert.equal(ledger2.records.length, 2, '两次提交各记一笔（去重是按 taskId，不是按 prompt）')
+    assert.deepEqual(ledger2.records.map((record) => record.taskId).sort(), [match[1], secondId].sort())
+  })
+
+  // ------------------------------------------- 任务注册表的 storage 后端（2026-10-16 修）
+  await test('任务注册表：有 storageDomain 时真的走 storage（此前恒为 file），降级必须被 health 点名', async () => {
+    // 实机长期症状：media_task(list) 每次自报「注册表后端：file」，而账本同时是 storage。
+    // 根因是注册表 open() 传的是裸 JSON-Schema，而宿主契约要 defineDomain + domainTable(zod)。
+    const tmp = await makeTmp()
+    const storageDomain = createFakeStorageDomain()
+    const { tools } = setup(mock, tmp, { storageDomain })
+    const { exec } = newExec(tmp)
+    await tools.qwen_draw.execute({ prompt: '注册表走 storage' }, exec)
+    const listed = await tools.media_task.execute({ action: 'list' }, exec)
+    assert.equal(listed.registryBackend, 'storage', '有 storageDomain 就必须用上它（2026-10-16 前这里恒为 file）')
+    assert.equal(listed.tasks.length, 1)
+    assert.equal(listed.tasks[0].provider, 'qwen')
+    // 领域里确实落了记录（不是只把 backend 标成 storage 就完事）
+    const domain = storageDomain.opened.get('mm_media_tasks')
+    assert.ok(domain, '应打开 mm_media_tasks 领域')
+    assert.equal(domain.domain.table('tasks').size, 1)
+
+    // 没有 storageDomain（环境本就不带）→ 退回文件，但必须**说清原因**，不能只写个 file 就完
+    const tmp2 = await makeTmp()
+    const plainSetup = setup(mock, tmp2)
+    const report = await plainSetup.tools.media_report.execute({ action: 'health' }, newExec(tmp2).exec)
+    assert.ok(/账本\/注册表后端：.*file/.test(report.report), '降级要在 health 里可见：' + report.report)
+    assert.ok(report.report.includes('任务注册表没有落在宿主 storage 领域'), '降级要给原因：' + report.report)
+  })
+
   // ------------------------------------------- 未计价路径（2026-10-15 第二轮：堵住自报金额绕过）
   await test('花费闸门（未计价）：自报金额不能当放行凭证', async () => {
     // 事故形态：2026-10-15 换模型 id 时忘了改单价表的键，于是该模型"查不到价"。
@@ -1048,9 +1647,9 @@ async function main() {
     const base = switches.signature()
     assert.equal(typeof base, 'string')
     assert.equal(base, switches.signature(), '同一状态必须得到同一个签名（否则短路失效）')
-    assert.equal(base.split(',').length, 6, '六个开关都要进签名：' + base)
+    assert.equal(base.split(',').length, 7, '七个开关都要进签名：' + base)
 
-    const fields = ['enableAskGlm', 'enableAskQwen', 'enableQwenDraw', 'enableSeedanceVideo', 'enableMediaTask', 'enableMediaReport']
+    const fields = ['enableAskGlm', 'enableAskQwen', 'enableQwenDraw', 'enableSeedanceVideo', 'enableVideoGen', 'enableMediaTask', 'enableMediaReport']
     for (const field of fields) {
       const one = setupSwitches()
       const before = one.switches.signature()
@@ -1075,7 +1674,7 @@ async function main() {
 
     // 初始状态：seedance / 两个读图员都关着 → 创建时就按实时配置贴掩码
     // （顺序跟随 TOOL_SWITCHES 的声明顺序：ask_glm、ask_qwen、seedance_video）
-    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'seedance_video'], '创建时应按实时配置贴掩码：' + JSON.stringify(applied))
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'], '创建时应按实时配置贴掩码：' + JSON.stringify(applied))
 
     // 稳态：连跑 5 次 tick，不该有任何新掩码（短路生效）
     const before = applied.length
@@ -1086,12 +1685,12 @@ async function main() {
     config.enableSeedanceVideo = true
     tick()
     assert.equal(applied.length, before + 1, '开关变了下一次 tick 必须重新对账：' + JSON.stringify(applied))
-    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen'], '打开后 seedance_video 不该再被 deny：' + JSON.stringify(applied))
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'video_gen'], '打开后 seedance_video 不该再被 deny：' + JSON.stringify(applied))
 
     // 反向：关掉 qwen_draw → 下一次 tick 必须把它 deny 掉（deny 顺序 = TOOL_SWITCHES 声明顺序）
     config.enableQwenDraw = false
     tick()
-    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'qwen_draw'], '关掉后必须立刻 deny：' + JSON.stringify(applied))
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'qwen_draw', 'video_gen'], '关掉后必须立刻 deny：' + JSON.stringify(applied))
   })
 
   await test('性能：工具 schema 体积有上限（每个请求都要发送，胖描述是持续成本）', async () => {
@@ -1100,14 +1699,15 @@ async function main() {
     // 这里钉一个上限，防止以后又往 schema 里写小作文（正文该写进 README，不该写进工具表）。
     const tmp = await makeTmp()
     const { tools } = setup(mock, tmp, { overrides: { enableSeedanceVideo: true } })
-    const budget = { qwen_draw: 700, seedance_video: 1200, media_task: 800, media_report: 500 }
+    // 2026-10-17：新增 video_gen（1132 B，与 seedance_video 同档），合计上限同步 +1200。
+    const budget = { qwen_draw: 700, seedance_video: 1200, video_gen: 1200, media_task: 800, media_report: 500 }
     let total = 0
     for (const [name, definition] of Object.entries(tools)) {
       const bytes = Buffer.byteLength(JSON.stringify({ name: definition.name, description: definition.description, parameters: definition.parameters }), 'utf8')
       total += bytes
       assert.ok(bytes <= budget[name], `${name} 的 schema 超预算：${bytes} B > ${budget[name]} B（描述该写进 README，不是写进每个请求）`)
     }
-    assert.ok(total <= 3000, '四个工具 schema 合计超预算：' + total + ' B/请求')
+    assert.ok(total <= 4200, '五个工具 schema 合计超预算：' + total + ' B/请求')
   })
 
   // ---------------------------------------------------------------- 生成物附回上下文（默认关）
@@ -1472,15 +2072,21 @@ async function main() {
     const { exec } = newExec(tmp)
     await tools.qwen_draw.execute({ prompt: '报告用图' }, exec)
     await tools.seedance_video.execute({ prompt: '报告用视频', duration: 5 }, exec)
-    const session = await tools.media_report.execute({ action: 'cost' }, exec)
+    // ⚠ 这些断言看的是**完整明细**（单价表键名、未计入的长解释），所以显式要 verbose。
+    // 紧凑模式的体积与"告警不省"由《报告体积预算》那条用例负责。
+    const session = await tools.media_report.execute({ action: 'cost', verbose: true }, exec)
     assert.ok(session.report.includes('qwen-image-3.0'))
     assert.ok(session.report.includes('doubao-seedance-1-0-pro-fast-251015'))
     assert.ok(session.report.includes('合计：8.0950 CNY'))
     assert.ok(session.report.includes('估算值，非账单'))
     assert.ok(session.report.includes('读图子代理（ask_glm / ask_qwen，当前路由：'), '要交代读图子代理这条链路的计费状态')
-    // 2026-10-15 加：这一格必须说清"为什么算不出来"＋"去哪儿看真实用量"，
-    // 而不只是一句"未计入"（宿主没有请求级钩子，插件确实拦不到，详见 core/cost.mjs）。
-    assert.ok(session.report.includes('没有请求级钩子'), '要说明未计入的原因：' + session.report)
+    // 2026-10-17 改：原来的断言是"要说明未计入的原因（没有请求级钩子）"。
+    // 该结论已不成立——插件现在订阅 `llm/stream` waterfall 并在 usage 分片上记账
+    // （core/reader-usage.mjs）。本用例没有任何读图调用，所以正确行为是**如实说没观测到**，
+    // 并交代统计口径（从插件加载起算），而不是宣称已经算到了钱。
+    assert.ok(!session.report.includes('没有请求级钩子'), '旧结论不能再出现：' + session.report)
+    assert.ok(session.report.includes('尚无观测记录') || session.report.includes('尚未观测到调用'),
+      'verbose 下没观测到调用也要说清：' + session.report)
     const today = await tools.media_report.execute({ action: 'cost', scope: 'today' }, exec)
     assert.ok(today.report.includes('合计：8.0950 CNY'))
     const other = await tools.media_report.execute({ action: 'cost', scope: 'session' }, makeExec({ cwd: tmp, sessionId: 'other-session' }))
@@ -1496,7 +2102,7 @@ async function main() {
     })
     const { exec } = newExec(tmp)
     await tools.qwen_draw.execute({ prompt: '健康报告用图' }, exec)
-    const health = await tools.media_report.execute({ action: 'health' }, exec)
+    const health = await tools.media_report.execute({ action: 'health', verbose: true }, exec)
     assert.ok(health.report.includes('DASHSCOPE_API_KEY'))
     assert.ok(health.report.includes('✅ 已配置'))
     assert.ok(health.report.includes('ZHIPU_API_KEY'))
@@ -1516,7 +2122,7 @@ async function main() {
       overrides: { enableAskQwen: true },
     })
     const { exec } = newExec(tmp)
-    const report = (await only.tools.media_report.execute({ action: 'health' }, exec)).report
+    const report = (await only.tools.media_report.execute({ action: 'health', verbose: true }, exec)).report
     assert.ok(report.includes('读图路由（ask_qwen → llm-pi-ai providers.qwen-vl）'), report)
     assert.ok(report.includes('ask_qwen: ✅ 可用'), report)
     assert.ok(report.includes('ask_glm: ⛔ 已在设置中关闭'), report)
@@ -1528,7 +2134,7 @@ async function main() {
       llmProviders: ['glm', 'qwen-vl', 'deepseek-account'],
       overrides: { enableAskGlm: true, enableAskQwen: true },
     })
-    const conflictReport = (await both.tools.media_report.execute({ action: 'health' }, newExec(tmp2).exec)).report
+    const conflictReport = (await both.tools.media_report.execute({ action: 'health', verbose: true }, newExec(tmp2).exec)).report
     assert.ok(conflictReport.includes('⚠ 与 ask_qwen 同时处于开启状态'), conflictReport)
     assert.ok(conflictReport.includes('ask_glm: ✅ 可用'), conflictReport)
     assert.ok(conflictReport.includes('ask_qwen: ⛔ 已在设置中关闭'), conflictReport)
@@ -1540,7 +2146,7 @@ async function main() {
       llmProviders: ['glm', 'deepseek-account'], // 没注册 qwen-vl
       overrides: { enableAskQwen: true },
     })
-    const report = (await tools.media_report.execute({ action: 'health' }, newExec(tmp).exec)).report
+    const report = (await tools.media_report.execute({ action: 'health', verbose: true }, newExec(tmp).exec)).report
     assert.ok(report.includes('❌ 未注册（检查 llm-pi-ai providers.qwen-vl 配置）'), report)
     assert.ok(report.includes('ask_qwen: ❌ 当前不可用'), report)
   })
@@ -1549,7 +2155,7 @@ async function main() {
     const tmp = await makeTmp()
     const { tools } = setup(mock, tmp, { credentials: { DASHSCOPE_API_KEY: 'wrong-key', ARK_API_KEY: undefined }, overrides: { enableSeedanceVideo: true, requireSpendConfirm: false  } })
     const { exec } = newExec(tmp)
-    const health = await tools.media_report.execute({ action: 'health' }, exec)
+    const health = await tools.media_report.execute({ action: 'health', verbose: true }, exec)
     assert.ok(health.report.includes('AUTH'), 'dashscope probe should report AUTH: ' + health.report)
     assert.ok(health.report.includes('qwen_draw: ❌ 当前不可用'))
     assert.ok(health.report.includes('seedance_video: ❌ 当前不可用'))
@@ -1587,7 +2193,7 @@ async function main() {
     const { tools } = setup(mock, tmp) // 默认 enableSeedanceVideo=false
     const { exec } = newExec(tmp)
     const before = mock.state.probes.length
-    const health = await tools.media_report.execute({ action: 'health' }, exec)
+    const health = await tools.media_report.execute({ action: 'health', verbose: true }, exec)
     assert.ok(health.report.includes('| seedance_video | ⛔ 关'), health.report)
     assert.ok(health.report.includes('seedance_video: ⛔ 已在设置中关闭'))
     const arkProbes = mock.state.probes.slice(before).filter((entry) => String(entry.path).startsWith('/ark/'))
@@ -1801,7 +2407,7 @@ async function main() {
         },
         tools: {
           restrict(filter) {
-            seen.push({ options, deny: filter.deny })
+            seen.push({ options, allow: filter.allow, deny: filter.deny })
             return () => {}
           },
         },
@@ -1813,9 +2419,11 @@ async function main() {
     assert.ok(seen.at(-1).deny.includes('read_image'), '主 agent 应被 deny read_image：' + JSON.stringify(seen.at(-1)))
 
     // 读图子代理：options 里带 subagentDepth（实测形状）——必须保留 read_image。
+    // 2026-10-17 起读图员走**白名单**（allow: [read_image]），不再逐个 deny。
     createdListener.callback({ agent: makeAgent({ provider: 'glm', model: 'glm-4.6v', subagentDepth: 1 }), source: 'startup' })
+    assert.ok(seen.at(-1).allow?.includes('read_image'), '读图员应是 allow 白名单且含 read_image：' + JSON.stringify(seen.at(-1)))
     assert.ok(
-      !seen.at(-1).deny.includes('read_image'),
+      !seen.at(-1).deny?.includes('read_image'),
       '子代理不应被 deny read_image（否则读图员会瞎）：' + JSON.stringify(seen.at(-1)),
     )
   })
@@ -1843,6 +2451,181 @@ async function main() {
     assert.equal(seen.some((deny) => deny.includes('read_image')), false, '开关默认关时不应 deny read_image')
   })
 
+  // ---------------------------------------------------------------- 通用子代理原生读图开关（C，2026-10-15 加）
+  await test('blockSubagentNativeVision 默认关闭：通用子代理保留 read_image（与旧行为一致）', async () => {
+    const tmp = await makeTmp()
+    const { fake } = setup(mock, tmp, { overrides: { enableAskGlm: true } })
+    const createdListener = fake.listeners.find((entry) => entry.event === 'agent/created')
+    const seen = []
+    const makeAgent = (options) => ({
+      options,
+      ctx: {
+        effect: (cb) => cb() ?? (() => {}),
+        tools: {
+          restrict(filter) {
+            seen.push({ options, deny: filter.deny })
+            return () => {}
+          },
+        },
+      },
+    })
+    // 通用子代理：字面继承父路由（deepseek-account / deepseek-flash）+ subagentDepth。
+    createdListener.callback({ agent: makeAgent({ provider: 'deepseek-account', model: 'deepseek-flash', subagentDepth: 1 }), source: 'startup' })
+    assert.equal(
+      seen.at(-1).deny.includes('read_image'),
+      false,
+      '开关默认关时通用子代理不该被 deny read_image：' + JSON.stringify(seen.at(-1)),
+    )
+  })
+
+  await test('blockSubagentNativeVision 打开：通用子代理被 deny read_image，读图员必须豁免', async () => {
+    const tmp = await makeTmp()
+    const { fake } = setup(mock, tmp, { overrides: { enableAskGlm: true, blockSubagentNativeVision: true } })
+    const createdListener = fake.listeners.find((entry) => entry.event === 'agent/created')
+    const seen = []
+    const makeAgent = (options) => ({
+      options,
+      ctx: {
+        effect: (cb) => cb() ?? (() => {}),
+        tools: {
+          restrict(filter) {
+            seen.push({ options, allow: filter.allow, deny: filter.deny })
+            return () => {}
+          },
+        },
+      },
+    })
+
+    // 通用子代理（继承父路由）→ 必须被摘掉 read_image
+    createdListener.callback({ agent: makeAgent({ provider: 'deepseek-account', model: 'deepseek-flash', subagentDepth: 1 }), source: 'startup' })
+    assert.ok(
+      seen.at(-1).deny.includes('read_image'),
+      '通用子代理应被 deny read_image：' + JSON.stringify(seen.at(-1)),
+    )
+
+    // 读图员（provider 命中契约文件里的 glm）→ 必须保留。**判错就是让读图员瞎掉。**
+    // 2026-10-17 起读图员改用 allow 白名单（只留 read_image），比逐个 deny 更可靠。
+    createdListener.callback({ agent: makeAgent({ provider: 'glm', model: 'glm-4.6v', subagentDepth: 1 }), source: 'startup' })
+    assert.ok(
+      seen.at(-1).allow?.includes('read_image'),
+      '读图员应是 allow 白名单且含 read_image（判据取自契约文件）：' + JSON.stringify(seen.at(-1)),
+    )
+    assert.equal(seen.at(-1).deny, undefined, '读图员不该再走 deny 路径：' + JSON.stringify(seen.at(-1)))
+
+    // 只认 model 的读图员（provider 名被改过）也要豁免 —— 两个信号满足任一个即可。
+    createdListener.callback({ agent: makeAgent({ provider: 'some-renamed-route', model: 'qwen3-vl-plus', subagentDepth: 1 }), source: 'startup' })
+    assert.ok(
+      seen.at(-1).allow?.includes('read_image'),
+      'model 命中读图员路由时也该走白名单' + JSON.stringify(seen.at(-1)),
+    )
+
+    // 主代理不受这个开关影响（它归 blockMainAgentNativeVision 管）。
+    createdListener.callback({ agent: makeAgent({ provider: 'deepseek-account', model: 'deepseek-flash' }), source: 'startup' })
+    assert.equal(
+      seen.at(-1).deny?.includes('read_image'),
+      false,
+      'blockSubagentNativeVision 不该顺带屏蔽主代理（那是另一个开关的职责）：' + JSON.stringify(seen.at(-1)),
+    )
+  })
+
+  await test('原生读图兜底守卫：即使掩码因重新装配丢失，read_image 调用仍被拦（2026-10-16 实测回归）', async () => {
+    // 现场：profile 写着 blockMainAgentNativeVision: true、cordis.yml 里也是 true，
+    // 但重新装配后主代理**仍然成功调用了 read_image**（掩码只在 agent/created 时贴，
+    // 且卸载时会被 dispose；既有 agent 不会再触发 agent/created → 掩码永久丢失）。
+    // 这条守卫就是那个漏洞的兜底：它每次调用都读实时配置，与 agent 何时创建无关。
+    const tmp = await makeTmp()
+    const { fake } = setup(mock, tmp, { overrides: { enableAskGlm: true, blockMainAgentNativeVision: true } })
+    const guard = guardOf(fake, GUARD_NATIVE_VISION)
+    const mainAgent = { options: { provider: 'deepseek-account', model: 'deepseek-flash' } }
+
+    const verdict = guard({ name: 'read_image', file_path: 'C:/x/a.png', args: { file_path: 'C:/x/a.png' }, agent: mainAgent })
+    assert.ok(typeof verdict === 'string' && verdict.length > 0, '屏蔽开关打开时必须拦下 read_image：' + String(verdict))
+    assert.ok(verdict.includes('ask_glm'), '要指向当前可用的读图员：' + verdict)
+    assert.ok(!verdict.includes('没有任何看图途径'), '读图员开着时不该说没有途径：' + verdict)
+
+    // 不误伤：开关关着、读图员自己、以及别的工具都要放行。
+    const off = setup(mock, await makeTmp(), { overrides: { enableAskGlm: true } })
+    assert.equal(
+      guardOf(off.fake, GUARD_NATIVE_VISION)({ name: 'read_image', args: {}, agent: mainAgent }),
+      undefined,
+      '开关关着时不该拦 read_image',
+    )
+    assert.equal(guard({ name: 'read', args: { file_path: 'C:/x/a.png' }, agent: mainAgent }), undefined, '这条守卫只管 read_image')
+    assert.equal(
+      guard({ name: 'read_image', args: {}, agent: { options: { provider: 'glm', model: 'glm-4.6v', subagentDepth: 1 } } }),
+      undefined,
+      '读图员自己的 read_image 必须放行',
+    )
+  })
+
+  await test('blockSubagentNativeVision 打开：通用子代理的 read_image 调用也被兜底守卫拦下', async () => {
+    const tmp = await makeTmp()
+    const { fake } = setup(mock, tmp, { overrides: { enableAskGlm: true, blockSubagentNativeVision: true } })
+    const guard = guardOf(fake, GUARD_NATIVE_VISION)
+    const generic = { options: { provider: 'deepseek-account', model: 'deepseek-flash', subagentDepth: 1 } }
+    const verdict = guard({ name: 'read_image', args: {}, agent: generic })
+    assert.ok(typeof verdict === 'string', '通用子代理应被拦：' + String(verdict))
+    assert.ok(verdict.includes('通用子代理'), '文案要说清屏蔽对象是子代理：' + verdict)
+    assert.ok(verdict.includes('ask_glm'), '要指向读图员：' + verdict)
+  })
+
+  await test('读图员豁免名单取自契约文件（不是硬编码）：改路由名也能认出来', async () => {
+    // 这条是 C 的安全带：判别一旦失效，读图员会被一起弄瞎。
+    const tmp = await mkdtemp(join(tmpdir(), 'mm-reader-route-'))
+    tmpRoots.push(tmp)
+    await mkdir(join(tmp, 'profiles', 'p'), { recursive: true })
+    await writeFile(
+      join(tmp, 'profiles', 'p', 'cordis.yml'),
+      [
+        '- id: tool-subagent-custom',
+        "  name: '@deepseek-ai/dsh-tool-subagent'",
+        '  config:',
+        '    provider: spawn',
+        '    toolName: ask_custom',
+        '    maxDepth: 2',
+        '    agentOptions: { provider: my-renamed-vision, model: my-vl-9 }',
+        '    toolFilter: { allow: [read_image] }',
+      ].join('\n'),
+      'utf8',
+    )
+    const allow = readerRouteAllowlist({ dshHome: tmp })
+    assert.ok(allow.providers.includes('my-renamed-vision'), '契约文件里的 provider 应进白名单：' + JSON.stringify(allow.providers))
+    assert.ok(allow.modelPrefixes.includes('my-vl-9'), '契约文件里的 model 也应进白名单：' + JSON.stringify(allow.modelPrefixes))
+    assert.equal(
+      isReaderAgent({ options: { provider: 'my-renamed-vision', model: 'my-vl-9', subagentDepth: 1 } }, allow),
+      true,
+      '改了名字的读图员也要被认出来',
+    )
+    assert.equal(
+      isReaderAgent({ options: { provider: 'deepseek-account', model: 'deepseek-flash', subagentDepth: 1 } }, allow),
+      false,
+      '通用子代理不该被误认成读图员',
+    )
+    // 空 home：**插件自带的那份 patch 仍会被扫**（它是契约源头，与跑在哪个 profile 无关），
+    // 所以这里不是"扫不到"，而是"只剩自带的声明"。
+    const empty = await mkdtemp(join(tmpdir(), 'mm-reader-empty-'))
+    tmpRoots.push(empty)
+    const fallback = readerRouteAllowlist({ dshHome: empty })
+    assert.ok(fallback.routes.length >= 2, '自带 patch 里的读图行必须始终被扫到：' + fallback.routes.length)
+    assert.ok(
+      fallback.routes.every((route) => route.file.endsWith(join('dsh-mm-models', 'cordis.patch.yml'))),
+      '空 home 下只应剩自带 patch 的声明：' + JSON.stringify(fallback.routes.map((route) => route.file)),
+    )
+    assert.ok(fallback.providers.includes('glm'), '兜底白名单要含 glm：' + JSON.stringify(fallback.providers))
+    // 自带 patch 的读图行必须都是 maxDepth ≥ 2（否则 C 打开后子代理没有看图途径）。
+    for (const route of fallback.routes) {
+      assert.ok(
+        typeof route.maxDepth === 'number' && route.maxDepth >= 2,
+        route.id + ' 的 maxDepth 必须 ≥ 2（实测 < 2 会让子代理调不动读图员）：' + String(route.maxDepth),
+      )
+    }
+    // 注释里的示例值（例如说明文字中的 `maxDepth: 0`）不得被当成真实配置读出来。
+    assert.ok(
+      fallback.routes.every((route) => route.maxDepth !== 0),
+      '注释里的 maxDepth 示例值被误读了：' + JSON.stringify(fallback.routes),
+    )
+  })
+
   // ---------------------------------------------------------------- 提示词段落内容
   await test('提示词段落：只留插件自有策略，禁止抄回宿主已注入的禁令', async () => {
     const tmp = await makeTmp()
@@ -1857,13 +2640,16 @@ async function main() {
       assert.ok(!sectionText.includes(duplicated), '宿主已注入的条款不应在插件提示词里重复：' + duplicated)
     }
 
-    // ---- 正面：插件自有、宿主无从得知的两件事 ----
-    assert.ok(sectionText.includes('主创') && sectionText.includes('不要为了使用工具而使用工具'), '应保留分工与交付责任')
+    // ---- 正面：插件自有、宿主无从得知的三件事 ----
+    // 2026-10-16 第二次瘦身：**去掉身份声明**（"你是主创兼工程师…"），因为它会被注入到
+    // 每一个 agent（实测 57/57 个读图员会话都带着），对读图员是错的、且与它的 persona 打架。
+    assert.ok(sectionText.includes('【媒体分工】') && sectionText.includes('负全责'), '应保留分工与交付责任')
     assert.ok(sectionText.includes('读图路由'), '应保留读图路由策略（这是插件才知道的信息）')
     assert.ok(sectionText.includes('ask_glm') && sectionText.includes('ask_qwen'), '路由策略要点名两个读图员')
-    assert.ok(sectionText.includes('只会看图'), '要点明读图员的边界')
     assert.ok(sectionText.includes('没有看图途径'), '没读图员时要如实说明')
     assert.ok(sectionText.includes('不要绕道、不要猜图'), '要禁止"猜图"这条退路')
+    assert.ok(sectionText.includes('【窄委派】'), '要给出窄工具面委派的建议（子代理每轮背 35 个工具≈32KB）')
+    assert.ok(!sectionText.includes('你是主创兼工程师'), '不该再有身份声明（读图员也收得到这段）')
 
     // 读图员是唯一有意的例外；其它工具名仍不出现
     assert.ok(!/qwen_draw|seedance_video|media_task|media_report/.test(sectionText), '仍不应出现其它工具名')
@@ -1928,7 +2714,7 @@ async function main() {
     assert.ok(/合计：0\.1800 CNY/.test(report.report), '应算出真实金额：' + report.report)
     assert.ok(!report.report.includes('未计价型号'), '有官方价的型号不应被判为未计价：' + report.report)
     const health = await tools.media_report.execute({ action: 'health' }, exec)
-    assert.ok(health.report.includes('账本后端：storage'))
+    assert.ok(health.report.includes('账本/注册表后端：storage'))
     await assert.rejects(stat(join(tmp, 'ledger.json')), 'JSON fallback file must not be created when storage works')
   })
 
@@ -2063,9 +2849,114 @@ async function main() {
     const { tools } = setup(mock, tmp, { storageDomain: broken })
     const { exec } = newExec(tmp)
     const health = await tools.media_report.execute({ action: 'health' }, exec)
-    assert.ok(health.report.includes('账本后端：file'), health.report)
-    assert.ok(health.report.includes('storage 账本领域打不开'), '退化为文件后端必须点名：' + health.report)
+    assert.ok(/账本\/注册表后端：.*file/.test(health.report), health.report)
+    assert.ok(health.report.includes('账本没有落在宿主 storage 领域'), '退化为文件后端必须点名：' + health.report)
     assert.ok(health.report.includes('invalid-record'), '要带上宿主给的原因：' + health.report)
+  })
+
+  // ⚠ 上面那条只覆盖了"服务在、但 open() 抛错"这一支。2026-10-15 实测发现**另一支是静默的**：
+  // `ctx.get('storageDomain')` 压根没命中（热重载 / 装配时序）时 storageError 保持 undefined，
+  // 于是报表对着磁盘上 15 条真实用量说"没有符合条件的用量记录"，而 health 只说
+  // 「账本后端：file」不解释 —— 这正是"看不见的告警等于没有告警"。下面把它钉住。
+  await test('storageDomain 服务拿不到时，账本降级同样必须点名（曾经是静默的）', async () => {
+    const tmp = await makeTmp()
+    // 刻意不传 storageDomain：就是"服务没拿到"那一支
+    const { tools } = setup(mock, tmp)
+    const { exec } = newExec(tmp)
+    const health = await tools.media_report.execute({ action: 'health' }, exec)
+    assert.ok(/账本\/注册表后端：.*file/.test(health.report), health.report)
+    assert.ok(
+      health.report.includes('账本没有落在宿主 storage 领域'),
+      '服务拿不到时也必须解释降级原因，不能静默：' + health.report,
+    )
+    assert.ok(health.report.includes('storageDomain'), '原因里要写清是哪个服务：' + health.report)
+  })
+
+  await test('零价记录：报表不得把 unitPrice=0 显示成 0.0000（判据与闸门同源）', async () => {
+    // 这两条记录就是本机磁盘上的真实形态：占位表时代写下的 unitPrice=0 + 未计价的出片。
+    const records = [
+      { at: '2026-10-13T07:30:18.983Z', adapter: 'dashscope-image', provider: 'DashScope', model: 'qwen-image-3.0', unitKind: 'image', units: 2, unitPrice: 0, currency: 'CNY', amount: 0, sessionId: 's1' },
+      { at: '2026-10-15T08:02:12.379Z', adapter: 'ark-video', provider: '方舟 Ark', model: 'doubao-seedance-2-5-260628', unitKind: 'second', units: 5, unitPrice: null, currency: 'CNY', amount: null, sessionId: 's1' },
+    ]
+    const report = renderCostReport({ records, config: newConfigOnly(), scope: 'all' })
+    assert.ok(report.includes('零价（无效）'), '单价 0 必须显式标成「零价（无效）」：' + report)
+    assert.ok(!report.includes('0.0000 CNY/image'), '不得再把零价显示成 ¥0.0000（= 真钱显示成免费）：' + report)
+    assert.ok(report.includes('（不可信）'), '零价组的金额要标注不可信：' + report)
+    assert.ok(report.includes('另有 1 个型号单价为 0'), '合计口径要点出零价型号数：' + report)
+    assert.ok(report.includes('0 不是价'), '要有一句人话解释为什么 0 不可信：' + report)
+    // 对照：null（真未计价）仍然写「未计价」，两种状态不能混成一个
+    assert.ok(report.includes('未计价'), '未计价（null）仍要显示未计价：' + report)
+    assert.ok(report.includes('另有 1 个型号未计价'), report)
+    // 合计金额不变（这里两条记录本来就都是 0）
+    assert.ok(report.includes('合计：0.0000 CNY'), report)
+  })
+
+  await test('零价修复不能把钱藏起来：同一型号混有零价与正价记录时，正价金额必须留在合计里', async () => {
+    // 真实场景：某型号的历史记录里混着"占位表时代（0 价）"和"修好后（0.18）"两种记录。
+    const records = [
+      { at: '2026-10-13T07:30:18.983Z', adapter: 'dashscope-image', provider: 'DashScope', model: 'qwen-image-3.0', unitKind: 'image', units: 2, unitPrice: 0, currency: 'CNY', amount: 0 },
+      { at: '2026-10-14T07:30:18.983Z', adapter: 'dashscope-image', provider: 'DashScope', model: 'qwen-image-3.0', unitKind: 'image', units: 16, unitPrice: 0.18, currency: 'CNY', amount: 2.88 },
+    ]
+    const report = renderCostReport({ records, config: newConfigOnly(), scope: 'all' })
+    assert.ok(report.includes('合计：2.8800 CNY'), '合计必须是记录内金额之和（2.88），不能被零价过滤吃掉：' + report)
+    assert.ok(report.includes('2.8800 CNY（不可信）'), '该组的单价列是 0（取首条记录），金额列要如实打印并标注不可信：' + report)
+  })
+
+  await test('发布用 patch 与出厂 Config 对齐：不漏键、不多键、无零价、默认模型有价', async () => {
+    const text = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    const start = text.indexOf('- id: mm-models')
+    assert.ok(start >= 0, 'cordis.patch.yml 里应有 mm-models 行')
+    const rest = text.slice(start)
+    const next = rest.slice(1).search(/\n- id: /)
+    const block = next < 0 ? rest : rest.slice(0, next + 1)
+
+    // ① 键集合必须与 Config 完全一致（缺键 ⇒ 新装用户看不到那些开关/闸门）
+    const patchKeys = [...block.matchAll(/^ {8}([A-Za-z][A-Za-z0-9]*):/gm)].map((match) => match[1])
+    const configKeys = Object.keys(new Config({}))
+    const missing = configKeys.filter((key) => !patchKeys.includes(key))
+    const extra = patchKeys.filter((key) => !configKeys.includes(key))
+    assert.deepEqual(missing, [], '出厂模板漏了 Config 字段：' + missing.join('、'))
+    assert.deepEqual(extra, [], '出厂模板含 Config 里不存在的字段（错别字？）：' + extra.join('、'))
+
+    // ② 单价表里不得有 0（0 = 宣称免费，闸门按未计价处理、报表也不再显示成 0.0000）
+    assert.ok(!/^ {12}unitPrice: 0(\.0+)?\s*$/m.test(block), '模板单价表里不得出现 unitPrice: 0')
+    assert.ok(!/^ {12}(inputPrice|outputPrice): 0(\.0+)?\s*$/m.test(block), '模板单价表里不得出现 0 价')
+
+    // ③ 外键：默认模型必须在单价表里有**正价**（2026-10-15 出片锁死事故的根因就是它没对上）
+    const modelOf = (field) => new RegExp(`^ {8}${field}: (.+)$`, 'm').exec(block)?.[1]?.trim()
+    const priceOf = (model) => {
+      const escaped = model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const matched = new RegExp(`\\n {10}${escaped}:\\n([\\s\\S]*?)(?=\\n {10}[^\\s]|\\n {8}[A-Za-z])`).exec(block)
+      return matched === null ? null : /unitPrice:\s*([^\s]+)/.exec(matched[1])?.[1]
+    }
+    for (const field of ['seedanceModel', 'qwenModel']) {
+      const model = modelOf(field)
+      assert.ok(typeof model === 'string' && model.length > 0, `模板里 ${field} 应有取值`)
+      const price = priceOf(model)
+      assert.ok(price !== null && Number(price) > 0, `模板里 ${field}=${model} 在单价表中必须有正价（实际 ${price}）`)
+    }
+  })
+
+  await test('DSH 兼容性声明：engines.dsh 只覆盖 0.2.1+（子代理行用 preset），排除 0.3', async () => {
+    // 2026-10-17 适配 0.2.1-rc.1：新版本优先按 `engines.dsh` 判断兼容性
+    // （未声明才回落 peerDependencies），且用 semver 的 includePrerelease:true 求值。
+    // ⚠ 0.2.0 的 dsh-tool-subagent **不支持 agentPreset**（实测：旧包源码里 0 次出现），
+    //   而本插件的子代理行已迁到 preset —— 所以下限必须是 0.2.1-rc.1，不能假装兼容 0.2.0。
+    const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+    assert.equal(typeof manifest.name, 'string')
+    assert.equal(typeof manifest.version, 'string')
+    assert.equal(typeof manifest.engines, 'object', 'package.json 必须有 engines 字段')
+    const range = manifest.engines.dsh
+    assert.equal(typeof range, 'string', 'engines.dsh 必须是字符串范围')
+    assert.ok(range.trim().startsWith('>='), 'engines.dsh 应是显式下限范围：' + range)
+    // 关键：includePrerelease 下 `<0.3.0` 会放进 0.3.0-rc.1，必须写 `<0.3.0-0`。
+    assert.ok(range.includes('<0.3.0-0'), '必须排除 0.3.0 预发布：' + range)
+    assert.ok(range.includes('0.2.1-rc.1'), '下限应是 0.2.1-rc.1（0.2.0 不支持 agentPreset）：' + range)
+    assert.ok(!range.includes('0.2.0'), '不该再声明兼容 0.2.0：' + range)
+    // peer 仍要保留：未声明 engines.dsh 的旧版 DSH 靠它判断。
+    for (const peer of ['@deepseek-ai/dsh-tools', '@deepseek-ai/dsh-credentials', '@deepseek-ai/dsh-storage-domain']) {
+      assert.equal(typeof manifest.peerDependencies?.[peer], 'string', 'peerDependencies 必须保留 ' + peer)
+    }
   })
 
   // ---------------------------------------------------------------- 收尾
