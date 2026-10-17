@@ -242,7 +242,7 @@ window.__ModuleLoader__.load({
         save: '保存',
         discard: '放弃修改',
         saving: '保存中…',
-        failed: '保存失败：Host 拒绝了写入，请检查取值后重试。',
+        failed: '保存失败：Host 拒绝了写入。常见原因：取值非法，或配置在别处被改过（版本冲突）。已刷新版本，请重试；仍失败请刷新页面或重启 dsh。',
         dirty: '有未保存的修改',
         unavailable: '插件未激活，或 Host 暂未提供该配置。',
         readOnly: '当前连接为只读，无法保存。',
@@ -349,7 +349,7 @@ window.__ModuleLoader__.load({
         save: 'Save',
         discard: 'Discard',
         saving: 'Saving…',
-        failed: 'Save failed: the Host rejected the write. Check the values and retry.',
+        failed: 'Save failed: the Host rejected the write. Either a value is invalid, or the config changed elsewhere (stale revision). The revision was refreshed — retry; if it still fails, refresh the page or restart dsh.',
         dirty: 'Unsaved changes',
         unavailable: 'Plugin inactive, or the Host does not serve this configuration yet.',
         readOnly: 'This connection is read-only; saving is unavailable.',
@@ -601,9 +601,19 @@ window.__ModuleLoader__.load({
             staged.clear()
             mutexOrder.clear()
             baseline = undefined
-          } else failed = true
+          } else {
+            failed = true
+            // 2026-10-17：保存被拒后刷新 baseline。
+            // 之前只在"成功/放弃"时清 baseline，于是一次版本冲突（例如配置文件在别处被改过）
+            // 会让后面每次重试都拿同一个过期 revision 继续撞墙 —— 用户只能点"放弃修改"。
+            // 刷新后下一次重试用当前 revision；若仍失败，文案会提示刷新页面/重启。
+            const fresh = raw()
+            if (fresh !== undefined) baseline = fresh
+          }
         } catch (_error) {
           failed = true
+          const fresh = raw()
+          if (fresh !== undefined) baseline = fresh
         } finally {
           saving = false
           publish()
