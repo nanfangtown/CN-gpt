@@ -773,14 +773,14 @@ const name = args.shift()
 
 | 开关字段 | 默认 | 能力 |
 | --- | --- | --- |
-| `enableAskGlm` | ⛔ 关 | `ask_glm` 读图子代理（智谱 `glm-4.6v`） |
-| `enableAskQwen` | ⛔ 关 | `ask_qwen` 读图子代理（百炼 `qwen3-vl-plus`） |
+| `enableAskGlm` | ✅ **开** | `ask_glm` 读图子代理（智谱 `glm-5.3-flash`）；2026-10-17 起出厂即开，装上就能看到插件效果 |
+| `enableAskQwen` | ⛔ 关 | `ask_qwen` 读图子代理（百炼 `qwen3-vl-plus`）；与 `ask_glm` 互斥，二选一 |
 | `enableQwenDraw` | ✅ 开 | `qwen_draw` 制图 |
 | `enableSeedanceVideo` | ⛔ **关** | `seedance_video` 出片（Ark 需开通/接入点，门槛较高，默认关闭；接通后在设置里一键打开） |
 | `enableMediaTask` | ✅ 开 | `media_task` 任务重查/补下载 |
 | `enableMediaReport` | ✅ 开 | `media_report` 成本/健康 |
-| `blockMainAgentNativeVision` | ⛔ 关 | 屏蔽主代理原生读图，强制走读图子代理（**需完整重启**） |
-| `blockSubagentNativeVision` | ⛔ 关 | 屏蔽**通用子代理**原生读图（读图员豁免）；打开前请确认读图员 `maxDepth ≥ 2`，见《通用子代理原生读图开关》 |
+| `blockMainAgentNativeVision` | ✅ **开** | 屏蔽主代理原生读图，强制走读图子代理（**需完整重启**）；想用原生读图就把它和下一个一起关掉 |
+| `blockSubagentNativeVision` | ✅ **开** | 屏蔽**通用子代理**原生读图（读图员豁免）；与主代理一致，全家走读图员 |
 | `attachResultImages` | ⛔ 关 | 把生成的图附回模型上下文（默认只回路径，原因见下节） |
 | `maxAttachImageBytes` | 4194304 | 附图字节上限（默认 4 MiB，`0` = 不限） |
 
@@ -795,8 +795,8 @@ const name = args.shift()
 
 | 值 | 行为 |
 |---|---|
-| `false`（默认） | 主代理保留原生读图；读图子代理按开关并存 |
-| `true` | 主代理的 `read_image` **从工具 schema 里消失**，读图只能走 `ask_glm` / `ask_qwen` |
+| `true`（默认，2026-10-17 起） | 主代理的 `read_image` **从工具 schema 里消失**，读图只能走 `ask_glm` / `ask_qwen`；开箱即见插件效果 |
+| `false` | 主代理保留原生读图；读图子代理按开关并存 |
 
 **改完要完整重启**：限制在 agent 创建时装上，运行中的会话不会中途变化。
 
@@ -824,24 +824,23 @@ const name = args.shift()
 `read` 拦图只对主代理、委派审计只对主代理）。于是繁重任务里主代理派出的子代理会自己读图，
 绕开读图员的只读契约与路由策略。
 
-**开关**：`blockSubagentNativeVision`（配置卡里：屏蔽通用子代理原生读图），默认 **关**。
+**开关**：`blockSubagentNativeVision`（配置卡里：屏蔽通用子代理原生读图），默认 **开**（2026-10-17 起，与主代理一致）。
 
 | 值 | 行为 |
 |---|---|
-| `false`（默认） | 通用子代理保留 `read_image`（= 2026-10-15 之前的既有行为，不偷偷改语义） |
-| `true` | 除**读图员**外，子代理的工具表里不再有 `read_image`，看图必须走 `ask_glm` / `ask_qwen` |
+| `true`（默认） | 除**读图员**外，子代理的工具表里不再有 `read_image`，看图必须走 `ask_glm` / `ask_qwen` |
+| `false` | 通用子代理保留 `read_image`（想全用原生读图时把两个 block 都关掉） |
 
 **打开前必须满足两个前提**（否则等于把看图能力整体掐掉）：
 
 1. 读图员开着（`ask_glm` 或 `ask_qwen`）；
-2. 读图员行的 `maxDepth ≥ 2` —— 见下节《读图子代理的深度》。
+2. `readerMaxDepth ≥ 2` —— 见下节《读图子代理的深度》。
 
 **读图员怎么被认出来（这是本开关最危险的地方）**：判错的代价是**读图员一起瞎**。
-所以豁免名单**不是硬编码**，而是从契约文件里**读出来**的（`core/reader-guard.mjs` 的
-`inspectReaderRoutes()`）：任何"`toolFilter.allow` 里放了 `read_image`"的 `dsh-tool-subagent` 行
-都会被认出来，取它的 `agentOptions` 里的 `provider` / `model` 作白名单。
-判据命中的是 provider **或** model 任一个，所以改路由名也能豁免。
-一处契约行都扫不到时，插件**放弃对子代理的屏蔽**（fail-open）并告警 ——
+豁免名单**不是硬编码**：新装配下取自 Config 的 `readerGlmProvider/Model`、`readerQwenProvider/Model`
+（`core/reader-guard.mjs` 的 `mergeReaderRoutes()`）；为兼容旧装配，仍会扫描契约文件里
+`toolFilter.allow` 含 `read_image` 的 `dsh-tool-subagent` 行。判据命中的是 provider **或** model 任一个，所以改路由名也能豁免。
+一处路由都认不出来时，插件**放弃对子代理的屏蔽**（fail-open）并告警 ——
 宁可少屏蔽一次，也不赌"读图员是不是被我弄瞎了"。
 
 **判定过程可见**：`media_report(action=health)` 会报出屏蔽状态、豁免名单（含契约声明处数）、
@@ -1121,7 +1120,7 @@ timeout（600 秒）。日志里其实早就写着 `Aborting batchmode due to fa
 `ask_glm`（智谱）与 `ask_qwen`（百炼 Qwen-VL）都是"只读的读图员"，**同一时刻只能开一个**：
 
 - 在配置卡里**打开一个会自动关掉另一个**（一次保存写完，不用先手动关）；
-- 两个都关 = 没有读图工具（默认状态，不预设读图员）；
+- 两个都关 = 没有读图工具（想全用原生就这样配）；2026-10-17 起出厂默认是 `ask_glm` 开、`ask_qwen` 关，
 - 万一被手改成两个 `true`（例如直接编辑 `cordis.patch.yml`），Host 侧按 **GLM 优先**仲裁：
   `ask_glm` 生效、`ask_qwen` 被压制，调用 `ask_qwen` 会拿到明确的互斥说明；
   `media_report(action=health)` 会把这次冲突标出来（`⚠ 与 … 同时处于开启状态`）。
@@ -1155,6 +1154,11 @@ allowedAgentPresets / maxDepth），**没有 `description`**；工具描述由 `
 
 ⚠ 升级到这一版要**完整重启 dsh**。旧的 `tool-subagent-glm/-qwen` 行必须删掉
 （bundle patch 已删）；profile 里若手抄过同样的行也要同步删，否则会和插件注册的同名工具冲突。
+
+**出厂默认（2026-10-17 晚）：开箱即见效果。** 新装默认 `enableAskGlm: true` +
+`blockMainAgentNativeVision: true` + `blockSubagentNativeVision: true` —— 不看文档也能
+立刻看到读图员在工作，不用先调。想用原生读图，把两个 `block` 关掉即可
+（提示词会跟着变成"原生优先"，不用改代码）；两者都开时提示词会自动切成"原生已屏蔽，走读图员"。
 
 ### 读图子代理被"物理阉割"：只保留 `read_image`（2026-10-13）
 

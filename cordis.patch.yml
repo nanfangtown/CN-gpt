@@ -385,8 +385,9 @@
         # 工具开关（插件页 → gpt-CN → 配置卡 一键勾选；关闭后调用被拒、新会话不显示）
         # 读图子代理 ask_glm / ask_qwen 互斥、必须二选一：设置卡里打开一个会自动关闭另一个；
         # 万一两个都是 true（例如手改本文件），Host 侧按 "GLM 优先" 仲裁并压制 ask_qwen，
-        # media_report(action=health) 会把这次冲突标出来。默认两个都关（不预设读图员）。
-        enableAskGlm: false
+        # media_report(action=health) 会把这次冲突标出来。
+        # 2026-10-17 起出厂默认：ask_glm 开、原生读图屏蔽 —— 开箱即见插件效果，不用调。
+        enableAskGlm: true
         enableAskQwen: false
         # 读图员路由（2026-10-17：工具由插件自己注册，这里是唯一事实源）。
         # ⚠ 模型 id 必须同时出现在上面 llm-pi-ai 的 providers.<provider>.models 里，
@@ -399,15 +400,15 @@
         readerMaxDepth: 2
         # 屏蔽主代理的原生读图：打开后主 agent 的工具列表里没有 read_image，读图只能走
         # 上面选中的读图子代理。子代理不受影响 —— 否则读图员会被一起弄瞎（实测过）。
-        # 默认关：主代理原生读图更快、少一次调用；打开是为了"确定性路由"。
+        # 2026-10-17 起默认开（开箱即用的确定性路由）；想用原生读图就把它和下面那个一起关掉。
         # 改这个开关需要完整重启才生效（限制在 agent 创建时装上）。
-        blockMainAgentNativeVision: false
-        # 屏蔽**通用子代理**的原生读图（2026-10-15 加，默认关 = 保持旧行为）。
+        blockMainAgentNativeVision: true
+        # 屏蔽**通用子代理**的原生读图（2026-10-15 加；2026-10-17 起默认开）。
         # 原生子代理天生有 read_image，而插件的三条守卫只针对主代理 —— 繁重任务里
         # 子代理会自己读图，绕开读图员的只读契约。打开后除读图员外，子代理都拿不到 read_image。
-        # ⚠ 前提：读图员开着，且读图员行 maxDepth ≥ 2（本文件已是 2），否则子代理会失去看图途径。
-        # 读图员豁免名单取自契约文件的 agentOptions；认不出读图员时本开关对子代理不生效。
-        blockSubagentNativeVision: false
+        # ⚠ 前提：读图员开着，且 readerMaxDepth ≥ 2（本文件已是 2），否则子代理会失去看图途径。
+        # 读图员豁免名单取自 Config 的 reader* 路由；认不出读图员时本开关对子代理不生效。
+        blockSubagentNativeVision: true
         enableQwenDraw: true
         enableSeedanceVideo: false   # Ark 未开通/门槛高：默认关闭，接通后一键打开
         # 百炼出片（可灵/万相）：复用 DASHSCOPE_API_KEY，零新账号；但需先填业务空间 ID

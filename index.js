@@ -62,14 +62,28 @@ export const inject = ['tools', 'credentials', 'systemPrompt']
  *   3. **窄委派**：子代理每轮要背全部工具 schema（实测 35 个工具 ≈ 32 KB），
  *      所以按用途选窄工具面的委派工具，别拿通用 subagent 干小活。
  */
-const PROMPT_SECTION = [
-  '【媒体分工】媒体工具只出素材与结论，交付由主模型负责并负全责；生成可能计费，先确认能力可用。',
-  // 2026-10-17 重写：这句话以前写死"一律走 ask_glm"，在原生可用/读图员被关时就成了假话
-  // —— 模型明明有眼睛，却被提示词告知"没有看图途径"。现在按"谁能用就用谁"写，与开关无关：
-  // 原生优先 → 原生不可用/要省钱时走已开启的读图员 → 都没有才如实说没有途径。
-  '【读图路由】优先用原生 read_image 做细节审读；原生被屏蔽/不支持，或要批量省钱时走**已开启的** ask_glm / ask_qwen（把图片路径交给它）；两者都不可用就如实说"没有看图途径"，不要猜图。',
-  '【窄委派】子代理每轮背全部工具表（35个≈32KB）：跑命令/改代码用 subagent_code，查资料用 subagent_research。',
-].join('\n')
+/** 媒体分工与窄委派两条固定策略（与读图路由无关的那部分）。 */
+const PROMPT_FIXED = {
+  division: '【媒体分工】媒体工具只出素材与结论，交付由主模型负责并负全责；生成可能计费，先确认能力可用。',
+  delegate: '【窄委派】子代理每轮背全部工具表（35个≈32KB）：跑命令/改代码用 subagent_code，查资料用 subagent_research。',
+}
+
+/**
+ * 分工说明段落（按当前读图策略生成）。
+ *
+ * 2026-10-17：读图路由**不能写死**——出厂默认是"读图员开 + 原生屏蔽"，而用户也可以
+ * 反过来配成"原生优先"。写死任何一句都会在另一种配置下变成假话（模型有眼睛却被告知
+ * "没有看图途径"，或反过来被告知"走 ask_glm"但读图员已关）。
+ *
+ * @param {boolean} nativeBlocked - 主代理原生读图是否被屏蔽（blockMainAgentNativeVision）。
+ * @returns {string} 段落文本。
+ */
+function buildDivisionSection(nativeBlocked) {
+  const routing = nativeBlocked
+    ? '【读图路由】主代理原生读图已屏蔽：图像识别/分析/审查一律走 ask_glm 或 ask_qwen（把图片路径交给它）；两个都关才如实说"没有看图途径"，不要猜图。'
+    : '【读图路由】优先用原生 read_image 做细节审读；原生被屏蔽/不支持，或要批量省钱时走**已开启的** ask_glm / ask_qwen（把图片路径交给它）；两者都不可用就如实说"没有看图途径"，不要猜图。'
+  return [PROMPT_FIXED.division, routing, PROMPT_FIXED.delegate].join('\n')
+}
 
 /** 插件配置：三把 key、端点与型号、任务层、成本、落盘、开关。 */
 export const Config = z.object({
@@ -295,8 +309,10 @@ export const Config = z.object({
   registryTtlMs: z.number().step(3600000).min(3600000).default(604800000).volatile().description('任务注册表条目保留时长（默认 7 天），过期的查询时顺手清理。'),
 
   // ---- 工具开关（插件页 → gpt-CN → 配置卡，一键勾选；关闭后调用被拒，新会话不再显示）----
-  enableAskGlm: z.boolean().default(false).volatile().description('允许主 agent 使用 ask_glm（GLM 读图子代理）。与 enableAskQwen 互斥：打开它就会自动关闭 ask_qwen，反之亦然；两个都关时没有读图工具。'),
-  enableAskQwen: z.boolean().default(false).volatile().description('允许主 agent 使用 ask_qwen（Qwen-VL 读图子代理）。与 enableAskGlm 互斥：打开它就会自动关闭 ask_glm，反之亦然；两个都关时没有读图工具。'),
+  // 2026-10-17 起出厂默认 = "开箱即见效果"：读图员开着、原生读图屏蔽着。
+  // 想让模型用原生读图，关掉下面两个 block 开关即可（不必动读图员）。
+  enableAskGlm: z.boolean().default(true).volatile().description('允许主 agent 使用 ask_glm（GLM 读图子代理）。**默认开启**：装上即走读图员，配合下面两个 block 开关就是开箱即用的确定性读图路由。与 enableAskQwen 互斥：打开它就会自动关闭 ask_qwen，反之亦然；两个都关时没有读图工具。'),
+  enableAskQwen: z.boolean().default(false).volatile().description('允许主 agent 使用 ask_qwen（Qwen-VL 读图子代理）。默认关闭（与 ask_glm 互斥）。与 enableAskGlm 互斥：打开它就会自动关闭 ask_glm，反之亦然；两个都关时没有读图工具。'),
 
   // ---- 读图员路由（2026-10-17：工具改由插件自己注册，改完需完整重启）----
   //
@@ -314,10 +330,12 @@ export const Config = z.object({
   enableQwenDraw: z.boolean().default(true).volatile().description('允许主 agent 使用 qwen_draw（Qwen 制图）。'),
   blockMainAgentNativeVision: z
     .boolean()
-    .default(false)
+    .default(true)
     .volatile()
-    .description('屏蔽主 agent 的原生读图：打开后主 agent 的工具列表里不再有 read_image，读图只能走 ask_glm / ask_qwen。改完需完整重启才生效。'),
-  // ---- 屏蔽"通用子代理"的原生读图（2026-10-15 加，默认关）----
+    .description('屏蔽主 agent 的原生读图：打开后主 agent 的工具列表里不再有 read_image，读图只能走 ask_glm / ask_qwen。'
+      + '**默认开启**（2026-10-17 起）：开箱即用的确定性读图路由，让新用户一装上就看到插件的效果。'
+      + '想让模型用原生读图，把它和 blockSubagentNativeVision 一起关掉即可。改完需完整重启才生效。'),
+  // ---- 屏蔽"通用子代理"的原生读图（2026-10-15 加；2026-10-17 起默认开）----
   //
   // 背景：原生子代理**天生就有 read_image**（插件只摘主代理那只眼睛，子代理留着当"眼睛"），
   // 而插件现有的三条守卫都只针对主代理。于是繁重任务里，子代理会自己读图，
@@ -325,18 +343,18 @@ export const Config = z.object({
   //
   // ⚠ 打开前必须满足两个前提，否则会**把看图能力整体掐掉**：
   //   ① 读图员开着（ask_glm 或 ask_qwen）；
-  //   ② 读图员行的 `maxDepth` ≥ 2 —— 否则已委派的子代理调不动读图员
+  //   ② 读图员的 `readerMaxDepth` ≥ 2 —— 否则已委派的子代理调不动读图员
   //      （实测错误：`subagent depth 2 exceeds maxDepth 1`）。
-  // 读图员**永远豁免**：判别依据取自契约文件里读图行自己的 agentOptions（不是硬编码猜的），
-  // 扫不到契约行时本开关对子代理**不生效**（fail-open，宁可不屏蔽也不能弄瞎读图员）。
+  // 读图员**永远豁免**：判别依据取自 Config 的 reader* 路由（不是硬编码猜的），
+  // 认不出读图员时本开关对子代理**不生效**（fail-open，宁可不屏蔽也不能弄瞎读图员）。
   blockSubagentNativeVision: z
     .boolean()
-    .default(false)
+    .default(true)
     .volatile()
     .description('屏蔽**通用子代理**的原生读图：打开后除读图子代理（ask_glm / ask_qwen 的路由）外，其它子代理的工具表里不再有 read_image，看图必须走读图子代理。'
-      + '默认关（= 子代理可以自己看图，与 2026-10-15 之前的行为一致）。'
-      + '⚠ 打开前请确认：① 读图员开着；② 读图员行的 maxDepth ≥ 2（否则子代理调不动读图员，会彻底失去看图途径）。'
-      + '读图员的判定取自契约文件的 agentOptions；认不出读图员时本开关对子代理不生效并告警。'),
+      + '**默认开启**（与主代理一致：全家都走读图员）；想让子代理自己看图就关掉它和 blockMainAgentNativeVision。'
+      + '⚠ 打开前请确认：① 读图员开着；② readerMaxDepth ≥ 2（否则子代理调不动读图员，会彻底失去看图途径）。'
+      + '读图员的判定取自 Config 的 reader* 路由；认不出读图员时本开关对子代理不生效并告警。'),
   enableSeedanceVideo: z.boolean().default(false).volatile().description('允许主 agent 使用 seedance_video（Seedance 出片）。默认关闭：Ark 未开通/门槛较高，接通后在设置里一键打开。'),
   enableVideoGen: z
     .boolean()
@@ -1201,7 +1219,8 @@ export function apply(ctx, config) {
     ctx.systemPrompt.section({
       name: 'mm-models:division',
       order: 210,
-      text: PROMPT_SECTION,
+      // 读图路由按当前策略生成（block 开关改了要重启才生效，与它"限制在 agent 创建时"的语义一致）。
+      text: buildDivisionSection(liveConfig?.blockMainAgentNativeVision === true),
     })
   }
 

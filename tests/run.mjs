@@ -98,6 +98,13 @@ function makeConfig(mock, tmp, overrides = {}) {
     outDir: join(tmp, 'gen'),
     videoOutDir: join(tmp, 'gen', 'video'),
     ledgerPath: join(tmp, 'ledger.json'),
+    // 2026-10-17 起出厂默认是"读图员开 + 原生读图屏蔽"（开箱即见效果）。
+    // 单测多数用例验证的是具体开关/守卫逻辑与"原生可用"的旧行为，所以测试基线
+    // 显式摆成"原生可用、读图员关"，避免每条用例都被出厂默认改变。
+    // 出厂默认本身由「Config 默认值 / 出厂即演示」用例专门断言。
+    enableAskGlm: false,
+    blockMainAgentNativeVision: false,
+    blockSubagentNativeVision: false,
     ...overrides,
   })
 }
@@ -187,7 +194,14 @@ function makeSyncHarness() {
  * `set(field)` 用于在测试里翻转某个开关（模拟"用户在配置卡里改了一下"）。
  */
 function setupSwitches(overrides = {}) {
-  const config = plainConfig(new Config({ ...overrides }))
+  // 与 makeConfig 同一套测试基线：出厂默认已改成"读图员开 + 原生屏蔽"，
+  // 开关/签名用例需要可控的旧基线，避免默认值变化牵连一堆断言。
+  const config = plainConfig(new Config({
+    enableAskGlm: false,
+    blockMainAgentNativeVision: false,
+    blockSubagentNativeVision: false,
+    ...overrides,
+  }))
   return { config, switches: createSwitches(config), set: (field) => { config[field] = config[field] !== true } }
 }
 
@@ -281,6 +295,18 @@ async function main() {
     assert.equal(plain(config.pricing)['doubao-seedance-1-0-pro-fast-251015'].unitPrice, 0.206)
     assert.equal(plain(config.pricing)['glm-4.6v'].inputPrice, null)
     assert.equal(plain(config.promptSection), true)
+  })
+
+  await test('出厂默认（开箱即见效果）：ask_glm 开、两个 block 开、ask_qwen 关', async () => {
+    // 2026-10-17 用户要求：别人装上看默认配置就能看到插件效果，不用先调。
+    // 默认 = 读图员开着 + 主代理/通用子代理的原生读图都屏蔽。
+    const config = new Config({})
+    assert.equal(plain(config.enableAskGlm), true, '出厂默认开启 ask_glm')
+    assert.equal(plain(config.enableAskQwen), false, 'ask_qwen 仍默认关（与 ask_glm 互斥，二选一）')
+    assert.equal(plain(config.blockMainAgentNativeVision), true, '默认屏蔽主代理原生读图')
+    assert.equal(plain(config.blockSubagentNativeVision), true, '默认屏蔽通用子代理原生读图')
+    // 想用原生：把两个 block 关掉即可，读图员不必动（提示词是原生优先）。
+    // 出厂模板（cordis.patch.yml）必须与这里一致 —— 由「发布用 patch 与出厂 Config 对齐」用例兜底。
   })
 
   await test('成本报表：未计价显式写「未计价」，不伪装成 0.0000', async () => {
@@ -416,7 +442,7 @@ async function main() {
   })
 
   // ---------------------------------------------------------------- 工具开关
-  await test('工具开关：seedance_video / 两个读图子代理默认关闭，guard 拒绝；其余默认放行', async () => {
+  await test('工具开关：未开启时 guard 拒绝（seedance / 两个读图员）；其余放行', async () => {
     const tmp = await makeTmp()
     const { fake } = setup(mock, tmp)
     const guard = guardOf(fake, GUARD_TOOL_SWITCH)
@@ -2755,6 +2781,15 @@ async function main() {
 
     // 读图员是唯一有意的例外；其它工具名仍不出现
     assert.ok(!/qwen_draw|seedance_video|media_task|media_report/.test(sectionText), '仍不应出现其它工具名')
+  })
+
+  await test('提示词段落：原生被屏蔽时说「走读图员」，不让模型去试原生', async () => {
+    const tmp = await makeTmp()
+    const { fake } = setup(mock, tmp, { overrides: { blockMainAgentNativeVision: true } })
+    const text = typeof fake.sections[0].text === 'function' ? fake.sections[0].text({}) : fake.sections[0].text
+    assert.ok(text.includes('已屏蔽'), '要说清原生已被屏蔽：' + text)
+    assert.ok(text.includes('ask_glm') && text.includes('ask_qwen'), '要指向读图员')
+    assert.ok(text.includes('没有看图途径') && text.includes('不要猜图'), '保底与禁止猜图不能丢')
   })
 
   // ---------------------------------------------------------------- 预算 / 退化 / 账本后端

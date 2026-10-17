@@ -66,6 +66,11 @@ function makeConfig(tmp, overrides = {}) {
     outDir: join(tmp, 'gen'),
     videoOutDir: join(tmp, 'gen', 'video'),
     ledgerPath: join(tmp, 'ledger.json'),
+    // 与 run.mjs 同一套测试基线：出厂默认 2026-10-17 起已改成"读图员开 + 原生屏蔽"，
+    // 这些用例验证的是具体守卫/签名逻辑，显式摆成"原生可用、读图员关"的旧基线。
+    enableAskGlm: false,
+    blockMainAgentNativeVision: false,
+    blockSubagentNativeVision: false,
     ...overrides,
   })
 }
