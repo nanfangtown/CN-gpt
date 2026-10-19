@@ -978,6 +978,15 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
   const knownProviders = Array.isArray(llmProviders) ? llmProviders : undefined
   /** 紧凑模式下的读图路由摘要（收集后压成一行）。 */
   const routeNotes = []
+  /**
+   * verbose 模式下的读图路由行与互斥告警：**先收集、循环结束后再追加**。
+   *
+   * ⚠ 2026-10-19 实测缺陷：早期版本在遍历 keyEntries 时直接 `lines.push()`，
+   * 读图路由行和「⚠ 与 xxx 同时开启」的告警被插到 Markdown 表格**中间**，
+   * 表格被空行与普通段落打断，渲染成两截（`media_report(health, verbose=true)` 可复现）。
+   */
+  const tableNotes = []
+  const conflictNotes = []
   /** 读图子代理的厂商路由（llm-pi-ai 的 providers 行）与填写位置。 */
   const READER_ROUTES = {
     ask_glm: { provider: 'glm', where: 'llm-pi-ai providers.glm', settings: '设置 → 模型 → GLM 行' },
@@ -998,8 +1007,7 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
       capability[spec.capability] = switchOn && status.configured && routeOk !== false
       // 紧凑模式把两条读图路由压成一行（每条 ~90 B 的样板）；verbose 保留逐行原文。
       if (verbose) {
-        lines.push('')
-        lines.push(`读图路由（${spec.capability} → ${readerRoute.where}）：` + (routeOk === undefined ? '无法确认' : routeOk ? '✅ 已注册' : `❌ 未注册（检查 ${readerRoute.where} 配置）`))
+        tableNotes.push(`读图路由（${spec.capability} → ${readerRoute.where}）：` + (routeOk === undefined ? '无法确认' : routeOk ? '✅ 已注册' : `❌ 未注册（检查 ${readerRoute.where} 配置）`))
       } else {
         routeNotes.push(`${spec.capability}→${readerRoute.provider} ` + (routeOk === undefined ? '?' : routeOk ? '✅' : `❌（查 ${readerRoute.where}）`))
       }
@@ -1007,7 +1015,7 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
       // ⚠ 这是**告警**，紧凑模式也必须出现。
       if (switchOn && routeOk !== false && status.configured && knownProviders !== undefined) {
         const other = spec.capability === 'ask_glm' ? 'ask_qwen' : 'ask_glm'
-        if (switches[other] === false && readerConflict === true) lines.push(`⚠ 与 ${other} 同时处于开启状态：按互斥规则当前 ${spec.capability} 生效、${other} 被压制。请在 插件页 → gpt-CN → 配置卡 关掉其中一个。`)
+        if (switches[other] === false && readerConflict === true) conflictNotes.push(`⚠ 与 ${other} 同时处于开启状态：按互斥规则当前 ${spec.capability} 生效、${other} 被压制。请在 插件页 → gpt-CN → 配置卡 关掉其中一个。`)
       }
     } else if (adapter !== undefined && !claimedAdapters.has(adapter)) {
       claimedAdapters.add(adapter)
@@ -1015,8 +1023,16 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
     }
   }
   lines.push('')
-  if (!verbose && routeNotes.length > 0) {
+  // 表格之外的附注：verbose 逐条列路由，compact 压成一行；互斥告警两种模式都要留。
+  if (verbose) {
+    for (const note of tableNotes) lines.push(note)
+    if (tableNotes.length > 0) lines.push('')
+  } else if (routeNotes.length > 0) {
     lines.push('读图路由：' + routeNotes.join(' ｜ '))
+    lines.push('')
+  }
+  if (conflictNotes.length > 0) {
+    lines.push(...conflictNotes)
     lines.push('')
   }
   // 「当前能力可用性」是上面那张表的口语版；紧凑模式下不重复（省 ~230 B/次），

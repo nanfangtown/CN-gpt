@@ -1,7 +1,7 @@
 /**
  * 试运行：不安装 dsh、不联网、不花 key 的完整验收。
  *
- * 覆盖：配置默认值 → 7 个工具的注册面 → submit/poll/fetch 全链路 →
+ * 覆盖：配置默认值 → 9 个工具的注册面 → submit/poll/fetch 全链路 →
  *       错误归一化与固定文案 → 超时/取消保留 task_id → media_task 补下载 →
  *       成本账本两种后端 + 报表 → 健康探测 → 预算保护 → 附件退化路径。
  *
@@ -323,10 +323,19 @@ async function main() {
     assert.ok(!text.includes('undefined'), '不得出现 undefined 单位：' + text)
   })
 
-  await test('apply() 注册 7 个工具 + 分工说明段落（读图员也由插件自己注册）', async () => {
+  await test('apply() 注册 9 个工具 + 分工说明段落（读图员与窄委派都由插件自己注册）', async () => {
     const tmp = await makeTmp()
     const { fake, tools } = setup(mock, tmp)
-    assert.deepEqual(Object.keys(tools).sort(), ['ask_glm', 'ask_qwen', 'media_report', 'media_task', 'qwen_draw', 'seedance_video', 'video_gen'])
+    assert.deepEqual(Object.keys(tools).sort(), [
+      'ask_glm', 'ask_qwen', 'media_report', 'media_task', 'qwen_draw',
+      'seedance_video', 'subagent_code', 'subagent_research', 'video_gen',
+    ])
+    // 2026-10-18：窄委派也不能再用 tool-subagent 那句通用文案 —— 模型得能一眼分清
+    // "执行"（会改文件）和"资料"（只读、不跑命令）。
+    assert.ok(tools.subagent_code.description.includes('执行子代理'), 'subagent_code 描述必须自带身份：' + tools.subagent_code.description)
+    assert.ok(tools.subagent_research.description.includes('资料子代理'), 'subagent_research 描述必须自带身份：' + tools.subagent_research.description)
+    assert.ok(tools.subagent_code.parameters.prompt, '必须暴露 prompt 参数')
+    assert.ok(tools.subagent_code.parameters.description, '必须暴露 description 参数')
     // 2026-10-17：读图员的描述不能再是 tool-subagent 那句通用文案 —— 那正是
     // 模型在 40+ 个工具里认不出 ask_glm 是"读图"的原因。
     assert.ok(tools.ask_glm.description.includes('读图'), 'ask_glm 描述必须自带"读图"：' + tools.ask_glm.description)
@@ -435,6 +444,88 @@ async function main() {
     })
     await expectError(
       noSpawn.tools.ask_glm.execute({ image_path: 'a.png' }, { agent: { id: 'p' } }),
+      CODES.UNKNOWN,
+      ['spawn'],
+    )
+    assert.equal(called, false, 'spawn 未注册时不能真去创建子代理')
+  })
+
+  // ---------------------------------------------------------------- 窄委派（2026-10-18 改由插件注册）
+  await test('subagent_code：走 mm-code preset、depth 1、描述透传；不再在装配期查 preset', async () => {
+    const tmp = await makeTmp()
+    const activations = []
+    const subagents = {
+      getProvider: () => ({ name: 'spawn' }),
+      async startActivation(spec) {
+        activations.push(spec)
+        return { childId: 'child-code' }
+      },
+    }
+    const { tools } = setup(mock, tmp, { subagents })
+    // 2026-10-18 事故复现点：装配阶段（apply）里**没有**任何 preset 查询 —— 只要 payload
+    // 里没有 agentPreset 的读取，热重载时 preset 还没 register 也不会打挂工具。
+    const value = await tools.subagent_code.execute(
+      { description: '修登录超时', prompt: '把 login 的 5 秒超时改成 15 秒，跑 npm test。' },
+      { agent: { id: 'p' }, signal: undefined },
+    )
+    assert.equal(value.subagentId, 'child-code')
+    assert.equal(activations[0].provider, 'spawn')
+    assert.equal(activations[0].label, '修登录超时')
+    assert.equal(activations[0].delivery, 'parent')
+    assert.equal(activations[0].request.agentPreset, 'mm-code')
+    assert.equal(activations[0].request.maxDepth, 1)
+    assert.ok(activations[0].request.prompt[0].text.includes('npm test'), '任务说明必须原样交给子代理')
+    // 子代理用的是自己的路由（继承父代理），不许偷偷塞 agentOptions
+    assert.equal(activations[0].request.agentOptions, undefined)
+  })
+
+  await test('subagent_research：走 mm-research preset；preset / depth 可改配置', async () => {
+    const tmp = await makeTmp()
+    const activations = []
+    const subagents = {
+      getProvider: () => ({ name: 'spawn' }),
+      async startActivation(spec) {
+        activations.push(spec)
+        return { childId: 'child-research' }
+      },
+    }
+    const { tools } = setup(mock, tmp, {
+      subagents,
+      overrides: { researchAgentPreset: 'my-research', delegationMaxDepth: 2 },
+    })
+    const value = await tools.subagent_research.execute(
+      { description: '查 SSE 断连', prompt: '查一下 SSE 在代理后面断连的常见原因，给来源链接。', cwd: 'D:/work' },
+      { agent: { id: 'p' } },
+    )
+    assert.equal(value.subagentId, 'child-research')
+    assert.equal(activations[0].request.agentPreset, 'my-research')
+    assert.equal(activations[0].request.maxDepth, 2)
+    assert.equal(activations[0].request.cwd, 'D:/work')
+  })
+
+  await test('窄委派：参数为空 / subagents 缺失 / spawn 未注册 → 派出前就报错', async () => {
+    const empty = setup(mock, await makeTmp())
+    await expectError(
+      empty.tools.subagent_code.execute({ description: 'x', prompt: '   ' }, { agent: { id: 'p' } }),
+      CODES.BAD_REQUEST,
+      ['prompt'],
+    )
+    await expectError(
+      empty.tools.subagent_research.execute({ description: '  ', prompt: 'y' }, { agent: { id: 'p' } }),
+      CODES.BAD_REQUEST,
+      ['description'],
+    )
+    await expectError(
+      empty.tools.subagent_code.execute({ description: 'x', prompt: 'y' }, { agent: { id: 'p' } }),
+      CODES.UNKNOWN,
+      ['subagents'],
+    )
+    let called = false
+    const noSpawn = setup(mock, await makeTmp(), {
+      subagents: { getProvider: () => undefined, async startActivation() { called = true; return { childId: 'x' } } },
+    })
+    await expectError(
+      noSpawn.tools.subagent_research.execute({ description: 'x', prompt: 'y' }, { agent: { id: 'p' } }),
       CODES.UNKNOWN,
       ['spawn'],
     )
@@ -1157,16 +1248,14 @@ async function main() {
     for (const banned of ['- id: tool-subagent-glm', '- id: tool-subagent-qwen']) {
       assert.ok(!text.includes(banned), '读图员行应已迁到插件自有工具，patch 里不能再有：' + banned)
     }
-    // ③ 其余两个委派行仍必须用 agentPreset 引用 preset
-    for (const [id, preset] of [
-      ['tool-subagent-code', 'mm-code'],
-      ['tool-subagent-research', 'mm-research'],
-    ]) {
-      const at = text.indexOf('- id: ' + id)
-      assert.ok(at >= 0, '应有 ' + id + ' 行')
-      const block = text.slice(at, at + 900)
-      assert.ok(block.includes('agentPreset: ' + preset), id + ' 应引用 preset ' + preset)
+    // ③ 2026-10-18：两个窄委派行也已删除（工具改由插件 tools/delegation.mjs 注册）。
+    //    原因：`agentPreset` 是装配期校验（validate → readDocument），而 preset 的注册是
+    //    激活期异步完成的 —— 首次热重载时委派行会先 apply 并报 "Unknown agent preset"。
+    //    留着这些行既会与插件注册的同名工具冲突，也会把那个竞态带回来。
+    for (const banned of ['- id: tool-subagent-code', '- id: tool-subagent-research']) {
+      assert.ok(!text.includes(banned), '窄委派行应已迁到插件自有工具，patch 里不能再有：' + banned)
     }
+    assert.ok(!text.includes('toolName: subagent_code'), 'patch 里不能再声明 subagent_code')
     // ③ 读图员 preset 的工具面 = 只有 read_image（read/write/edit 全关）
     const readerAt = text.indexOf('- id: preset-mm-reader')
     assert.ok(readerAt >= 0, '应有 preset-mm-reader')
@@ -1816,14 +1905,16 @@ async function main() {
     // 2026-10-17：新增 video_gen（1132 B，与 seedance_video 同档），合计上限同步 +1200。
     // 2026-10-17：新增 ask_glm / ask_qwen（插件自有读图员，描述约 1.1 KB/个），
     // 合计上限同步上调。描述值钱的地方是"读图"这两个字，别写小作文。
-    const budget = { ask_glm: 1300, ask_qwen: 1300, qwen_draw: 700, seedance_video: 1200, video_gen: 1200, media_task: 800, media_report: 500 }
+    // 2026-10-18：窄委派两行改由插件注册（988 B / 957 B；stock 工具那份通用文案
+    // 与 subagent 逐字相同，等于白占字节还认不出身份）。合计上限同步上调到 8.6 KB。
+    const budget = { ask_glm: 1300, ask_qwen: 1300, qwen_draw: 700, seedance_video: 1200, video_gen: 1200, media_task: 800, media_report: 500, subagent_code: 1050, subagent_research: 1050 }
     let total = 0
     for (const [name, definition] of Object.entries(tools)) {
       const bytes = Buffer.byteLength(JSON.stringify({ name: definition.name, description: definition.description, parameters: definition.parameters }), 'utf8')
       total += bytes
       assert.ok(bytes <= budget[name], `${name} 的 schema 超预算：${bytes} B > ${budget[name]} B（描述该写进 README，不是写进每个请求）`)
     }
-    assert.ok(total <= 6600, '七个工具 schema 合计超预算：' + total + ' B/请求')
+    assert.ok(total <= 8600, '九个工具 schema 合计超预算：' + total + ' B/请求（实测 8357）')
   })
 
   // ---------------------------------------------------------------- 生成物附回上下文（默认关）
@@ -2229,6 +2320,16 @@ async function main() {
     assert.ok(health.report.includes('seedance_video: ✅ 可用'))
     assert.ok(health.report.includes('ask_qwen: ⛔ 已在设置中关闭'), '互斥下 ask_qwen 应显示为关闭而不是"不可用"')
     assert.ok(health.report.startsWith('# 链路健康'))
+    // 表格完整性：读图路由行与互斥告警必须**在表格之后**，不能把 Markdown 表格打成两截。
+    // 回归 2026-10-19 实测缺陷（verbose=true 时路由行被插在 ask_glm / ask_qwen 两行之间）。
+    const reportLines = health.report.split('\n')
+    const firstRow = reportLines.findIndex((line) => line.startsWith('| 能力'))
+    const lastRow = reportLines.reduce((acc, line, index) => (line.startsWith('|') ? index : acc), -1)
+    assert.ok(firstRow >= 0 && lastRow > firstRow, '健康报表必须包含表格')
+    assert.ok(
+      !reportLines.slice(firstRow, lastRow + 1).some((line) => line.trim() === ''),
+      '表格行之间不允许出现空行/路由附注：' + reportLines.slice(firstRow, lastRow + 1).join('\\n'),
+    )
   })
 
   await test('media_report(health)：切到 ask_qwen → 报告 qwen-vl 路由，并在冲突时点出被压制的一方', async () => {

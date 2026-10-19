@@ -25,6 +25,7 @@ import { createVideoGenTool } from './tools/video-gen.mjs'
 import { createMediaTaskTool } from './tools/media-task.mjs'
 import { createMediaReportTool } from './tools/media-report.mjs'
 import { createReaderTools } from './tools/reader.mjs'
+import { createDelegationTools } from './tools/delegation.mjs'
 import { createKeyResolver } from './core/keys.mjs'
 import { createReaderUsageMeter } from './core/reader-usage.mjs'
 import { DEFAULT_PRICING, PRICING_ZERO_HINT, openLedger, pricingOf, pricingWarnings } from './core/cost.mjs'
@@ -327,6 +328,16 @@ export const Config = z.object({
   readerAgentPreset: z.string().default('mm-reader').volatile().description('读图员子代理的 agent preset id（persona + 只有 read_image 的工具面）。'),
   readerMaxDepth: z.number().step(1).min(1).max(9).default(2).volatile().description('读图员的绝对委派深度上限，默认 2（= 已委派的子代理也能调它，否则会报 "subagent depth 2 exceeds maxDepth 1"）。'),
 
+  // ---- 窄委派（2026-10-18：工具改由插件自己注册，见 tools/delegation.mjs）----
+  //
+  // 以前是 profile 里两条 `tool-subagent` 行（agentPreset 在**装配期**校验）。
+  // 2026-10-18 桌面端启用插件时热重载，preset 行还没 register、委派行已经 apply，
+  // 两条工具直接报 "Unknown agent preset" —— 这是竞态，不是配置错。
+  // 现在 preset 在**调用时**才解析，装配期不再依赖 preset 是否已注册。
+  codeAgentPreset: z.string().default('mm-code').volatile().description('subagent_code 的 agent preset id（persona + 命令 / 文件读写 / 查找的窄工具面）。'),
+  researchAgentPreset: z.string().default('mm-research').volatile().description('subagent_research 的 agent preset id（persona + 只读文件 / 网页检索的窄工具面）。'),
+  delegationMaxDepth: z.number().step(1).min(1).max(9).default(1).volatile().description('窄委派（subagent_code / subagent_research）的绝对委派深度上限，默认 1（子代理不能再往下委派）。'),
+
   enableQwenDraw: z.boolean().default(true).volatile().description('允许主 agent 使用 qwen_draw（Qwen 制图）。'),
   blockMainAgentNativeVision: z
     .boolean()
@@ -508,6 +519,12 @@ export function apply(ctx, config) {
    * 视觉任务委派工具的名字。
    * DSH 原生的通用委派工具（`dsh-tool-subagent`），`toolName` 可在配置里改，
    * 所以两个默认名都认；读图子代理自己也叫 ask_glm/ask_qwen，不在此列。
+   *
+   * ⚠ 2026-10-18：两条窄委派工具（subagent_code / subagent_research）**有意不**加进
+   *   这张表 —— 审计它们会把"改 png 尺寸 / 转格式 / 看图床路径"这类正常执行任务
+   *   误判成视觉委派（读图员那条审计的误伤率实测 6/10）。保持与 2026-10-16
+   *   引入窄委派时一致：窄委派的工具面里没有 read_image（preset 关着），
+   *   真要看图仍应走 ask_glm / ask_qwen。
    */
   const DELEGATION_TOOLS = ['subagent', 'subagent_fork']
 
@@ -1192,6 +1209,9 @@ export function apply(ctx, config) {
   // 读图员（2026-10-17 起由插件自己注册）：描述与 schema 完全可控，
   // 不再依赖 tool-subagent 行那段"和 subagent 逐字相同"的通用文案。
   for (const definition of createReaderTools(deps)) ctx.tools.register(definition)
+  // 窄委派（2026-10-18 起同样由插件自己注册）：`agentPreset` 改为**调用时**解析，
+  // 不再在装配期查 preset 表 —— 热重载时 preset 尚未 register 的窗口不会再把工具打挂。
+  for (const definition of createDelegationTools(deps)) ctx.tools.register(definition)
 
   // 可选显式降级（规划 [6.4]，默认关闭）：读图子代理失败时给出"不要卡住"的替代指引。
   const degradeToText = typeof config.degradeToText?.get === 'function' ? config.degradeToText.get() : config.degradeToText

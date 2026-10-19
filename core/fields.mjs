@@ -193,7 +193,7 @@ export function setPath(root, path, value) {
 }
 
 /**
- * * DashScope qwen-image 同步模式（2026-10-12 实跑确证并冻结；本账号不支持异步调用）：
+ * * DashScope qwen-image 同步模式（2026-10-12 实测并冻结；部分账号不具备异步调用权限）：
  *   POST {base}/services/aigc/multimodal-generation/generation
  *   body: { model, input:{ messages:[{role:'user',content:[{text: prompt}]}] },
  *           parameters:{ size, n, prompt_extend, watermark, negative_prompt? } }

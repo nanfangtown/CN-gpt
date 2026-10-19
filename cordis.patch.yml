@@ -4,22 +4,26 @@
 #
 # 两行（2026-10-17 起）：
 #   行1  llm-pi-ai（覆盖配置）：providers.glm / providers.qwen-vl → 读图路由
-#   行2  mm-models（自研）：ask_glm / ask_qwen（读图员）+ qwen_draw / seedance_video /
-#        video_gen / media_task / media_report；读图员子代理的 persona 与工具面在
-#        preset-mm-reader 里。
+#   行2  mm-models（自研）：ask_glm / ask_qwen（读图员）+ subagent_code /
+#        subagent_research（窄委派）+ qwen_draw / seedance_video / video_gen /
+#        media_task / media_report；子代理的 persona 与工具面在三个 preset-mm-* 里。
 #
-# ⚠ 读图员工具**不再**由 tool-subagent 行提供：那条路的 Config 没有 description，
-#   工具描述被拼死成与 `subagent` 逐字相同 —— 模型看不出 ask_glm 是读图。
-#   现在由插件用 ctx.subagents.startActivation() 自己注册（tools/reader.mjs）。
+# ⚠ 四个子代理工具**都不再由 tool-subagent 行提供**：
+#   - 读图员（2026-10-17）：那条路的 Config 没有 description，工具描述被拼死成与
+#     `subagent` 逐字相同 —— 模型看不出 ask_glm 是读图。
+#   - 窄委派（2026-10-18）：`agentPreset` 是装配期校验，而 preset 是激活期异步注册的，
+#     首次热重载会报 "Unknown agent preset"（详见下面行2c/2d 的说明）。
+#   现在都由插件用 ctx.subagents.startActivation() 自己注册（tools/reader.mjs、
+#   tools/delegation.mjs），`agentPreset` 在调用时才解析。
 #
 # ⚠ 行1 是"覆盖"语义：config 整体替换，不会与已有 providers 深合并。
-#    若 profile 的 llm-pi-ai 行已有 providers（例如 GUI 添加过路由），
-#    请把 providers.glm 合并进那份配置，或改用媒体工具行里的 base/模型开关。
-#    当前 desktop profile 的 llm-pi-ai 行没有 config（2026-10-12 已核对）。
+#    出厂模板假设 profile 的 llm-pi-ai 行没有 config（新装默认如此）。
+#    若你的 profile 已有 providers（例如在 GUI 里添加过路由），
+#    请把 providers.glm 合并进那份配置，或删掉本行后手工添加 GLM / Qwen-VL 路由。
 #
-# 实跑确证（2026-10-12）：glm-4.6v-flash 持续 429（型号拥挤不可用）；
+# 实测（2026-10-12）：glm-4.6v-flash 持续 429（型号拥挤不可用）；
 # glm-4.6v / glm-4.5v / glm-4v-flash 均可用，且"左红右蓝"读图测试全部答对。
-# 这里钉 glm-4.6v（同族、较新）；flash 恢复后改回下面两处 id 即可。
+# 这里保留 glm-4.6v（同族、较新）；flash 恢复后改回下面两处 id 即可。
 # ============================================================================
 
 # ---- 行1：智谱 GLM 视觉路由（key 在 设置 → 模型 → GLM 行 填写）----
@@ -179,23 +183,31 @@
     #
     # ⚠ 不要把这两行加回来：插件已注册同名工具，重复注册会冲突。
 
-    # ---- 行2c/2d：窄工具面的委派行（2026-10-16 加；2026-10-17 迁到 preset）----
-    # 工具面（文件读写 + 查找 + 命令）由 preset-mm-code 决定；这里只管路由与深度。
-    - id: tool-subagent-code
-      name: '@deepseek-ai/dsh-tool-subagent'
-      config:
-        provider: spawn
-        toolName: subagent_code
-        maxDepth: 1
-        agentPreset: mm-code
-
-    - id: tool-subagent-research
-      name: '@deepseek-ai/dsh-tool-subagent'
-      config:
-        provider: spawn
-        toolName: subagent_research
-        maxDepth: 1
-        agentPreset: mm-research
+    # ---- 行2c/2d：窄委派行（2026-10-16 加；2026-10-17 迁到 preset；2026-10-18 删行）
+    #
+    # ⚠ 2026-10-18 事故：这两行（tool-subagent-code / tool-subagent-research）已**删除**。
+    #
+    # 现象：桌面端「插件页 → 启用 gpt-CN」触发首次热重载时，启动审计报
+    #   dsh: warning: 2 entries did not activate
+    #   tool-subagent-code (...): RemoteError: Unknown agent preset: mm-code
+    #   tool-subagent-research (...): RemoteError: Unknown agent preset: mm-research
+    # 而 preset-mm-code / preset-mm-research 本身没坏，读图员（同样引用 preset）照常可用。
+    #
+    # 根因（dsh-tool-subagent 0.2.1 源码）：`agentPreset` 是**装配期**校验的
+    #   apply() → SubagentPresetSelection.validate() → agentPresets.readDocument(id)
+    # 而 preset 的注册是**激活期**异步完成的
+    #   Service.init → agentPresets.register(config)
+    # 热重载时 recomposeProfile() 用 Promise.all 并发重启整棵树，新插入的 preset 行
+    # 还没走到 register()，委派行已经在 apply() 里查 preset 了。冷启动时导入顺序恰好
+    # 让 preset 先注册，所以本地/测试里看不出来 —— 只在"首次启用该 bundle"时现形。
+    # 这不是配置写错，重试一次也能好，但下次启用还会犯。
+    #
+    # 修法：两条工具改由插件自己注册（tools/delegation.mjs），`agentPreset` 在
+    # **调用时**才交给 subagents.startActivation()。装配期不再依赖 preset 是否已注册。
+    # 深度与 preset 由 mm-models 的 Config 决定：
+    #   codeAgentPreset / researchAgentPreset / delegationMaxDepth。
+    #
+    # ⚠ 不要把这两行加回来：插件已注册同名工具，重复注册会冲突。
 
     # ---- 行3：自研插件本体 ----
     #
@@ -226,8 +238,8 @@
         dashscopeVideoBase: ''
         videoModel: kling/kling-v3-video-generation
         qwenModel: qwen-image-3.0
-        # 实跑确证（2026-10-12）：本账号不支持 DashScope 异步调用（403），
-        # qwen-image 走同步 multimodal-generation；auto 会自动按模型选择。
+        # 实测（2026-10-12）：部分账号不具备 DashScope 异步调用权限（403），
+        # qwen-image 走同步 multimodal-generation；auto 会按模型自动选择。
         dashscopeImageMode: auto
         # ⚠ 必须是方舟**真实可用的模型名或接入点 id**，不能写别名：
         #   `doubao-seedance-<代>-<档>-<日期>`，日期后缀猜不出来，最省事是去控制台复制。
@@ -398,6 +410,11 @@
         readerQwenModel: qwen3-vl-plus
         readerAgentPreset: mm-reader
         readerMaxDepth: 2
+        # 窄委派（2026-10-18：同样由插件自己注册，preset 在调用时才解析）。
+        # 工具面由 preset-mm-code / preset-mm-research 决定；这里只管 preset 与深度。
+        codeAgentPreset: mm-code
+        researchAgentPreset: mm-research
+        delegationMaxDepth: 1
         # 屏蔽主代理的原生读图：打开后主 agent 的工具列表里没有 read_image，读图只能走
         # 上面选中的读图子代理。子代理不受影响 —— 否则读图员会被一起弄瞎（实测过）。
         # 2026-10-17 起默认开（开箱即用的确定性路由）；想用原生读图就把它和下面那个一起关掉。
