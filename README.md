@@ -152,7 +152,7 @@ npm run test:docs    # 文档相对链接检查
 
 测试的边界：
 
-- **离线套件**用本地假厂商（`tests/mock-providers.mjs`）跑完 提交 → 轮询 → 下载 → 记账，CI 在 Linux / Windows × Node 20 / 22 上跑。
+- **离线套件**用本地假厂商（`tests/mock-providers.mjs`）跑完 提交 → 轮询 → 下载 → 记账，CI 在 Linux / Windows × Node 22 / 24 上跑。
 - **真实 harness 脚本**（`tests/e2e-*.mjs`）需要本机 DSH 安装与真 key，`SKIPPED:` 与通过可区分，`DSH_E2E_STRICT=1` 时跳过会以 78 退出。
 - 变异测试（`npm run test:mutation`）会**直接改写工作区源码**再还原，不要与其它测试并发跑。
 

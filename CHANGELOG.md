@@ -37,6 +37,9 @@
 
 ### Fixed
 
+- CI 首次真实运行必红：`tests/register.mjs` 只去 desktop profile 找真实 schemastery，
+  全新 clone 找不到就按 `DSH_REQUIRE_REAL_SCHEMASTERY=1` 退出；Node 20 也没有
+  `module.registerHooks`。现在优先找仓库自己的 `node_modules`，CI 矩阵改为 Node 22 / 24。
 - `media_report(action=health, verbose=true)` 的 Markdown 表格被读图路由行与互斥告警打断
   （表格中间插入空行与普通段落，渲染成两截）。
 - 制图此前没有走金额闸门（2026-10-16）：未计价模型也能提交，且不需要确认。

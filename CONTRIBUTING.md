@@ -5,7 +5,7 @@
 
 ## 开发环境
 
-- Node.js **20.6+**（测试用到 `--import`；CI 跑 20 / 22）
+- Node.js **22.15+**（测试用 `module.registerHooks`；CI 跑 22 / 24）
 - 可选：DeepSeek Harness `0.2.1+`（只有 `tests/e2e-*.mjs` 需要）
 - **不需要任何 API key**：离线套件用本地假厂商，不联网、不花钱
 

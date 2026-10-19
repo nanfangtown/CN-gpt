@@ -9,9 +9,11 @@ import { registerHooks } from 'node:module'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = new URL('.', import.meta.url)
+/** 包根目录（tests/ 的上一级）。CI 全新 clone 时，真 schemastery 装在这里的 node_modules。 */
+const packageRoot = fileURLToPath(new URL('..', import.meta.url))
 const map = {
   '@deepseek-ai/dsh-tools': new URL('./stubs/dsh-tools.mjs', here).href,
   '@deepseek-ai/dsh-credentials': new URL('./stubs/dsh-credentials.mjs', here).href,
@@ -23,6 +25,11 @@ const home = homedir()
 const candidates = [
   process.env.DSH_PROFILE_DIR && join(process.env.DSH_PROFILE_DIR, 'node_modules/@deepseek-ai/schemastery/lib/index.mjs'),
   process.env.DSH_PROFILE_DIR && join(process.env.DSH_PROFILE_DIR, 'node_modules/@deepseek-ai/schemastery/lib/index.js'),
+  // CI / 全新 clone：`npm install` 把真包装在仓库自己的 node_modules 下。
+  // 早期只找 desktop profile，于是 CI 里永远走"找不到真包"分支、被
+  // DSH_REQUIRE_REAL_SCHEMASTERY=1 直接判失败 —— 2026-10-19 首次真实 CI 跑出来的。
+  join(packageRoot, 'node_modules/@deepseek-ai/schemastery/lib/index.mjs'),
+  join(packageRoot, 'node_modules/@deepseek-ai/schemastery/lib/index.js'),
   join(home, '.dsh/profiles/desktop/node_modules/@deepseek-ai/schemastery/lib/index.mjs'),
   join(home, '.dsh/profiles/desktop/node_modules/@deepseek-ai/schemastery/lib/index.js'),
 ].filter(Boolean)
