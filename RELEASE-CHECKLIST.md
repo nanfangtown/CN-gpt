@@ -15,6 +15,10 @@
 - [ ] `.github/ISSUE_TEMPLATE/config.yml` 里两处 `OWNER` 换成真地址（issue 选择页的两个入口）。
 - [ ] `SECURITY.md` / `CODE_OF_CONDUCT.md` 里的"私下联系维护者"补上真实联系方式
       （或启用 GitHub 的 Private vulnerability reporting，把链接写进去）。
+- [ ] 确认公开显示名：当前代码与文档统一用 **`gpt-CN`**。若决定改成 `CN-gpt`，
+      需同步 `package.json` 的 `meta.title`、`locale/zh.json`、`locale/en.json`、
+      `client.js` 的 `DICT`、README 与相关测试断言（不只是改 README）。
+- [ ] 确认 `LICENSE` 的版权行（当前是 `dsh-mm-models contributors`；要写真实姓名或组织就改）。
 
 ## 2. 仓库设置
 
