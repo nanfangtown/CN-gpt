@@ -42,3 +42,6 @@ Thumbs.db
 *.bak
 *.bak-*
 *.tgz
+
+# ---- 本机部署密钥（只用于首次 push，绝不进仓库）----
+.deploy/
