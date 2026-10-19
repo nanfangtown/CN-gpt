@@ -7,6 +7,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 最小权限：这个工作流只读代码，不需要写 token。
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
@@ -15,6 +23,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         node: [20, 22]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -67,3 +76,11 @@ jobs:
         env:
           DSH_REQUIRE_REAL_SCHEMASTERY: '1'
         run: node --import ./tests/register.mjs ./tests/size-report.mjs
+
+      # 文档相对链接：拆分 README 后最容易出现的回归（20 行、无依赖、不联网）
+      - name: Documentation links
+        run: node tests/check-doc-links.mjs
+
+      # 打包内容：确认 npm 包里只有运行所需文件，没有 tests / _sandbox / 密钥
+      - name: Package contents
+        run: npm pack --dry-run

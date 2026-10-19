@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（走私密渠道）
+    url: https://github.com/OWNER/dsh-mm-models/security/advisories/new
+    about: 不要开 public issue 贴密钥、账单或可复现的敏感值；见 SECURITY.md
+  - name: 使用与配置文档
+    url: https://github.com/OWNER/dsh-mm-models#readme
+    about: 安装、三把 key、读图路由与花费闸门的说明

@@ -1,18 +1,23 @@
 {
   "name": "dsh-mm-models",
   "version": "0.1.1",
-  "private": true,
+  "description": "DeepSeek 主脑 + GLM/Qwen 读图 / Qwen 制图 / Seedance·可灵·万相 出片：把外部多模态能力做成与 bash 同级的顶级工具，共用异步任务层、多 key 管理与成本闸门。",
   "type": "module",
   "license": "MIT",
-  "description": "DeepSeek 主脑 + GLM/Qwen 读图（二选一）/ Qwen 制图 / Seedance 出片：把三个外部模型能力做成与 bash 同级的顶级工具，共用异步任务层、多 key 管理与成本估算。",
+  "author": "dsh-mm-models contributors",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
     "multimodal",
+    "vision",
     "qwen-vl",
     "image-generation",
-    "video-generation"
+    "video-generation",
+    "dashscope",
+    "bailian",
+    "zhipu",
+    "volcengine-ark"
   ],
   "icon": "./icon.svg",
   "exports": {
@@ -40,7 +45,11 @@
     "zod": "^4.0.0"
   },
   "engines": {
+    "node": ">=20.6.0",
     "dsh": ">=0.2.1-rc.1 <0.3.0-0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@deepseek-ai/schemastery": "^3.18.0"
@@ -48,12 +57,13 @@
   "scripts": {
     "test": "node --import ./tests/register.mjs ./tests/run.mjs && node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs && node tests/client-card.test.mjs && node tests/_card-mutex.test.mjs && node --import ./tests/register.mjs ./tests/verify-functionality.mjs && node --import ./tests/register.mjs ./tests/video-gen.test.mjs",
     "test:video": "node --import ./tests/register.mjs ./tests/video-gen.test.mjs",
-    "probe:video": "node tests/probe-dashscope-video.mjs",
     "test:safety": "node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs",
     "test:verify": "node --import ./tests/register.mjs ./tests/verify-functionality.mjs",
     "test:mutation": "node tests/_mutation-check.mjs",
     "test:perf": "node --import ./tests/register.mjs ./tests/_perf-bench.mjs",
-    "test:sizes": "node --import ./tests/register.mjs ./tests/size-report.mjs"
+    "test:sizes": "node --import ./tests/register.mjs ./tests/size-report.mjs",
+    "test:docs": "node tests/check-doc-links.mjs",
+    "probe:video": "node tests/probe-dashscope-video.mjs"
   },
   "meta": {
     "title": "gpt-CN（读图 / 制图 / 出片）",

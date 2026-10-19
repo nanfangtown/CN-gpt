@@ -1,0 +1,36 @@
+name: 功能建议
+description: 想加一个工具、一个模型厂商，或改一个默认行为
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到什么问题
+      description: 描述场景，而不是先给方案
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望怎么解决
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案 / 现在怎么绕
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 范围自检
+      options:
+        - label: 这是一个"外部模型能力"或插件自身行为，不是改主模型 / fallback 链
+          required: false
+        - label: 如果涉及付费调用，我愿意说明金额上限与失败回滚
+          required: false
