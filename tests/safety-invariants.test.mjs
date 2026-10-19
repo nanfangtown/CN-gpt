@@ -102,6 +102,9 @@ try {
   console.log('\n① 本地文件边界')
 
   await test('isInside：子路径算在内，同前缀的兄弟目录不算', async () => {
+    // ⚠ 故意不创建 inside/a/：目标不存在时也必须按"最近存在的祖先"解析。
+    // Windows CI 的 TEMP 是 8.3 短路径（RUNNER~1），字面 resolve 与 realpath 前缀不同，
+    // 曾把 inside/a/b.png 误判成越界（2026-10-19 真实 CI 回归）。
     assert.equal(await isInside(join(inside, 'a', 'b.png'), inside), true)
     assert.equal(await isInside(inside + '-sibling', inside), false)
   })

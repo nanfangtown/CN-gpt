@@ -10,7 +10,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, realpath, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
 
 import { CODES, MediaError } from './errors.mjs'
 
@@ -133,7 +133,7 @@ export function extensionFor(mediaType, fallback = '.bin') {
  * （2026-10-16 评审实测：`seedance_video` 的 `image` 可指向 `~/.dsh/.env`）。
  *
  * 细节：
- *   - 先 `realpath` 解析符号链接再比较（软链指向外面时不能算通过）；路径不存在时回退到字面解析；
+ *   - 先 `realpath` 解析符号链接再比较（软链指向外面时不能算通过）；目标不存在时对最近存在的祖先做 realpath，再拼回剩余段；
  *   - Windows 大小写不敏感；
  *   - 比较时补上分隔符，避免 `/a/bc` 被误判成在 `/a/b` 之内。
  *
@@ -144,10 +144,29 @@ export function extensionFor(mediaType, fallback = '.bin') {
 export async function isInside(target, root) {
   const normalize = (value) => (process.platform === 'win32' ? value.toLowerCase() : value)
   const resolveReal = async (value) => {
+    const absolute = resolve(String(value))
     try {
-      return await realpath(value)
+      return await realpath(absolute)
     } catch {
-      return resolve(value)
+      // 目标还不存在：对**最近的已存在祖先**做 realpath，再把剩余段拼回去。
+      //
+      // ⚠ 不能直接字面 resolve()：Windows 的 8.3 短路径（CI 的
+      // `C:\Users\RUNNER~1\AppData\Local\Temp\...`）与 realpath 展开的长路径
+      // 前缀不同，会让"根目录内"被误判成"根目录外"——2026-10-19 真实 CI 抓到。
+      // 逐级向上找存在的祖先，也能正确穿过祖先里的符号链接。
+      const rest = []
+      let cursor = absolute
+      for (;;) {
+        const parent = dirname(cursor)
+        rest.unshift(basename(cursor))
+        if (parent === cursor) return absolute
+        cursor = parent
+        try {
+          return join(await realpath(cursor), ...rest)
+        } catch {
+          // 继续向上找
+        }
+      }
     }
   }
   const inner = normalize(await resolveReal(String(target)))
