@@ -26,6 +26,7 @@
 
 ### Changed
 
+- 公开显示名统一为 **`CN-gpt`**（与仓库同名）；包名保持 `dsh-mm-models`，插件 id 保持 `mm-models`。
 - 包名从 `@local/dsh-mm-models` 改为无 scope 的 `dsh-mm-models`，便于公开安装。
 - 出厂默认改为"开箱即见效果"：读图员开、主代理与通用子代理的原生读图默认屏蔽；
   可在配置卡里关掉两个 `block*` 开关回到原生读图。

@@ -71,7 +71,7 @@ export function sessionIdOf(exec) {
 /** 预算拒绝的固定文案。 */
 export function budgetMessage(info) {
   const seconds = Math.max(1, Math.ceil((info.resetInMs ?? 0) / 1000))
-  return `本轮生成调用已达上限（${info.limit} 次）：这是 maxCallsPerTurn 的保护。请等待约 ${seconds} 秒后再试，或在 插件页 → gpt-CN → 配置卡 调整 maxCallsPerTurn（0 = 不限制）。`
+  return `本轮生成调用已达上限（${info.limit} 次）：这是 maxCallsPerTurn 的保护。请等待约 ${seconds} 秒后再试，或在 插件页 → CN-gpt → 配置卡 调整 maxCallsPerTurn（0 = 不限制）。`
 }
 
 /** 终态失败 → 抛给模型的人话错误。 */
@@ -185,7 +185,7 @@ export async function accountUnretrievedSpend({ getLedger, taskId, entry, logger
 }
 
 /**
- * 工具开关（插件页 → gpt-CN → 配置卡 里的复选框，一键设置）。
+ * 工具开关（插件页 → CN-gpt → 配置卡 里的复选框，一键设置）。
  *
  * 语义：
  *   - guard（全局、同步、读实时配置）：关闭后任何 agent 调用该工具都会被拒，立即生效；
@@ -252,14 +252,14 @@ export function createSwitches(config) {
     /** guard 拒绝时给模型/用户看的人话。 */
     disabledMessage(tool) {
       if (tool === 'ask_qwen' && conflict()) {
-        return 'ask_qwen 与 ask_glm 互斥：两个读图子代理不能同时开启，当前 ask_glm 生效、ask_qwen 被停用。请在 插件页 → gpt-CN → 配置卡 关闭 ask_glm（打开 ask_qwen 会自动关闭它），或继续使用 ask_glm。'
+        return 'ask_qwen 与 ask_glm 互斥：两个读图子代理不能同时开启，当前 ask_glm 生效、ask_qwen 被停用。请在 插件页 → CN-gpt → 配置卡 关闭 ask_glm（打开 ask_qwen 会自动关闭它），或继续使用 ask_glm。'
       }
       if (tool === 'ask_glm' && conflict()) {
-        return 'ask_glm 与 ask_qwen 互斥：两个读图子代理不能同时开启，当前 ask_qwen 生效、ask_glm 被停用。请在 插件页 → gpt-CN → 配置卡 关闭 ask_qwen（打开 ask_glm 会自动关闭它），或继续使用 ask_qwen。'
+        return 'ask_glm 与 ask_qwen 互斥：两个读图子代理不能同时开启，当前 ask_qwen 生效、ask_glm 被停用。请在 插件页 → CN-gpt → 配置卡 关闭 ask_qwen（打开 ask_glm 会自动关闭它），或继续使用 ask_qwen。'
       }
       const spec = specOf(tool)
       const label = spec?.label ?? tool
-      return '已关闭：' + tool + '（' + label + '）在 插件页 → gpt-CN → 配置卡 的开关里处于关闭状态。请不要重试；需要时请让用户打开该开关。'
+      return '已关闭：' + tool + '（' + label + '）在 插件页 → CN-gpt → 配置卡 的开关里处于关闭状态。请不要重试；需要时请让用户打开该开关。'
     },
   }
 }

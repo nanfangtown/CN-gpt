@@ -185,7 +185,7 @@ export const dashscopeVideoAdapter = {
         CODES.BAD_REQUEST,
         `参数不被接受：未知的视频模型「${String(spec.model ?? '')}」。可选：` +
           Object.keys(VIDEO_MODELS).join(' / ') +
-          '；请在 插件页 → gpt-CN → 配置卡 的 videoModel 里选择。**本次未提交、未产生任何费用。**',
+          '；请在 插件页 → CN-gpt → 配置卡 的 videoModel 里选择。**本次未提交、未产生任何费用。**',
       )
     }
     const mode = VIDEO_MODES[spec.mode] === undefined ? 'std' : spec.mode

@@ -1,8 +1,10 @@
-# dsh-mm-models
+# CN-gpt
 
 > **给 DeepSeek 主脑补上「眼睛 + 画笔 + 摄像机 + 剪辑台」。**
 >
-> `0.1.1` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
+> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.1.1` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
+
+[![offline-tests](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml)
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）bundle：把 GLM / Qwen-VL 读图、Qwen 制图、Seedance / 可灵 / 万相出片做成与 `bash`、`ops_*` 同级的顶级工具，并共用一层异步任务管理、一套多 key 管理与一套**花钱闸门**。
 
@@ -38,11 +40,11 @@ DeepSeek 主模型负责思考与交付；外部模型只负责"看 / 画 / 拍"
 
 ```bat
 :: 从本地目录安装（当前推荐；尚未发布到 npm）
-dsh plugin --profile desktop add "D:\path\to\dsh-mm-models"
+dsh plugin --profile desktop add "D:\path\to\CN-gpt"
 
 :: 或从 clone 下来的仓库安装
-git clone <repo-url> dsh-mm-models
-dsh plugin --profile desktop add ".\dsh-mm-models"
+git clone https://github.com/nanfangtown/CN-gpt.git
+dsh plugin --profile desktop add ".\CN-gpt"
 ```
 
 装完**完整重启 DSH**。安装会在 profile 里加两行 + 三个 agent preset：
@@ -55,7 +57,7 @@ dsh plugin --profile desktop add ".\dsh-mm-models"
 > 或安装后把 `providers.glm` / `providers.qwen-vl` 合并进你原有的配置。
 > 不需要插件代配路由时，删掉 `cordis.patch.yml` 的第 1 行，再手工在设置里添加 GLM / Qwen-VL 路由。
 
-配置卡入口：侧栏「插件」→ 已安装 → `dsh-mm-models`（显示名 **gpt-CN**）→ 组合包详情 → 配置卡。
+配置卡入口：侧栏「插件」→ 已安装 → `dsh-mm-models`（显示名 **CN-gpt**）→ 组合包详情 → 配置卡。
 
 ## 三把 key
 
@@ -156,7 +158,7 @@ npm run test:docs    # 文档相对链接检查
 
 ## 名字
 
-插件页显示名是 **gpt-CN**（包名 `dsh-mm-models`，插件 id `mm-models`）。**这是玩梗，不是技术栈**——调用链里 GPT 含量 0%，实际是 GLM / Qwen / Seedance / 可灵 / 万相。主脑仍是 DeepSeek。
+插件页显示名是 **CN-gpt**（仓库同名），包名 `dsh-mm-models`，插件 id `mm-models`。**这是玩梗，不是技术栈**——调用链里 GPT 含量 0%，实际是 GLM / Qwen / Seedance / 可灵 / 万相。主脑仍是 DeepSeek。
 
 ## 许可
 

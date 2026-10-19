@@ -1045,7 +1045,7 @@ async function main() {
     assert.ok(!reasonNone.includes('read_image'), '不该推荐已被屏蔽的 read_image：' + reasonNone)
     assert.ok(reasonNone.includes('读图员都没开'), '要说明读图员都没开，而不是说成可用：' + reasonNone)
     // 只有"真的没途径"时才需要把用户引到配置卡（有可用工具时不该多此一举）
-    assert.ok(reasonNone.includes('gpt-CN'), '没途径时要指路到配置卡：' + reasonNone)
+    assert.ok(reasonNone.includes('CN-gpt'), '没途径时要指路到配置卡：' + reasonNone)
 
     // 不误伤：非图片、无路径、子代理、别的工具
     assert.equal(guardBlocked({ name: 'read', args: { file_path: 'D:\\work\\notes.md' }, agent: mainAgent }), undefined, '文本文件不该被拦')
@@ -1111,7 +1111,7 @@ async function main() {
     const offGuard = guardOf(setup(mock, off).fake, GUARD_VISION_DELEGATION)
     const noReader = offGuard({ name: 'subagent', args: { prompt: '看下 a.png' }, agent: mainAgent })
     assert.ok(noReader.includes('都没开'), '要说清读图员没开：' + noReader)
-    assert.ok(noReader.includes('gpt-CN'), '要指路到配置卡：' + noReader)
+    assert.ok(noReader.includes('CN-gpt'), '要指路到配置卡：' + noReader)
     assert.ok(noReader.includes('没有任何看图途径'), '要说明没有途径：' + noReader)
   })
 
@@ -1953,7 +1953,7 @@ async function main() {
 
   // ---------------------------------------------------------------- 失败矩阵与固定文案
   const failureCases = [
-    { marker: '[auth]', code: CODES.AUTH, contains: ['无效或已过期', '插件页 → gpt-CN → 配置卡'], posts: 1 },
+    { marker: '[auth]', code: CODES.AUTH, contains: ['无效或已过期', '插件页 → CN-gpt → 配置卡'], posts: 1 },
     { marker: '[rate]', code: CODES.RATE_LIMIT, contains: ['任务未创建', '不会自动重发提交'], posts: 1 },
     { marker: '[policy]', code: CODES.POLICY_REJECTED, contains: ['策略拒绝'], posts: 1 },
     { marker: '[bad]', code: CODES.BAD_REQUEST, contains: ['参数不被接受', 'size'], posts: 1 },
@@ -1979,7 +1979,7 @@ async function main() {
     const tmp = await makeTmp()
     const { tools } = setup(mock, tmp, { credentials: { DASHSCOPE_API_KEY: undefined } })
     const { exec } = newExec(tmp)
-    await expectError(tools.qwen_draw.execute({ prompt: 'x' }, exec), CODES.MISSING_CREDENTIAL, ['DASHSCOPE_API_KEY', '插件页 → gpt-CN → 配置卡'])
+    await expectError(tools.qwen_draw.execute({ prompt: 'x' }, exec), CODES.MISSING_CREDENTIAL, ['DASHSCOPE_API_KEY', '插件页 → CN-gpt → 配置卡'])
   })
 
   await test('提交（POST）只在"请求未发出"时重试一次；收到响应后绝不重发', async () => {

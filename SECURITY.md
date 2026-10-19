@@ -41,8 +41,9 @@
 ## 报告漏洞
 
 请**不要**开 public issue 贴密钥、账单明细、会话日志或私人路径。优先用 GitHub 的
-**Private vulnerability reporting**（仓库 Security → Advisories → New draft security advisory，
-发布前需在仓库设置里打开；地址见 `RELEASE-CHECKLIST.md`）。
+**Private vulnerability reporting**（
+[Security → Advisories → New draft security advisory](https://github.com/nanfangtown/CN-gpt/security/advisories/new)，
+发布前需在仓库设置里打开）。
 
 如果无法使用私密报告，请只发一句"需要私下沟通的安全问题"到维护者公开的联系方式，
 不要附任何复现中的敏感值。收到后会在确认影响范围后修复，并在 `CHANGELOG.md` / commit 里说明；

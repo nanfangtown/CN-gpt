@@ -5,6 +5,14 @@
   "type": "module",
   "license": "MIT",
   "author": "dsh-mm-models contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nanfangtown/CN-gpt.git"
+  },
+  "homepage": "https://github.com/nanfangtown/CN-gpt#readme",
+  "bugs": {
+    "url": "https://github.com/nanfangtown/CN-gpt/issues"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -66,7 +74,7 @@
     "probe:video": "node tests/probe-dashscope-video.mjs"
   },
   "meta": {
-    "title": "gpt-CN（读图 / 制图 / 出片）",
+    "title": "CN-gpt（读图 / 制图 / 出片）",
     "description": "一个插件，做成中国的GPT"
   },
   "dsh": {

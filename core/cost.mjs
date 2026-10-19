@@ -308,7 +308,7 @@ export function pricingWarnings(config, plain = (value) => value) {
     warnings.push(
       `配置项 ${field} = ${id}（${label}）没有可用单价：${why}。` +
         `后果：${label}提交会被花费闸门拦下（未计价 fail-closed），或金额按 0 计入报表。` +
-        `修法：在 插件页 → gpt-CN → 配置卡 的单价表里补上该模型 id 的价，或把 ${field} 换回已计价的模型。`,
+        `修法：在 插件页 → CN-gpt → 配置卡 的单价表里补上该模型 id 的价，或把 ${field} 换回已计价的模型。`,
     )
   }
 
@@ -895,7 +895,7 @@ export function renderCostReport({ records, config, scope = 'session', sessionId
     lines.push(
       `⚠ 有 ${zeroPriced} 个型号的记录单价是 **0**：0 不是价，是"宣称免费"，所以这一行的金额不可信。` +
         `已经发生的记录无法回溯定价，但新调用会按现行单价表记账。` +
-        `请核对 插件页 → gpt-CN → 配置卡 的单价表：填真实单价，或填 null（= 未计价，报表会显式写「未计价」）。`,
+        `请核对 插件页 → CN-gpt → 配置卡 的单价表：填真实单价，或填 null（= 未计价，报表会显式写「未计价」）。`,
     )
   }
   const asOf = [...new Set(Object.values(pricing).map((entry) => entry?.asOf).filter((value) => typeof value === 'string' && value.length > 0))]
@@ -1015,7 +1015,7 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
       // ⚠ 这是**告警**，紧凑模式也必须出现。
       if (switchOn && routeOk !== false && status.configured && knownProviders !== undefined) {
         const other = spec.capability === 'ask_glm' ? 'ask_qwen' : 'ask_glm'
-        if (switches[other] === false && readerConflict === true) conflictNotes.push(`⚠ 与 ${other} 同时处于开启状态：按互斥规则当前 ${spec.capability} 生效、${other} 被压制。请在 插件页 → gpt-CN → 配置卡 关掉其中一个。`)
+        if (switches[other] === false && readerConflict === true) conflictNotes.push(`⚠ 与 ${other} 同时处于开启状态：按互斥规则当前 ${spec.capability} 生效、${other} 被压制。请在 插件页 → CN-gpt → 配置卡 关掉其中一个。`)
       }
     } else if (adapter !== undefined && !claimedAdapters.has(adapter)) {
       claimedAdapters.add(adapter)

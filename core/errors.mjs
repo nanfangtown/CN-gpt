@@ -43,7 +43,7 @@ export const STATES = Object.freeze({
 export const TERMINAL_STATES = new Set([STATES.SUCCEEDED, STATES.FAILED])
 
 /** 表示"Key 缺失"时给用户下一步的落点（插件设置页）。 */
-const PLUGIN_SETTINGS_HINT = '插件页 → gpt-CN → 配置卡'
+const PLUGIN_SETTINGS_HINT = '插件页 → CN-gpt → 配置卡'
 
 /** 结果里出现的固定错误对象：文案已经是给模型/用户看的人话。 */
 export class MediaError extends Error {

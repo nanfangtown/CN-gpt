@@ -10,8 +10,8 @@
 - **不需要任何 API key**：离线套件用本地假厂商，不联网、不花钱
 
 ```bash
-git clone <repo-url> dsh-mm-models
-cd dsh-mm-models
+git clone https://github.com/nanfangtown/CN-gpt.git
+cd CN-gpt
 npm install          # 只装 @deepseek-ai/schemastery 一个 devDependency
 npm test             # 离线全量套件
 npm run test:docs    # 文档相对链接检查

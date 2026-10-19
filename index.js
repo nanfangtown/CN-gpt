@@ -309,7 +309,7 @@ export const Config = z.object({
   maxRegistryEntries: z.number().step(1).min(10).default(200).volatile().description('任务注册表保留条数上限（超出丢弃最旧的）。'),
   registryTtlMs: z.number().step(3600000).min(3600000).default(604800000).volatile().description('任务注册表条目保留时长（默认 7 天），过期的查询时顺手清理。'),
 
-  // ---- 工具开关（插件页 → gpt-CN → 配置卡，一键勾选；关闭后调用被拒，新会话不再显示）----
+  // ---- 工具开关（插件页 → CN-gpt → 配置卡，一键勾选；关闭后调用被拒，新会话不再显示）----
   // 2026-10-17 起出厂默认 = "开箱即见效果"：读图员开着、原生读图屏蔽着。
   // 想让模型用原生读图，关掉下面两个 block 开关即可（不必动读图员）。
   enableAskGlm: z.boolean().default(true).volatile().description('允许主 agent 使用 ask_glm（GLM 读图子代理）。**默认开启**：装上即走读图员，配合下面两个 block 开关就是开箱即用的确定性读图路由。与 enableAskQwen 互斥：打开它就会自动关闭 ask_qwen，反之亦然；两个都关时没有读图工具。'),
@@ -453,7 +453,7 @@ export function apply(ctx, config) {
   const READER_TOOLS = ['ask_glm', 'ask_qwen']
   const NATIVE_VISION_TOOL = 'read_image'
   /** 指路文案里的插件显示名（与 package.json meta.title / locale 保持一致）。 */
-  const PLUGIN_LABEL = 'gpt-CN'
+  const PLUGIN_LABEL = 'CN-gpt'
 
   const entryHasImage = (entry) => {
     const content = entry?.data?.content

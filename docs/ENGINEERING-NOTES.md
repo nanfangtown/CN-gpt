@@ -8,6 +8,8 @@
 >
 > 原 README 头部（历史状态）：`0.1.1` · 本地优先 · 尚未发布到 npm（`private: true`）· MIT
 > ｜ 开源准备清单见 [`SECURITY.md`](../SECURITY.md)，密钥模板见 [`.env.example`](../.env.example)
+>
+> 另注：显示名在公开前从 `gpt-CN` 统一为 `CN-gpt`（仓库同名），下文保留当时的写法。
 
 DeepSeek 主脑 + GLM/Qwen 读图（二选一）/ Qwen 制图 / Seedance 出片 + 百炼出片（可灵/万相）。
 

@@ -2,7 +2,7 @@
  * subagent_code / subagent_research —— 两条窄委派工具（2026-10-18 起由插件自己注册）。
  *
  * ## 为什么不再用 tool-subagent 行
- * 2026-10-18 事故：桌面端在「插件页 → 启用 gpt-CN」时热重载，profile 里**新插入**的
+ * 2026-10-18 事故：桌面端在「插件页 → 启用 CN-gpt」时热重载，profile 里**新插入**的
  * `tool-subagent-code` / `tool-subagent-research` 两行直接在启动审计里报
  *   `RemoteError: Unknown agent preset: mm-code`
  *   `RemoteError: Unknown agent preset: mm-research`

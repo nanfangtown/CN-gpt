@@ -187,7 +187,7 @@
     #
     # ⚠ 2026-10-18 事故：这两行（tool-subagent-code / tool-subagent-research）已**删除**。
     #
-    # 现象：桌面端「插件页 → 启用 gpt-CN」触发首次热重载时，启动审计报
+    # 现象：桌面端「插件页 → 启用 CN-gpt」触发首次热重载时，启动审计报
     #   dsh: warning: 2 entries did not activate
     #   tool-subagent-code (...): RemoteError: Unknown agent preset: mm-code
     #   tool-subagent-research (...): RemoteError: Unknown agent preset: mm-research
@@ -394,7 +394,7 @@
         taskRegistryPath: ''
         maxRegistryEntries: 200
         registryTtlMs: 604800000
-        # 工具开关（插件页 → gpt-CN → 配置卡 一键勾选；关闭后调用被拒、新会话不显示）
+        # 工具开关（插件页 → CN-gpt → 配置卡 一键勾选；关闭后调用被拒、新会话不显示）
         # 读图子代理 ask_glm / ask_qwen 互斥、必须二选一：设置卡里打开一个会自动关闭另一个；
         # 万一两个都是 true（例如手改本文件），Host 侧按 "GLM 优先" 仲裁并压制 ask_qwen，
         # media_report(action=health) 会把这次冲突标出来。

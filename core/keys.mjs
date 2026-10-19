@@ -17,7 +17,7 @@ export const KEY_SPECS = Object.freeze([
     envField: 'dashscopeApiKeyEnv',
     label: '阿里云百炼 DashScope API Key',
     usage: 'qwen_draw 制图；ask_qwen 读图（llm-pi-ai providers.qwen-vl 共用同一把 key）',
-    settingsWhere: '插件页 → gpt-CN → 配置卡',
+    settingsWhere: '插件页 → CN-gpt → 配置卡',
     capability: 'qwen_draw',
   }),
   Object.freeze({
@@ -27,7 +27,7 @@ export const KEY_SPECS = Object.freeze([
     envField: 'arkApiKeyEnv',
     label: '火山方舟 Volcengine Ark API Key',
     usage: '仅 seedance_video 出片使用',
-    settingsWhere: '插件页 → gpt-CN → 配置卡',
+    settingsWhere: '插件页 → CN-gpt → 配置卡',
     capability: 'seedance_video',
   }),
   Object.freeze({
@@ -51,7 +51,7 @@ export const KEY_SPECS = Object.freeze([
     envField: 'dashscopeApiKeyEnv',
     label: '阿里云百炼 DashScope API Key（可灵 / 万相 出片）',
     usage: '仅 video_gen 出片使用（与 qwen_draw 共用 DASHSCOPE_API_KEY；另需业务空间 ID）',
-    settingsWhere: '插件页 → gpt-CN → 配置卡',
+    settingsWhere: '插件页 → CN-gpt → 配置卡',
     capability: 'dashscope_video',
   }),
   // DashScope 同一把 key 也供 ask_qwen 的 qwen-vl 路由使用：
@@ -63,7 +63,7 @@ export const KEY_SPECS = Object.freeze([
     envField: 'dashscopeApiKeyEnv',
     label: '阿里云百炼 DashScope API Key（Qwen-VL 读图）',
     usage: '仅 ask_qwen 读图使用（与 qwen_draw 共用 DASHSCOPE_API_KEY）',
-    settingsWhere: '插件页 → gpt-CN → 配置卡',
+    settingsWhere: '插件页 → CN-gpt → 配置卡',
     capability: 'ask_qwen',
   }),
 ])

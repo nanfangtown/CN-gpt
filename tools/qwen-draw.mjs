@@ -101,7 +101,7 @@ export function createQwenDrawTool(deps) {
         if (config?.attachResultImages !== true) {
           blocks.push({
             type: 'text',
-            text: '（图片已保存在上面的路径；按当前设置未把图片内容附回上下文。需要模型自己看图时，在 插件页 → gpt-CN → 配置卡 打开 attachResultImages。）',
+            text: '（图片已保存在上面的路径；按当前设置未把图片内容附回上下文。需要模型自己看图时，在 插件页 → CN-gpt → 配置卡 打开 attachResultImages。）',
           })
         } else if (blocks.length === 1) {
           blocks.push({ type: 'text', text: '（未取得可展示的图片内容块，请按路径查看文件）' })
@@ -148,7 +148,7 @@ export function createQwenDrawTool(deps) {
             CODES.BAD_REQUEST,
             '参数不被接受：图生图需要**同步模式**（qwen-image 系列），当前模型 ' +
               spec.model +
-              ' 走异步 text2image、不接受输入图。请在 插件页 → gpt-CN → 配置卡 把 qwenModel 设为 qwen-image-3.0（或其它 qwen-image 系列）后重试。',
+              ' 走异步 text2image、不接受输入图。请在 插件页 → CN-gpt → 配置卡 把 qwenModel 设为 qwen-image-3.0（或其它 qwen-image 系列）后重试。',
           )
         }
 

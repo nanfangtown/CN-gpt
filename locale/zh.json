@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "gpt-CN（读图 / 制图 / 出片）",
+    "title": "CN-gpt（读图 / 制图 / 出片）",
     "description": "一个插件，做成中国的GPT"
   },
   "config": {

@@ -1,5 +1,5 @@
 /**
- * gpt-CN 设置卡（Host 之外唯一的客户端代码）。
+ * CN-gpt 设置卡（Host 之外唯一的客户端代码）。
  *
  * 注册进插件页（Plugin Manager）的 `plugins.bundle.config` slot，key = 本包名。
  * 规范：不 import Harness Client 包；只用 --dsw-alias-* 主题 token；控件自绘；
@@ -237,7 +237,7 @@ window.__ModuleLoader__.load({
 
     const DICT = {
       zh: {
-        title: 'gpt-CN（读图 / 制图 / 出片）',
+        title: 'CN-gpt（读图 / 制图 / 出片）',
         intro: 'Host 半侧的配置卡；改动在保存后写入本 profile 条目。',
         save: '保存',
         discard: '放弃修改',
@@ -344,7 +344,7 @@ window.__ModuleLoader__.load({
         'hint.video': '百炼出片复用 DASHSCOPE_API_KEY：先填业务空间 ID，再到百炼控制台「模型市场」搜 kling 点「立即开通」；未接通前保持关闭。',
       },
       en: {
-        title: 'gpt-CN (read / draw / video)',
+        title: 'CN-gpt (read / draw / video)',
         intro: 'Host-side settings card; changes are written to this profile entry on save.',
         save: 'Save',
         discard: 'Discard',

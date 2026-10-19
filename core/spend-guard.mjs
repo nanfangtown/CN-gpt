@@ -61,7 +61,7 @@ export function estimateSpend({ model, duration, unitPrice }) {
       price === 0
         ? `模型 ${model} 的单价被写成 0：0 等于宣称"免费"，不是"未知"，闸门不接受 0 作为预估依据。请填真实单价；不知道就写 null（= 未计价）`
         : price !== null && Number.isFinite(price) && price < 0
-          ? `模型 ${model} 的单价是负数（${price}），不可能是合法价格——请检查 插件页 → gpt-CN → 配置卡 里的单价表`
+          ? `模型 ${model} 的单价是负数（${price}），不可能是合法价格——请检查 插件页 → CN-gpt → 配置卡 里的单价表`
           : `模型 ${model} 未计价，无法预估——请先在配置卡里补齐单价`
     return { estimated: null, unitPrice: null, duration: seconds, reason }
   }
@@ -118,7 +118,7 @@ export async function authorizeSpend({
           `⛔ ${reason}。**本次调用未提交、未产生任何费用。**` +
           `未计价模型默认不放行（allowUnpricedSpend=false），且**不接受调用方自报金额**——` +
           `因为"金额算不出来时自己报一个数"本身就不构成任何担保。` +
-          `请二选一：① 让用户在 插件页 → gpt-CN → 配置卡 的单价表里补上该模型 id 的单价（推荐，补完就能正常${noun}）；` +
+          `请二选一：① 让用户在 插件页 → CN-gpt → 配置卡 的单价表里补上该模型 id 的单价（推荐，补完就能正常${noun}）；` +
           `② 用户明确同意"按未知价格${noun}"后，把配置卡里的 allowUnpricedSpend 打开，再重试并带上 confirm_unpriced=true。`,
       }
     }
@@ -144,7 +144,7 @@ export async function authorizeSpend({
       message:
         `⛔ 这次${noun}预估 ¥${estimated.toFixed(2)}（${duration} ${unitLabel} × ¥${unitPrice}/${unitLabel}）` +
         `超过 ${perCallKey}=¥${perCall} 的单次上限，**已在提交前拦下，未产生任何费用**。` +
-        `要放行请让用户在 插件页 → gpt-CN → 配置卡 调大该上限（0 = 不限制）。`,
+        `要放行请让用户在 插件页 → CN-gpt → 配置卡 调大该上限（0 = 不限制）。`,
     }
   }
 
@@ -157,7 +157,7 @@ export async function authorizeSpend({
         `⛔ 本次会话已花 ¥${already.toFixed(2)}，再加这次 ¥${estimated.toFixed(2)} 会超过 ` +
         `${perSessionKey}=¥${perSession} 的**会话累计上限**，**已在提交前拦下，未产生任何费用**。` +
         `这是专门防"反复试、每次都不贵"的烧钱模式（2026-10-15 的事故就是这样烧掉 ¥195.97 的）。` +
-        `要放行请让用户在 插件页 → gpt-CN → 配置卡 调大该上限（0 = 不限制）。`,
+        `要放行请让用户在 插件页 → CN-gpt → 配置卡 调大该上限（0 = 不限制）。`,
     }
   }
 
