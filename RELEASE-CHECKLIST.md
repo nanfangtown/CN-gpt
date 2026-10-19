@@ -15,8 +15,8 @@
 
 ## 2. 仓库设置
 
-- [ ] 推送 `main`（仓库已存在且为空；本机分支已改为 `main`）。
-- [ ] 打开 Actions；确认 `offline-tests` 在 Linux / Windows × Node 20 / 22 全绿。
+- [x] 推送 `main`（2026-10-19，首个 push 已完成）。
+- [x] 打开 Actions；确认 `offline-tests` 在 Linux / Windows × Node 22 / 24 全绿。
 - [ ] Settings → Security：打开 **Private vulnerability reporting** 与 Dependabot alerts。
 - [ ] 保护分支：要求 PR + 至少一次 CI 通过（单人项目可先只要求 CI）。
 
@@ -37,13 +37,15 @@ npm pack --dry-run      # 检查包里只有 index/client/core/tasks/tools/local
 
 ## 4. 版本与发布
 
-- [ ] `package.json` 与 `CHANGELOG.md` 的版本一致（当前 `0.1.1`）。
-- [ ] `git tag v0.1.1 && git push origin main --tags`。
+- [x] `package.json` 与 `CHANGELOG.md` 的版本一致（当前 `0.1.1`）。
+- [x] `v0.1.1` annotated tag 已创建并推送。
 - [ ] 可选：发布 npm（已移除 `private`，`publishConfig.access = public`）：
 
       npm publish --access public
 
 - [ ] 发布后回填 README 的状态行（是否已上 npm）。
+- [ ] 本次首次 push 用了一把 **repo-scoped deploy key**（`.deploy/`，已 gitignore）。
+      推完可在仓库 Settings → Deploy keys 删掉它，并删除本机 `.deploy/`；要保留以后继续推就留着。
 
 ## 5. 已知取舍（发布时如实写进 Release Notes）
 

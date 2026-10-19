@@ -37,9 +37,12 @@
 
 ### Fixed
 
-- CI 首次真实运行必红：`tests/register.mjs` 只去 desktop profile 找真实 schemastery，
-  全新 clone 找不到就按 `DSH_REQUIRE_REAL_SCHEMASTERY=1` 退出；Node 20 也没有
-  `module.registerHooks`。现在优先找仓库自己的 `node_modules`，CI 矩阵改为 Node 22 / 24。
+- CI 首次真实运行暴露的三处问题：`tests/register.mjs` 只去 desktop profile 找真实
+  schemastery（全新 clone 找不到就退出）、Node 20 没有 `module.registerHooks`、
+  `verify-functionality` 依赖历史 commit 而 CI 默认浅克隆。现在优先找仓库自己的
+  `node_modules`，矩阵改为 Node 22 / 24，checkout 用完整历史；失败用例输出 annotation。
+- `isInside` 在 Windows 8.3 短路径（CI 的 `RUNNER~1`）下把"根目录内的新文件"误判成越界：
+  目标不存在时改为对最近存在的祖先做 `realpath`，再拼回剩余段（2026-10-19 真实 CI）。
 - `media_report(action=health, verbose=true)` 的 Markdown 表格被读图路由行与互斥告警打断
   （表格中间插入空行与普通段落，渲染成两截）。
 - 制图此前没有走金额闸门（2026-10-16）：未计价模型也能提交，且不需要确认。
