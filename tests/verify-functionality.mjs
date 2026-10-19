@@ -36,6 +36,10 @@ async function test(name, fn) {
     stats.failed += 1
     console.log('  \u2717 ' + name)
     console.log('    ' + String(error?.stack ?? error).split('\n').slice(0, 5).join('\n    '))
+    if (process.env.GITHUB_ACTIONS === 'true') {
+      const message = String(error?.message ?? error).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')
+      console.log('::error title=' + name.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A') + '::' + message.slice(0, 1000))
+    }
   }
 }
 

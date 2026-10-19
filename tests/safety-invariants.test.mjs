@@ -38,6 +38,12 @@ async function test(name, fn) {
   } catch (error) {
     failed += 1
     console.log('  ✗ ' + name + '\n      ' + String(error?.message ?? error))
+    // CI 里把失败用例打成 annotation：否则日志要登录才能看，公开仓库的失败只剩
+    // "Process completed with exit code 1"，既不能定位也不能当贡献者的反馈。
+    if (process.env.GITHUB_ACTIONS === 'true') {
+      const message = String(error?.message ?? error).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')
+      console.log('::error title=' + name.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A') + '::' + message.slice(0, 1000))
+    }
   }
 }
 

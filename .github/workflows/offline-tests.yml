@@ -26,6 +26,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          # verify-functionality 会 `git show` 一个历史 commit 对比 schema；
+          # 默认浅克隆（fetch-depth: 1）会让它在 CI 里直接失败。
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
