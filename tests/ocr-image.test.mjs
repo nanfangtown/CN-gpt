@@ -13,6 +13,7 @@
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { CODES } from '../core/errors.mjs'
@@ -40,8 +41,17 @@ async function test(name, fn) {
 /** 这台机器能不能真的跑一次 Windows OCR（决定集成用例跑还是跳过）。 */
 function ocrAvailable() {
   if (process.platform !== 'win32') return false
-  const probe = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], { encoding: 'utf8' })
-  return probe.status === 0 && String(probe.stdout ?? '').trim().startsWith('5')
+  // 2026-10-31：CI 的 windows-latest 有 PowerShell 5.1，但不一定有 OCR 语言包。
+  // 只探 PS 版本会让集成用例在没有语言包的机器上假红；这里连引擎一起探。
+  const probe = spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    '$v = $PSVersionTable.PSVersion.Major; if ($v -lt 5) { exit 2 }; ' +
+      '[Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType=WindowsRuntime] | Out-Null; ' +
+      'if ($null -eq [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()) { exit 3 }',
+  ], { encoding: 'utf8' })
+  return probe.status === 0
 }
 
 function makeExec(cwd) {
@@ -125,9 +135,13 @@ await test('正常结果：头部必须写明"未出网"与语言/尺寸（模�
 })
 
 await test('相对路径按会话 cwd 解析；绝对路径原样保留；引号被剥掉', () => {
-  const exec = makeExec('D:\\work\\proj')
-  assert.equal(resolveInputPath('shots\\a.png', exec), 'D:\\work\\proj\\shots\\a.png')
-  assert.equal(resolveInputPath('"D:\\x\\b.png"', exec), 'D:\\x\\b.png')
+  const isWin = process.platform === 'win32'
+  const cwd = isWin ? 'D:\\work\\proj' : '/work/proj'
+  const rel = isWin ? 'shots\\a.png' : 'shots/a.png'
+  const abs = isWin ? 'D:\\x\\b.png' : '/x/b.png'
+  const exec = makeExec(cwd)
+  assert.equal(resolveInputPath(rel, exec), join(cwd, rel))
+  assert.equal(resolveInputPath(`"${abs}"`, exec), abs)
 })
 
 // ---------------------------------------------------------------- 工具行为（不依赖 OCR）
@@ -157,7 +171,7 @@ await test('ocr_image：空参数 → BAD_REQUEST', async () => {
 // ---------------------------------------------------------------- 真实 OCR（Windows）
 
 if (!ocrAvailable()) {
-  console.log('  - SKIP 真实 OCR 用例：本机不是 Windows 或没有 Windows PowerShell 5.1')
+  console.log('  - SKIP 真实 OCR 用例：本机不是 Windows、没有 Windows PowerShell 5.1，或没有可用的 OCR 语言包')
 } else {
   await test('真实 OCR：中文界面截图（不再逐字带空格）', async () => {
     const raw = await runWindowsOcr({ imagePath: fixture('screenshot-zh.png'), language: '' })
