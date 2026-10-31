@@ -47,6 +47,20 @@ jobs:
           echo "tag=$GITHUB_REF_NAME  package=$want"
           test "$GITHUB_REF_NAME" = "$want"
 
+      # 先确认 token 真的在：没配 secret 时 npm 会在 26 秒测试之后才报 ENEEDAUTH，
+      # 那个错误还很难懂。这里 2 秒就把话说清楚（只打印长度，不打印内容）。
+      - name: Token preflight
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::NPM_TOKEN 为空：仓库 Settings → Secrets and variables → Actions 里没有这个 secret，或名字不是 NPM_TOKEN。"
+            exit 1
+          fi
+          echo "token 长度：${#NODE_AUTH_TOKEN}"
+          npm --version
+          npm whoami
+
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
