@@ -75,6 +75,18 @@ jobs:
           DSH_REQUIRE_REAL_SCHEMASTERY: '1'
         run: node --import ./tests/register.mjs ./tests/video-gen.test.mjs
 
+      # 本地 OCR（Windows 自带引擎；非 Windows 只跑单元用例，真实 OCR 跳过）
+      - name: Local OCR suite
+        env:
+          DSH_REQUIRE_REAL_SCHEMASTERY: '1'
+        run: node --import ./tests/register.mjs ./tests/ocr-image.test.mjs
+
+      # MiniMax 视频：适配器契约（base_resp / file_id / 按条计价）+ 工具层闸门与记账
+      - name: MiniMax video suite
+        env:
+          DSH_REQUIRE_REAL_SCHEMASTERY: '1'
+        run: node tests/minimax-video.test.mjs && node --import ./tests/register.mjs ./tests/minimax-video-tool.test.mjs
+
       # 每请求固定成本（工具 schema + 提示词段落）
       - name: Request-size report
         env:

@@ -1,7 +1,7 @@
 {
   "name": "dsh-mm-models",
-  "version": "0.1.1",
-  "description": "DeepSeek 主脑 + GLM/Qwen 读图 / Qwen 制图 / Seedance·可灵·万相 出片：把外部多模态能力做成与 bash 同级的顶级工具，共用异步任务层、多 key 管理与成本闸门。",
+  "version": "0.2.0",
+  "description": "DeepSeek 主脑 + GLM/Qwen 读图 / Qwen 制图 / Seedance·可灵·万相·MiniMax 出片：把外部多模态能力做成与 bash 同级的顶级工具，共用异步任务层、多 key 管理与成本闸门。",
   "type": "module",
   "license": "MIT",
   "author": "dsh-mm-models contributors",
@@ -22,6 +22,8 @@
     "qwen-vl",
     "image-generation",
     "video-generation",
+    "minimax",
+    "hailuo",
     "dashscope",
     "bailian",
     "zhipu",
@@ -63,15 +65,17 @@
     "@deepseek-ai/schemastery": "^3.18.0"
   },
   "scripts": {
-    "test": "node --import ./tests/register.mjs ./tests/run.mjs && node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs && node tests/client-card.test.mjs && node tests/_card-mutex.test.mjs && node --import ./tests/register.mjs ./tests/verify-functionality.mjs && node --import ./tests/register.mjs ./tests/video-gen.test.mjs",
+    "test": "node --import ./tests/register.mjs ./tests/run.mjs && node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs && node tests/client-card.test.mjs && node tests/_card-mutex.test.mjs && node --import ./tests/register.mjs ./tests/verify-functionality.mjs && node --import ./tests/register.mjs ./tests/video-gen.test.mjs && node --import ./tests/register.mjs ./tests/ocr-image.test.mjs && node tests/minimax-video.test.mjs && node --import ./tests/register.mjs ./tests/minimax-video-tool.test.mjs",
     "test:video": "node --import ./tests/register.mjs ./tests/video-gen.test.mjs",
+    "test:minimax": "node tests/minimax-video.test.mjs && node --import ./tests/register.mjs ./tests/minimax-video-tool.test.mjs",
     "test:safety": "node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs",
     "test:verify": "node --import ./tests/register.mjs ./tests/verify-functionality.mjs",
     "test:mutation": "node tests/_mutation-check.mjs",
     "test:perf": "node --import ./tests/register.mjs ./tests/_perf-bench.mjs",
     "test:sizes": "node --import ./tests/register.mjs ./tests/size-report.mjs",
     "test:docs": "node tests/check-doc-links.mjs",
-    "probe:video": "node tests/probe-dashscope-video.mjs"
+    "probe:video": "node tests/probe-dashscope-video.mjs",
+    "test:ocr": "node --import ./tests/register.mjs ./tests/ocr-image.test.mjs"
   },
   "meta": {
     "title": "CN-gpt（读图 / 制图 / 出片）",

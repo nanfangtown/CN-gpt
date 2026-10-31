@@ -232,8 +232,9 @@ assert.equal(mutations[0].revision, 7, 'save should pin the staged baseline revi
 assert.equal(
   JSON.stringify(mutations[0].ops),
   JSON.stringify([
-    { op: 'set', path: ['enableSeedanceVideo'], value: true },
+    // 出片开关属于互斥组，保存时排到普通字段之后（末次写入生效；这里没有同组竞争，顺序不影响结果）。
     { op: 'set', path: ['qwenModel'], value: 'qwen-image-2.1-pro' },
+    { op: 'set', path: ['enableSeedanceVideo'], value: true },
   ]),
 )
 state = props.hooks.mmModels.getSnapshot()
@@ -262,7 +263,7 @@ props.discard()
 credentialStore.set('DASHSCOPE_API_KEY', { value: 'sk-x', source: 'environment' })
 credentialStore.set('ZHIPU_API_KEY', { value: 'z', source: 'store' })
 
-// ---- 渲染：summary 不画，页面有 5 个开关 + 保存按钮 ----
+// ---- 渲染：summary 不画，页面有 18 个开关 + 保存按钮 ----
 assert.equal(component({ view: 'summary', t: (key) => key }), null)
 const pageProps = {
   view: 'page',
@@ -289,10 +290,10 @@ const walk = (node) => {
 }
 walk(tree)
 const switches = flat.filter((node) => node.type === 'button' && node.props?.role === 'switch')
-// 17 个布尔开关：7 个 enable* + blockMainAgentNativeVision + blockSubagentNativeVision
+// 19 个布尔开关：9 个 enable*（2026-10-30 加了 ocr_image）+ blockMainAgentNativeVision + blockSubagentNativeVision
 // + blockSubagentVideoSpend + attachResultImages + cacheResults + persistTasks + requireSpendConfirm + 3 个 misc
-assert.equal(switches.length, 17, 'seventeen boolean switches rendered')
-assert.equal(switches.filter((node) => String(node.props['aria-label']).includes('field.enable')).length, 7, 'seven enable* tool switches (ask_glm + ask_qwen + draw + seedance + bailian video + task + report)')
+assert.equal(switches.length, 19, 'nineteen boolean switches rendered')
+assert.equal(switches.filter((node) => String(node.props['aria-label']).includes('field.enable')).length, 9, 'nine enable* tool switches (+ ocr_image)')
 assert.ok(
   switches.some((node) => String(node.props['aria-label']).includes('field.enableAskQwen')),
   'ask_qwen switch rendered next to ask_glm',
@@ -323,12 +324,12 @@ const rerenderTree = () => {
   return nodes
 }
 
-// 密钥行：三把 key 各一，走官方凭据服务（值不回显，凭服务不提供）
+// 密钥行：四把 key 各一，走官方凭据服务（值不回显，凭服务不提供）
 const mutationsBeforeKeys = mutations.length
 const secretInputs = flat.filter((node) => node.type === "input" && node.props?.type === "password")
-assert.equal(secretInputs.length, 3, "应渲染 3 个密钥输入框（实际 " + secretInputs.length + " 个）")
+assert.equal(secretInputs.length, 4, "应渲染 4 个密钥输入框（实际 " + secretInputs.length + " 个）")
 const secretLabels = secretInputs.map((node) => String(node.props["aria-label"]))
-for (const expected of ["key.dashscope", "key.ark", "key.zhipu"]) {
+for (const expected of ["key.dashscope", "key.ark", "key.zhipu", "key.minimax"]) {
   assert.ok(secretLabels.some((label) => label.includes(expected)), "缺少密钥行：" + expected)
 }
 for (const input of secretInputs) {
@@ -348,7 +349,7 @@ const textOf = (node) => (Array.isArray(node.children) ? node.children.flat(Infi
 // describe 的 Promise 在上面已 await；重新渲染以取到"已配置"状态的那一版树。
 const afterDescribe = rerenderTree()
 const credentialBadges = afterDescribe.filter((node) => /T:key.(set|unset)/.test(textOf(node)))
-assert.equal(credentialBadges.length, 3, "三把 key 各有一个配置状态徽标（实际 " + credentialBadges.length + " 个）")
+assert.equal(credentialBadges.length, 4, "四把 key 各有一个配置状态徽标（实际 " + credentialBadges.length + " 个）")
 // 状态必须来自 describe：DashScope 来自环境层、Zhipu 来自凭据文件、Ark 未配置
 const badgeTexts = credentialBadges.map(textOf)
 assert.ok(badgeTexts.some((text) => text.includes("T:key.set") && text.includes("T:key.sourceEnv")), "应显示 来自环境变量：" + JSON.stringify(badgeTexts))
@@ -439,11 +440,11 @@ const buttons = flat.filter((node) => node.type === 'button').map((node) => (nod
 assert.ok(buttons.some((label) => label.includes('T:save')), 'save button rendered')
 assert.ok(flat.some((node) => node.type === 'p' && String(node.children ?? '').includes('T:note')), 'note rendered')
 
-// 官方获取入口：四把 key 各一个外链（方舟额外多一个"开通模型"入口，共 5 个），且必须带安全属性
+// 官方获取入口：五把 key 各一个外链（方舟额外多一个"开通模型"入口，共 6 个），且必须带安全属性
 const anchors = flat.filter((node) => node.type === 'a')
-assert.equal(anchors.length, 5, '应渲染 5 个外链（4 个 key 入口 + 1 个方舟开通入口），实际 ' + anchors.length + ' 个')
+assert.equal(anchors.length, 6, '应渲染 6 个外链（5 个 key 入口 + 1 个方舟开通入口），实际 ' + anchors.length + ' 个')
 const hrefs = anchors.map((node) => String(node.props?.href ?? ''))
-for (const expected of ['alibabacloud.com', 'docs.volcengine.com', 'docs.bigmodel.cn', 'platform.deepseek.com']) {
+for (const expected of ['alibabacloud.com', 'docs.volcengine.com', 'docs.bigmodel.cn', 'platform.deepseek.com', 'platform.minimax.cn']) {
   assert.ok(
     hrefs.some((href) => href.includes(expected)),
     '缺少入口链接：' + expected + '（实际 ' + JSON.stringify(hrefs) + '）',

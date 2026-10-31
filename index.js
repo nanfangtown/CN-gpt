@@ -2,16 +2,21 @@
  * dsh-mm-models —— DeepSeek 主脑 + GLM 读图 / Qwen 制图 / Seedance 出片。
  *
  * 规划：dsh-创作模式插件-规划.txt v0.7。
- * 本文件 = Config + 注册 7 个工具 + 提示词段落（无 persona、无前端）。
+ * 本文件 = Config + 注册 10 个工具 + 提示词段落（无 persona、无前端）。
  *
  * 顶层工具（与 bash / ops_* 同级）：
  *   ask_glm        读图员（GLM-4.6V；2026-10-17 起由本插件自己注册，见 tools/reader.mjs）
  *   ask_qwen       读图员（百炼 Qwen-VL；与 ask_glm 互斥，二选一）
+ *   ocr_image      本地 OCR（Windows 自带引擎；2026-10-30 加：纯文字截图不走读图员）
  *   qwen_draw      DashScope 异步文生图
  *   seedance_video 方舟 Ark 异步文生 / 图生视频
  *   video_gen      百炼异步出片（可灵 v3 / 万相 2.5，复用 DASHSCOPE_API_KEY）
+ *   minimax_video  MiniMax（海螺）异步文生 / 图生 / 首尾帧视频
  *   media_task     异步任务重查 / 补下载
  *   media_report   成本估算 + 链路健康
+ *
+ * 出片三工具互斥：同一时刻只允许一个开启（设置卡打开一个会自动关闭另外两个；
+ * 手改配置同时开多个时按 MUTEX_GROUPS 的声明顺序取第一个）。
  */
 import z from '@deepseek-ai/schemastery'
 
@@ -19,12 +24,15 @@ import { createTaskManager } from './tasks/manager.mjs'
 import { dashscopeImageAdapter } from './tasks/adapters/dashscope-image.mjs'
 import { arkVideoAdapter } from './tasks/adapters/ark-video.mjs'
 import { dashscopeVideoAdapter } from './tasks/adapters/dashscope-video.mjs'
+import { minimaxVideoAdapter, MINIMAX_DEFAULT_BASE, MINIMAX_DEFAULT_MODEL } from './tasks/adapters/minimax-video.mjs'
 import { createQwenDrawTool } from './tools/qwen-draw.mjs'
 import { createSeedanceVideoTool } from './tools/seedance-video.mjs'
 import { createVideoGenTool } from './tools/video-gen.mjs'
+import { createMinimaxVideoTool } from './tools/minimax-video.mjs'
 import { createMediaTaskTool } from './tools/media-task.mjs'
 import { createMediaReportTool } from './tools/media-report.mjs'
 import { createReaderTools } from './tools/reader.mjs'
+import { createOcrImageTool } from './tools/ocr-image.mjs'
 import { createDelegationTools } from './tools/delegation.mjs'
 import { createKeyResolver } from './core/keys.mjs'
 import { createReaderUsageMeter } from './core/reader-usage.mjs'
@@ -77,18 +85,24 @@ const PROMPT_FIXED = {
  * "没有看图途径"，或反过来被告知"走 ask_glm"但读图员已关）。
  *
  * @param {boolean} nativeBlocked - 主代理原生读图是否被屏蔽（blockMainAgentNativeVision）。
+ * @param {boolean} [ocrEnabled] - ocr_image 是否开着（默认 true，兼容旧调用）。
  * @returns {string} 段落文本。
  */
-function buildDivisionSection(nativeBlocked) {
+function buildDivisionSection(nativeBlocked, ocrEnabled = true) {
+  const ocrLine = ocrEnabled
+    ? (nativeBlocked
+      ? '【文字图】纯文字截图先用 ocr_image（本地、免费、不出网）；图表、排版、画面、照片走读图员。'
+      : '【文字图】纯文字截图用 ocr_image 更快更保真（本地、免费、不出网）；图表、排版、画面、照片用原生读图或读图员。')
+    : undefined
   const routing = nativeBlocked
     ? '【读图路由】主代理原生读图已屏蔽：图像识别/分析/审查一律走 ask_glm 或 ask_qwen（把图片路径交给它）；两个都关才如实说"没有看图途径"，不要猜图。'
     : '【读图路由】优先用原生 read_image 做细节审读；原生被屏蔽/不支持，或要批量省钱时走**已开启的** ask_glm / ask_qwen（把图片路径交给它）；两者都不可用就如实说"没有看图途径"，不要猜图。'
-  return [PROMPT_FIXED.division, routing, PROMPT_FIXED.delegate].join('\n')
+  return [PROMPT_FIXED.division, routing, ocrLine, PROMPT_FIXED.delegate].filter((line) => line !== undefined).join('\n')
 }
 
-/** 插件配置：三把 key、端点与型号、任务层、成本、落盘、开关。 */
+/** 插件配置：四把 key、端点与型号、任务层、成本、落盘、开关。 */
 export const Config = z.object({
-  // ---- 三把 key ----
+  // ---- 四把 key ----
   //
   // 密钥字面值：配置卡里能看见、能改（2026-10-13 按使用要求恢复）。
   // ⚠ 代价如实说明：值会**明文落进 profile 配置**（`cordis.patch.yml`），会被备份、也可能进仓库。
@@ -130,6 +144,18 @@ export const Config = z.object({
     .default('ZHIPU_API_KEY')
     .volatile()
     .description('ZHIPU_API_KEY 的引用名：与 设置 → 模型 → GLM 行 使用同一个 key。'),
+  minimaxApiKey: z
+    .string()
+    .role('secret')
+    .default('')
+    .volatile()
+    .description('MiniMax（海螺）API Key 字面值（配置卡里可看可改）。⚠ 明文落进 profile 配置，别提交到仓库；留空则回退下面的引用名 / ~/.dsh/.env。'),
+  minimaxApiKeyEnv: z
+    .string()
+    .role('credential-ref')
+    .default('MINIMAX_API_KEY')
+    .volatile()
+    .description('MINIMAX_API_KEY 的引用名：真值放 %USERPROFILE%/.dsh/.env 或系统环境变量。国内 .cn 与国际 .io 的 key 不通用。'),
 
   // ---- 端点与型号 ----
   dashscopeBase: z.string().default('https://dashscope.aliyuncs.com/api/v1').volatile().description('DashScope API 基址（异步任务）。'),
@@ -173,6 +199,20 @@ export const Config = z.object({
   //   doubao-seedance-2-0-fast-260128       4–15 秒   中档（约 0.998 元/秒）
   //   doubao-seedance-1-0-pro-fast-251015   2–12 秒   最便宜（约 0.206 元/秒）
   seedanceModel: z.string().default('doubao-seedance-2-5-260628').volatile().description('seedance_video 使用的模型 id 或接入点 id（ep-xxxx）。默认最强的 doubao-seedance-2-5-260628（约 1.519 元/秒，单段最长 30 秒）；更省可换 doubao-seedance-2-0-fast-260128（约 0.998 元/秒）或 doubao-seedance-1-0-pro-fast-251015（约 0.206 元/秒）。'),
+  // ---- MiniMax（海螺）出片：端点与型号 ----
+  //
+  // ⚠ 区域：国内 api.minimax.cn / 国际 api.minimax.io，**两边的 key 不通用**。
+  //   旧域名 api.minimaxi.com 仍可用，但新文档不再列。默认国内 .cn。
+  minimaxBase: z
+    .string()
+    .default(MINIMAX_DEFAULT_BASE)
+    .volatile()
+    .description('MiniMax API 基址：国内 https://api.minimax.cn，国际 https://api.minimax.io（key 必须与区域匹配，混用会报 Invalid API key）。'),
+  minimaxModel: z
+    .string()
+    .default(MINIMAX_DEFAULT_MODEL)
+    .volatile()
+    .description('minimax_video 默认模型 id。可选：MiniMax-Hailuo-02（支持首尾帧，512P/768P/1080P，¥0.6–4/条）、MiniMax-Hailuo-2.3（¥2–4/条）、MiniMax-Hailuo-2.3-Fast（仅图生，¥1.35–2.31/条）。⚠ 换 id 必须同步存在于单价表，否则闸门 fail-closed。'),
 
   // ---- 任务层 ----
   //
@@ -282,7 +322,7 @@ export const Config = z.object({
     .boolean()
     .default(false)
     .volatile()
-    .description('禁止**子代理**调用生成类工具（qwen_draw / seedance_video / video_gen）。'
+    .description('禁止**子代理**调用生成类工具（qwen_draw / seedance_video / video_gen / minimax_video）。'
       + '默认 false = 允许（繁重任务里让子代理直接出图，效率优先；代价是它的花费记在自己会话上，'
       + '主代理的 cost(session) 现在会连会话树一起汇总）。'
       + '设 true = 子代理只能把生成需求回报给主代理，由主代理统一编排 —— 适合无人值守跑重活时收紧。'),
@@ -299,7 +339,7 @@ export const Config = z.object({
     .boolean()
     .default(false)
     .volatile()
-    .description('禁止**子代理**调用出片工具（seedance_video / video_gen），但**不禁止出图**（qwen_draw）与读图（ask_glm / ask_qwen）。'
+    .description('禁止**子代理**调用出片工具（seedance_video / video_gen / minimax_video），但**不禁止出图**（qwen_draw）与读图（ask_glm / ask_qwen）。'
       + '默认 false = 允许子代理出片。设 true = 子代理只能把出片需求回报给主代理；图片生成与看图照旧可用。'
       + '与 blockSubagentSpend 是或关系（后者连出图一起挡）。'),
 
@@ -324,7 +364,7 @@ export const Config = z.object({
   readerGlmProvider: z.string().default('glm').volatile().description('ask_glm 的子代理路由 provider（llm-pi-ai 里配置的名字）。'),
   readerGlmModel: z.string().default('glm-5.3-flash').volatile().description('ask_glm 使用的模型 id（必须在 providers.glm.models 白名单里）。'),
   readerQwenProvider: z.string().default('qwen-vl').volatile().description('ask_qwen 的子代理路由 provider（llm-pi-ai 里配置的名字）。'),
-  readerQwenModel: z.string().default('qwen3-vl-plus').volatile().description('ask_qwen 使用的模型 id（必须在 providers.qwen-vl.models 白名单里）。'),
+  readerQwenModel: z.string().default('qwen3.8-max').volatile().description('ask_qwen 使用的模型 id（必须在 providers.qwen-vl.models 白名单里）。'),
   readerAgentPreset: z.string().default('mm-reader').volatile().description('读图员子代理的 agent preset id（persona + 只有 read_image 的工具面）。'),
   readerMaxDepth: z.number().step(1).min(1).max(9).default(2).volatile().description('读图员的绝对委派深度上限，默认 2（= 已委派的子代理也能调它，否则会报 "subagent depth 2 exceeds maxDepth 1"）。'),
 
@@ -366,12 +406,31 @@ export const Config = z.object({
       + '**默认开启**（与主代理一致：全家都走读图员）；想让子代理自己看图就关掉它和 blockMainAgentNativeVision。'
       + '⚠ 打开前请确认：① 读图员开着；② readerMaxDepth ≥ 2（否则子代理调不动读图员，会彻底失去看图途径）。'
       + '读图员的判定取自 Config 的 reader* 路由；认不出读图员时本开关对子代理不生效并告警。'),
+
+  // ---- 本地 OCR（2026-10-30 加）----
+  //
+  // 为什么：读图员是"视觉理解"通道，但日常读图的大头是**纯文字截图**（报错、日志、
+  // 代码、表格、聊天记录）。这类图派一次子代理要两跳模型调用，而 OCR 更便宜、
+  // 更保真（不会意译、不会漏列），而且截图里的 key / 订单号**不出网**。
+  // 它不替代读图员：图表读数、排版、画面内容仍然只有视觉模型能答。
+  // 用 Windows 自带引擎（Windows.Media.Ocr），所以不需要装 tesseract / Python。
+  enableOcrImage: z.boolean().default(true).volatile().description('允许 ocr_image（本地 OCR：把纯文字截图抄成文本，免费、离线、图片不出网）。与读图员**不互斥**：文字图走它，图表/排版/画面走读图员。默认开启。'),
+  ocrLanguage: z.string().default('').volatile().description('ocr_image 的默认语言：留空 / auto = 按内容自动在中文与英文引擎间选择（中文引擎会把 ASCII 标识符认成"Fi1e"这类形近字，所以纯代码图会自动切英文）；也可填 zh-Hans / en-US 强制指定。'),
+  ocrTimeoutMs: z.number().step(1000).min(1000).max(120000).default(20000).volatile().description('ocr_image 的单次超时（毫秒）。本地 OCR 通常 0.3–1.5 秒；超时只影响本次调用，不产生任何费用。'),
+  ocrMaxChars: z.number().step(1000).min(1000).max(100000).default(12000).volatile().description('ocr_image 返回文本的字数上限（超出截断并注明）。工具结果会留在会话里、之后每轮重发，所以默认不返回整本书。'),
+  ocrMaxBytes: z.number().step(1048576).min(1048576).max(209715200).default(20971520).volatile().description('ocr_image 接受的图片字节上限（默认 20 MiB）。超过就先压缩，避免把大图整个读进内存。'),
+
   enableSeedanceVideo: z.boolean().default(false).volatile().description('允许主 agent 使用 seedance_video（Seedance 出片）。默认关闭：Ark 未开通/门槛较高，接通后在设置里一键打开。'),
   enableVideoGen: z
     .boolean()
     .default(false)
     .volatile()
-    .description('允许主 agent 使用 video_gen（百炼出片：可灵 v3 / 万相 2.5）。默认关闭：复用 DASHSCOPE_API_KEY，但需要先填业务空间 ID 并在百炼控制台开通可灵模型，接通后一键打开。'),
+    .description('允许主 agent 使用 video_gen（百炼出片：可灵 v3 / 万相 2.5）。默认关闭：复用 DASHSCOPE_API_KEY，但需要先填业务空间 ID 并在百炼控制台开通可灵模型，接通后一键打开。与 seedance_video / minimax_video 互斥：同一时刻只允许一个出片工具开启。'),
+  enableMinimaxVideo: z
+    .boolean()
+    .default(false)
+    .volatile()
+    .description('允许主 agent 使用 minimax_video（MiniMax 海螺出片）。默认关闭：需要独立的 MINIMAX_API_KEY（国内 .cn / 国际 .io 不通用）。与 seedance_video / video_gen 互斥：同一时刻只允许一个出片工具开启。'),
   enableMediaTask: z.boolean().default(true).volatile().description('允许主 agent 使用 media_task（异步任务重查/补下载）。'),
   enableMediaReport: z.boolean().default(true).volatile().description('允许主 agent 使用 media_report（成本估算/链路健康）。'),
 
@@ -416,7 +475,7 @@ export function apply(ctx, config) {
       return value !== null && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value
     },
   })
-  const adapters = [dashscopeImageAdapter, arkVideoAdapter, dashscopeVideoAdapter]
+  const adapters = [dashscopeImageAdapter, arkVideoAdapter, dashscopeVideoAdapter, minimaxVideoAdapter]
   const manager = createTaskManager({ adapters, config: liveConfig, logger })
   // 注意：必须传 liveConfig（解包过的 Proxy），不能传原始 config。
   // volatile 字段在 config 上是**引用对象**（`{ get() }`），keys.mjs 里用的是
@@ -849,6 +908,8 @@ export function apply(ctx, config) {
         ? '看图请改用读图子代理：' + readers.join(' 或 ') + '，把图片路径交给它。'
         : '当前也没有可用的读图子代理，所以你现在没有任何看图途径；' +
           '请让用户在 插件页 → ' + PLUGIN_LABEL + ' → 配置卡 里打开 ask_glm 或 ask_qwen，然后让用户确认图片内容。') +
+      // 2026-10-30：纯文字截图有第三条路，别把模型推去派子代理。
+      (switches.isEnabled('ocr_image') ? '纯文字截图（日志 / 代码 / 报错 / 表格）可以先用 ocr_image 本地抄字（免费、不出网）。' : '') +
       '不要靠猜图片内容。'
     )
   })
@@ -899,6 +960,8 @@ export function apply(ctx, config) {
         ? '看图请改用读图子代理：' + readers.join(' 或 ') + '，把图片路径交给它。'
         : '当前也没有可用的读图子代理（原生读图被屏蔽、读图员都没开），所以你现在没有任何看图途径；' +
           '请让用户在 插件页 → ' + PLUGIN_LABEL + ' → 配置卡 里打开 ask_glm 或 ask_qwen，然后让用户确认图片内容。') +
+      // 2026-10-30：本地 OCR 能直接处理纯文字截图，费用更低、图片不出网。
+      (switches.isEnabled('ocr_image') ? '纯文字截图（日志 / 代码 / 报错 / 表格）可以先用 ocr_image 本地抄字（免费、不出网）。' : '') +
       '不要用 read 重试这个路径，也不要靠猜图片内容。'
     )
   })
@@ -1008,9 +1071,9 @@ export function apply(ctx, config) {
   // ⚠ 2026-10-17 复查修：新加的 `video_gen` 一开始**漏在这张表外面** ——
   // 打开刹车后子代理仍能出片，而它单次最高 ¥10（4K/1080P），比制图贵一个量级。
   // 新增付费工具时这张表必须同步，否则"刹车"只刹住了便宜的那个。
-  const SPEND_TOOLS = ['qwen_draw', 'seedance_video', 'video_gen']
+  const SPEND_TOOLS = ['qwen_draw', 'seedance_video', 'video_gen', 'minimax_video']
   /** 只出片、不出图的那一档（分级刹车：图 ¥0.18/张，片 ¥1.8–10/次）。 */
-  const VIDEO_SPEND_TOOLS = ['seedance_video', 'video_gen']
+  const VIDEO_SPEND_TOOLS = ['seedance_video', 'video_gen', 'minimax_video']
   ctx.tools.guard((exec) => {
     if (typeof exec?.name !== 'string' || !SPEND_TOOLS.includes(exec.name)) return undefined
     if (!isSubagent(exec?.agent)) return undefined // 主代理永远可以
@@ -1204,11 +1267,15 @@ export function apply(ctx, config) {
   ctx.tools.register(createQwenDrawTool(deps))
   ctx.tools.register(createSeedanceVideoTool(deps))
   ctx.tools.register(createVideoGenTool(deps))
+  ctx.tools.register(createMinimaxVideoTool(deps))
   ctx.tools.register(createMediaTaskTool(deps))
   ctx.tools.register(createMediaReportTool(deps))
   // 读图员（2026-10-17 起由插件自己注册）：描述与 schema 完全可控，
   // 不再依赖 tool-subagent 行那段"和 subagent 逐字相同"的通用文案。
   for (const definition of createReaderTools(deps)) ctx.tools.register(definition)
+  // 本地 OCR（2026-10-30 加）：纯文字截图不再派子代理，在本机直接抄字。
+  // 与读图员是**互补**关系，不进 MUTEX_GROUPS。
+  ctx.tools.register(createOcrImageTool(deps))
   // 窄委派（2026-10-18 起同样由插件自己注册）：`agentPreset` 改为**调用时**解析，
   // 不再在装配期查 preset 表 —— 热重载时 preset 尚未 register 的窗口不会再把工具打挂。
   for (const definition of createDelegationTools(deps)) ctx.tools.register(definition)
@@ -1240,7 +1307,7 @@ export function apply(ctx, config) {
       name: 'mm-models:division',
       order: 210,
       // 读图路由按当前策略生成（block 开关改了要重启才生效，与它"限制在 agent 创建时"的语义一致）。
-      text: buildDivisionSection(liveConfig?.blockMainAgentNativeVision === true),
+      text: buildDivisionSection(liveConfig?.blockMainAgentNativeVision === true, switches.isEnabled('ocr_image')),
     })
   }
 
@@ -1309,5 +1376,5 @@ export function apply(ctx, config) {
     }
   }
 
-  logger?.info?.('[mm-models] 已注册 ask_glm / ask_qwen / qwen_draw / seedance_video / video_gen / media_task / media_report（两个读图员互斥）')
+  logger?.info?.('[mm-models] 已注册 ask_glm / ask_qwen / ocr_image / qwen_draw / seedance_video / video_gen / minimax_video / media_task / media_report（两个读图员互斥；三个出片工具互斥；ocr_image 与读图员互补）')
 }

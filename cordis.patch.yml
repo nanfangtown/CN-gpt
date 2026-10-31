@@ -6,7 +6,8 @@
 #   行1  llm-pi-ai（覆盖配置）：providers.glm / providers.qwen-vl → 读图路由
 #   行2  mm-models（自研）：ask_glm / ask_qwen（读图员）+ subagent_code /
 #        subagent_research（窄委派）+ qwen_draw / seedance_video / video_gen /
-#        media_task / media_report；子代理的 persona 与工具面在三个 preset-mm-* 里。
+#        minimax_video / media_task / media_report；子代理的 persona 与工具面在三个 preset-mm-* 里。
+#        三个出片工具互斥：同一时刻只允许一个开启（见下方开关段）。
 #
 # ⚠ 四个子代理工具**都不再由 tool-subagent 行提供**：
 #   - 读图员（2026-10-17）：那条路的 Config 没有 description，工具描述被拼死成与
@@ -60,6 +61,12 @@
         api: openai-completions
         baseURL: https://dashscope.aliyuncs.com/compatible-mode/v1
         models:
+          # 2026-10-31：qwen3.8-max 实测支持图像输入，文本逐字与场景事实均优于
+          # qwen3-vl-plus；保留旧 id 作回退。
+          - id: qwen3.8-max
+            input: [text, image]
+            contextWindow: 1000000
+            maxTokens: 32768
           - id: qwen3-vl-plus
             input: [text, image]
             contextWindow: 131072
@@ -93,8 +100,9 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: >-
-                你是视觉阅读员：只把图片、截图、图表、界面里的文字与结构转述成结论。
+                你是视觉阅读员：把图片、截图、图表、界面里的内容进行转述。
                 不臆测、不补全看不见的内容；看不清就明确说看不清。
+                区分"看到的"与"推断的"：推断要标明，不要把推断写成事实。
                 除图片之外的一切请求（读代码、翻目录、查配置、跑命令）都超出你的能力：
                 直接回答"这需要主代理处理"，不要尝试、不要重试。
                 输出尽量短：先给结论，再给支撑细节。
@@ -221,13 +229,15 @@
     - id: mm-models
       name: 'dsh-mm-models'
       config:
-        # 三把 key：secret 字面值（null = 未设置）优先于 credential-ref 引用
+        # 四把 key：secret 字面值（null = 未设置）优先于 credential-ref 引用
         dashscopeApiKey: null
         dashscopeApiKeyEnv: DASHSCOPE_API_KEY
         arkApiKey: null
         arkApiKeyEnv: ARK_API_KEY
         zhipuApiKey: null
         zhipuApiKeyEnv: ZHIPU_API_KEY
+        minimaxApiKey: null
+        minimaxApiKeyEnv: MINIMAX_API_KEY
         # 端点与型号
         dashscopeBase: https://dashscope.aliyuncs.com/api/v1
         dashscopeCompatBase: https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -246,6 +256,9 @@
         #   曾写 'seedance-2.0'（别名）→ 单价表查不到新模型 id 的价 → 闸门 fail-closed、
         #   出片彻底不可用且没有任何告警。换 id 时**必须同步改 pricing 的 key**。
         seedanceModel: doubao-seedance-2-5-260628
+        # MiniMax（海螺）：国内 .cn / 国际 .io 的 key 不通用；旧域名 api.minimaxi.com 仍可用。
+        minimaxBase: https://api.minimax.cn
+        minimaxModel: MiniMax-Hailuo-02
         # 任务层（这几个"等待上限"是同步阻塞的，按"够用但早失败"定：超时可用 media_task 找回）
         taskTimeoutMs: 180000
         videoTimeoutMs: 900000
@@ -375,6 +388,40 @@
               - { mode: pro, audio: false, unitPrice: 1 }
               - { mode: pro, audio: true, unitPrice: 1 }
             source: https://help.aliyun.com/zh/model-studio/wan2-5-t2v
+          # ---- MiniMax（海螺）视频（2026-10-20）：按条计价（分辨率 × 时长）----
+          # unitPrice 只是兜底展示价；真实取价走 tiers，未命中的档位一律 fail-closed。
+          MiniMax-Hailuo-02:
+            unit: call
+            unitPrice: 2
+            currency: CNY
+            asOf: 2026-10-20
+            tiers:
+              - { resolution: 512P, duration: 6, unitPrice: 0.6 }
+              - { resolution: 512P, duration: 10, unitPrice: 1 }
+              - { resolution: 768P, duration: 6, unitPrice: 2 }
+              - { resolution: 768P, duration: 10, unitPrice: 4 }
+              - { resolution: 1080P, duration: 6, unitPrice: 3.5 }
+            source: https://platform.minimax.cn/docs/pricing/overview.md
+          MiniMax-Hailuo-2.3:
+            unit: call
+            unitPrice: 2
+            currency: CNY
+            asOf: 2026-10-20
+            tiers:
+              - { resolution: 768P, duration: 6, unitPrice: 2 }
+              - { resolution: 768P, duration: 10, unitPrice: 4 }
+              - { resolution: 1080P, duration: 6, unitPrice: 3.5 }
+            source: https://platform.minimax.cn/docs/pricing/overview.md
+          MiniMax-Hailuo-2.3-Fast:
+            unit: call
+            unitPrice: 1.35
+            currency: CNY
+            asOf: 2026-10-20
+            tiers:
+              - { resolution: 768P, duration: 6, unitPrice: 1.35 }
+              - { resolution: 768P, duration: 10, unitPrice: 2.25 }
+              - { resolution: 1080P, duration: 6, unitPrice: 2.31 }
+            source: https://platform.minimax.cn/docs/pricing/overview.md
           glm-4.6v:
             unit: ktoken
             inputPrice: null
@@ -382,6 +429,13 @@
             currency: CNY
             asOf: 2026-10-13
             source: https://bigmodel.cn/pricing
+          qwen3.8-max:
+            unit: ktoken
+            inputPrice: null
+            outputPrice: null
+            currency: CNY
+            asOf: 2026-10-31
+            source: https://help.aliyun.com/zh/model-studio/model-pricing
           qwen3-vl-plus:
             unit: ktoken
             inputPrice: null
@@ -407,7 +461,7 @@
         readerGlmProvider: glm
         readerGlmModel: glm-5.3-flash
         readerQwenProvider: qwen-vl
-        readerQwenModel: qwen3-vl-plus
+        readerQwenModel: qwen3.8-max
         readerAgentPreset: mm-reader
         readerMaxDepth: 2
         # 窄委派（2026-10-18：同样由插件自己注册，preset 在调用时才解析）。
@@ -426,11 +480,26 @@
         # ⚠ 前提：读图员开着，且 readerMaxDepth ≥ 2（本文件已是 2），否则子代理会失去看图途径。
         # 读图员豁免名单取自 Config 的 reader* 路由；认不出读图员时本开关对子代理不生效。
         blockSubagentNativeVision: true
+        # ---- 本地 OCR（2026-10-30 加）----
+        # 纯文字截图（报错 / 日志 / 代码 / 表格 / 文档 / 聊天记录）直接用 Windows 自带
+        # 的 OCR 抄字：免费、离线、截图不出网，通常 0.3–1.5 秒，不再派读图子代理。
+        # 与读图员**不互斥**：图表读数、排版、画面内容仍然只有视觉模型能答。
+        enableOcrImage: true
+        # 留空 / auto = 按内容自动在中文与英文引擎间选择（中文引擎会把 ASCII 认成形近字，
+        # 所以纯代码图会自动切英文）；想钉死就填 zh-Hans / en-US。
+        ocrLanguage: ''
+        ocrTimeoutMs: 20000
+        ocrMaxChars: 12000
+        ocrMaxBytes: 20971520
         enableQwenDraw: true
         enableSeedanceVideo: false   # Ark 未开通/门槛高：默认关闭，接通后一键打开
         # 百炼出片（可灵/万相）：复用 DASHSCOPE_API_KEY，零新账号；但需先填业务空间 ID
         # 并在百炼控制台开通「可灵AI」模型卡片。默认关闭，接通后一键打开。
         enableVideoGen: false
+        # MiniMax 出片（2026-10-20 加）：独立 MINIMAX_API_KEY；未接通前保持关闭。
+        # 与上面两个出片开关互斥：设置卡打开一个会自动关闭另外两个；手改同时为 true 时
+        # Host 按声明顺序取第一个（seedance > video_gen > minimax），media_report 会标冲突。
+        enableMinimaxVideo: false
         enableMediaTask: true
         enableMediaReport: true
         # ---- 生成物是否附回模型上下文 ----

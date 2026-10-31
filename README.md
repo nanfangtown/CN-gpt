@@ -2,11 +2,11 @@
 
 > **给 DeepSeek 主脑补上「眼睛 + 画笔 + 摄像机 + 剪辑台」。**
 >
-> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.1.1` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
+> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.2.0` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
 
 [![offline-tests](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml)
 
-一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）bundle：把 GLM / Qwen-VL 读图、Qwen 制图、Seedance / 可灵 / 万相出片做成与 `bash`、`ops_*` 同级的顶级工具，并共用一层异步任务管理、一套多 key 管理与一套**花钱闸门**。
+一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）bundle：把 GLM / Qwen-VL 读图、Qwen 制图、Seedance / 可灵 / 万相 / MiniMax 海螺出片做成与 `bash`、`ops_*` 同级的顶级工具，并共用一层异步任务管理、一套多 key 管理与一套**花钱闸门**。
 
 DeepSeek 主模型负责思考与交付；外部模型只负责"看 / 画 / 拍"这些它原生没有的能力。
 
@@ -15,12 +15,14 @@ DeepSeek 主模型负责思考与交付；外部模型只负责"看 / 画 / 拍"
 | 工具 | 能力 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `ask_glm` | GLM 读图子代理 | ✅ 开 | 看图、截图、PDF、图表、手写、界面 → 结构化结论 |
-| `ask_qwen` | Qwen-VL 读图子代理 | ⛔ 关 | 与 `ask_glm` 二选一；中文界面 / 密集文字更强 |
+| `ask_qwen` | Qwen-VL 读图子代理 | ⛔ 关 | 与 `ask_glm` 二选一；默认 `qwen3.8-max`，中文界面 / 密集文字 / 场景描述较强 |
+| `ocr_image` | 本地 OCR（Windows 自带引擎） | ✅ 开 | 纯文字截图直接抄字：免费、离线、图片不出网，通常 0.3–1.5 秒 |
 | `qwen_draw` | Qwen 文生图 / 图生图 | ✅ 开 | 产物落盘 + 返回路径；可选把图附回上下文 |
 | `seedance_video` | 火山方舟 Seedance 出片 | ⛔ 关 | 文生 / 图生视频，异步任务 |
 | `video_gen` | 百炼出片：可灵 v3 / 万相 2.5 | ⛔ 关 | 复用 `DASHSCOPE_API_KEY`，需业务空间 ID |
+| `minimax_video` | MiniMax（海螺）出片 | ⛔ 关 | 文生 / 图生 / 首尾帧；独立 `MINIMAX_API_KEY`；按条计费 |
 | `media_task` | 异步任务重查 / 补下载 | ✅ 开 | 整轮失败后按 `provider + task_id` 找回产物 |
-| `media_report` | 成本估算 / 链路健康 | ✅ 开 | 账本、单价自检、三把 key 与四条链路状态 |
+| `media_report` | 成本估算 / 链路健康 | ✅ 开 | 账本、单价自检、四把 key 与各条链路状态 |
 | `subagent_code` | 窄工具面执行子代理 | 常开 | 只有命令 + 文件读写 + 查找；适合改代码 / 跑构建 |
 | `subagent_research` | 窄工具面资料子代理 | 常开 | 只有只读文件 + 网页检索；适合查文档 / 核实事实 |
 
@@ -50,7 +52,7 @@ dsh plugin --profile desktop add ".\CN-gpt"
 装完**完整重启 DSH**。安装会在 profile 里加两行 + 三个 agent preset：
 
 1. `llm-pi-ai` —— 注册两条读图路由：`providers.glm`（智谱）与 `providers.qwen-vl`（百炼）。
-2. `mm-models` —— 插件本体（9 个工具 + 一段可关闭的分工提示词）。
+2. `mm-models` —— 插件本体（11 个工具 + 一段可关闭的分工提示词）。
 
 > ⚠ **第 1 行是覆盖语义**：`config` 整体替换，不与已有 `providers` 深合并。
 > 如果你在 设置 → 模型 里配过自定义 provider，安装前先备份 `cordis.patch.yml`，
@@ -59,20 +61,21 @@ dsh plugin --profile desktop add ".\CN-gpt"
 
 配置卡入口：侧栏「插件」→ 已安装 → `dsh-mm-models`（显示名 **CN-gpt**）→ 组合包详情 → 配置卡。
 
-## 三把 key
+## 四把 key
 
 | Key | 给谁用 | 推荐放法 |
 | --- | --- | --- |
 | `ZHIPU_API_KEY` | `ask_glm` | 设置 → 模型 → GLM 行；或 `~/.dsh/.env` |
 | `DASHSCOPE_API_KEY` | `qwen_draw` / `ask_qwen` / `video_gen` | `~/.dsh/.env` 或配置卡引用名 |
 | `ARK_API_KEY` | `seedance_video` | `~/.dsh/.env` 或配置卡引用名 |
+| `MINIMAX_API_KEY` | `minimax_video` | `~/.dsh/.env` 或配置卡引用名；国内 `.cn` / 国际 `.io` 的 key 不通用 |
 
 ```bash
 cp .env.example ~/.dsh/.env   # 然后填入真值；不要把填好的 .env 提交到仓库
 ```
 
 解析优先级：**配置卡字面值 > 凭据服务 / 引用名 > 环境变量 / `~/.dsh/.env`**。
-三条链路互相独立：缺任何一把 key 只影响对应工具，不会让插件加载失败。
+各条链路互相独立：缺任何一把 key 只影响对应工具，不会让插件加载失败。
 
 用 `media_report(action=health)` 可以在对话里直接看到每把 key 的
 "是否已配置 / 来源 / 最近成功失败 / 连通性"，但**永远不回显 key 本身**。
@@ -88,6 +91,9 @@ qwen_draw(prompt="雨夜校园，霓虹，电影感，16:9", n=2)
 
 # 出片（5 秒 × ¥0.8/秒 = ¥4.00，需要复述金额）
 video_gen(prompt="镜头缓慢推进，雨滴打在窗上", duration=5, confirm_estimate=4)
+
+# MiniMax 出片（768P 6 秒 = ¥2.00，按条计费）
+minimax_video(prompt="镜头缓慢推进，雨滴打在窗上", duration=6, resolution="768P", confirm_estimate=2)
 ```
 
 所有生成类调用都返回本地文件路径；是否把图片附回模型上下文由 `attachResultImages` 控制（默认关，只回路径）。
@@ -104,6 +110,17 @@ video_gen(prompt="镜头缓慢推进，雨滴打在窗上", duration=5, confirm_
 单价表在配置卡里可改；**填错价拦不住**（只拦"缺档位"），请按厂商官网核对。
 金额是估算，不是账单。详见 [SECURITY.md](SECURITY.md)。
 
+## 出片三选一（互斥）
+
+`seedance_video`（方舟）、`video_gen`（百炼可灵/万相）、`minimax_video`（MiniMax 海螺）三家协议、密钥与计费都不同，**同一时刻只允许一个开启**：
+
+- 设置卡里打开一个，会自动关闭另外两个；
+- 手改配置同时打开多个时，Host 按声明顺序取第一个生效（`seedance_video` > `video_gen` > `minimax_video`），其余被压制；
+- `media_report(action=health)` 会把冲突标出来。
+
+MiniMax 的计费单位是**条**（分辨率 × 时长），与另外两家的"按秒"不同；单价表里用 `unit: call` + `tiers` 表达，缺档位一律 fail-closed。
+国内 `.cn` 与国际 `.io` 的 key 不通用，`minimaxBase` 必须与 key 同区域。
+
 ## 读图路由与两个 block 开关（重要）
 
 出厂默认：
@@ -119,6 +136,41 @@ video_gen(prompt="镜头缓慢推进，雨滴打在窗上", duration=5, confirm_
 - 改用 `ask_qwen`（配 `DASHSCOPE_API_KEY`），并关掉 `ask_glm`。
 
 `blockSubagentNativeVision` 还要求 `readerMaxDepth >= 2`，否则被委派的子代理调不动读图员。改完需要完整重启。
+
+## 纯文字截图：本地 OCR（`ocr_image`）
+
+读图员是"视觉理解"通道，但日常读图的大头其实是**纯文字截图**：报错、日志、代码、表格、
+文档、聊天记录。这类图不需要理解画面，只需要**抄字** —— 派一次子代理意味着两跳模型调用
+和一次外发，而 OCR 更便宜、更保真（不会意译、不会漏列），截图里的 key / 订单号也不出网。
+
+`ocr_image` 用 Windows 自带的 `Windows.Media.Ocr`，没有任何额外依赖：
+
+- **免费、离线**：不调任何 API，不需要 tesseract / Python / 在线模型；
+- **快**：通常 0.3–1.5 秒（其中约 0.2 秒是 PowerShell 冷启动）；
+- **会自己挑引擎**：中文界面用中文引擎；纯 ASCII（代码 / 英文日志）自动切英文引擎 ——
+  中文引擎会把 `File` 认成 `Fi1e`、把 `.` 认成全角；
+- **小字会放大后重认一次**：14 px 的代码截图，字符相似度从约 0.73 提到 0.87；
+- **会把引擎拆乱的行按坐标拼回来**：等宽代码常被切成 `const total =` / `add(12,` / `30);`
+  三段，按 y→x 重排成一行；中文也不再逐字带空格（`任 务 队 列` → `任务队列`）。
+  Windows 的 OCR 对 CJK 是**按单字**出词的，所以这层重排是必需的。
+
+分工（已写进插件提示词，模型自己会分）：
+
+| 图里是什么 | 走哪条路 |
+| --- | --- |
+| 纯文字：代码 / 日志 / 报错 / 表格 / 文档 / 聊天记录 | `ocr_image` |
+| 图表读数、界面排版、画面内容、照片、手写、艺术字 | `ask_qwen`（读图员） |
+| `ocr_image` 返回"几乎没认出文字" | 说明这张图不是文字图，改走读图员 |
+
+限制如实说：**缩进会丢**（行首空格没有词框可依），艺术字、低分辨率、旋转/倾斜的截图
+识别率会掉，逐字抄写也不等于百分之百准确。需要"理解"而不只是"抄写"时，仍然走读图员。
+
+调参：`enableOcrImage`（默认开）、`ocrLanguage`（默认 `auto`）、`ocrTimeoutMs`（20 s）、
+`ocrMaxChars`（12000）、`ocrMaxBytes`（20 MiB）；`media_report(action=health)` 里有一行
+「本地 OCR：✅ 开」可确认状态。
+
+⚠ 语言包：Windows OCR 是**按语言**安装的。本机已有 `zh-Hans-CN` 与 `en-US`；精简系统第
+一次调用会返回安装指引（设置 → 时间和语言 → 语言 → 可选功能 → 光学字符识别）。
 
 ## 兼容性
 
@@ -158,7 +210,7 @@ npm run test:docs    # 文档相对链接检查
 
 ## 名字
 
-插件页显示名是 **CN-gpt**（仓库同名），包名 `dsh-mm-models`，插件 id `mm-models`。**这是玩梗，不是技术栈**——调用链里 GPT 含量 0%，实际是 GLM / Qwen / Seedance / 可灵 / 万相。主脑仍是 DeepSeek。
+插件页显示名是 **CN-gpt**（仓库同名），包名 `dsh-mm-models`，插件 id `mm-models`。**这是玩梗，不是技术栈**——调用链里 GPT 含量 0%，实际是 GLM / Qwen / Seedance / 可灵 / 万相 / MiniMax 海螺。主脑仍是 DeepSeek。
 
 ## 许可
 

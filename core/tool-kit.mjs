@@ -195,69 +195,129 @@ export async function accountUnretrievedSpend({ getLedger, taskId, entry, logger
 export const TOOL_SWITCHES = Object.freeze([
   Object.freeze({ tool: 'ask_glm', field: 'enableAskGlm', capability: 'ask_glm', label: 'GLM 读图子代理' }),
   Object.freeze({ tool: 'ask_qwen', field: 'enableAskQwen', capability: 'ask_qwen', label: 'Qwen 读图子代理' }),
+  // 2026-10-30：本地 OCR。与读图员**不互斥**（它是"抄字"不是"看画面"），
+  // 默认开：装上就能对纯文字截图省掉一次子代理往返。
+  Object.freeze({ tool: 'ocr_image', field: 'enableOcrImage', capability: 'ocr_image', label: '本地 OCR 抄字' }),
   Object.freeze({ tool: 'qwen_draw', field: 'enableQwenDraw', capability: 'qwen_draw', label: 'Qwen 制图' }),
   Object.freeze({ tool: 'seedance_video', field: 'enableSeedanceVideo', capability: 'seedance_video', label: 'Seedance 出片' }),
   Object.freeze({ tool: 'video_gen', field: 'enableVideoGen', capability: 'dashscope_video', label: '百炼出片（可灵/万相）' }),
+  Object.freeze({ tool: 'minimax_video', field: 'enableMinimaxVideo', capability: 'minimax_video', label: 'MiniMax 出片' }),
   Object.freeze({ tool: 'media_task', field: 'enableMediaTask', capability: 'media_task', label: '任务重查/补下载' }),
   Object.freeze({ tool: 'media_report', field: 'enableMediaReport', capability: 'media_report', label: '成本/健康报告' }),
 ])
+
+/**
+ * 互斥开关组：同一时刻只允许组内一个为真（规划 [2.2]）。
+ *
+ * 两组语义不同：
+ *   - readers：读图子代理二选一（GLM / Qwen-VL）。同时挂两个只会让主模型无所适从。
+ *   - video：出片模型三选一（Seedance / 百炼 / MiniMax）。三家协议、密钥、计费都不同，
+ *     同时开着会让“用哪个”变成随机，也容易让用户误以为三笔都能跑。
+ *
+ * 组内顺序 = **手改配置同时开多个时的优先级**（第一个生效，其余被压制）。
+ * 设置卡会做“打开一个自动关闭其它”，正常情况下不会走到冲突分支。
+ */
+export const MUTEX_GROUPS = Object.freeze([
+  Object.freeze({ id: 'readers', label: '读图子代理', fields: Object.freeze(['enableAskGlm', 'enableAskQwen']) }),
+  Object.freeze({
+    id: 'video',
+    label: '生视频模型',
+    fields: Object.freeze(['enableSeedanceVideo', 'enableVideoGen', 'enableMinimaxVideo']),
+  }),
+])
+
+/** 默认关（未接通或需要用户显式选择）的工具。 */
+const DEFAULT_OFF = new Set(['seedance_video', 'video_gen', 'minimax_video', 'ask_glm', 'ask_qwen'])
 
 /**
  * 创建开关读取器（config 是 volatile Proxy，每次读取都是当前值）。
  * @param {object} config - 插件上下文里的 liveConfig。
  */
 export function createSwitches(config) {
-  // 六个工具 → 配置字段的查表改成一次性构建的 Map：
-  // disabledNames() 在**每秒对账**里被调用，原来每个工具都要 find() 扫一遍数组。
-  const specByField = new Map(TOOL_SWITCHES.map((entry) => [entry.tool, entry]))
-  const specOf = (tool) => specByField.get(tool)
-  /**
-   * 原始开关值（未做互斥仲裁）。
-   * seedance_video / ask_glm / ask_qwen 默认关（未接通或需用户二选一）；其余默认开。
-   */
-  const rawOf = (tool) => {
-    const spec = specOf(tool)
+  // 工具/字段两套查表一次构建：disabledNames() 在**每秒对账**里被调用，
+  // 原来每个工具都要 find() 扫一遍数组。
+  const specByTool = new Map(TOOL_SWITCHES.map((entry) => [entry.tool, entry]))
+  const specByField = new Map(TOOL_SWITCHES.map((entry) => [entry.field, entry]))
+  const specOf = (tool) => specByTool.get(tool)
+  const labelOfField = (field) => {
+    const spec = specByField.get(field)
+    return spec === undefined ? field : spec.tool + '（' + spec.label + '）'
+  }
+  /** 原始开关值（未做互斥仲裁）。 */
+  const rawOfSpec = (spec) => {
     if (spec === undefined) return true
     const value = config?.[spec.field]
-    if (spec.tool === 'seedance_video' || spec.tool === 'video_gen' || spec.tool === 'ask_glm' || spec.tool === 'ask_qwen') return value === true
-    return value !== false
+    return DEFAULT_OFF.has(spec.tool) ? value === true : value !== false
   }
-  /** 两个读图子代理同时开启：GLM 优先，ask_qwen 被压制。 */
-  const conflict = () => rawOf('ask_glm') && rawOf('ask_qwen')
+  const rawOf = (tool) => rawOfSpec(specOf(tool))
+  const rawField = (field) => rawOfSpec(specByField.get(field))
+  const groupOfField = (field) => MUTEX_GROUPS.find((group) => group.fields.includes(field))
+  /** 组内第一个 raw=true 的字段 = 当前生效者；全关返回 undefined。 */
+  const winnerOf = (group) => group.fields.find((field) => rawField(field) === true)
+  /** 所有“手改配置导致同时开多个”的冲突组。 */
+  const conflicts = () =>
+    MUTEX_GROUPS.map((group) => ({ group, enabled: group.fields.filter((field) => rawField(field) === true) }))
+      .map((item) => ({ ...item, winner: item.enabled[0] }))
+      .filter((item) => item.enabled.length > 1)
   const isEnabled = (tool) => {
-    const raw = rawOf(tool)
-    if (!raw) return false
-    if (tool === 'ask_qwen' && rawOf('ask_glm')) return false
-    return true
+    const spec = specOf(tool)
+    if (spec === undefined) return true
+    if (!rawOfSpec(spec)) return false
+    const group = groupOfField(spec.field)
+    if (group === undefined) return true
+    return winnerOf(group) === spec.field
   }
+  /** 读图子代理冲突（health 的专用提示仍沿用这个名字）。 */
+  const conflict = () => conflicts().some((item) => item.group.id === 'readers')
+  /** 生视频模型冲突。 */
+  const videoConflict = () => conflicts().some((item) => item.group.id === 'video')
   return {
     isEnabled,
     conflict,
+    videoConflict,
+    conflicts,
+    /** 所有冲突组的人话提示（media_report 用；紧凑模式也必须显示）。 */
+    conflictNotes: () =>
+      conflicts().map(({ group, enabled, winner }) => {
+        const losers = enabled.filter((field) => field !== winner)
+        return (
+          `⚠ ${group.label}同时开启了 ${enabled.map(labelOfField).join(' / ')}：` +
+          `按互斥规则当前 ${labelOfField(winner)} 生效、${losers.map(labelOfField).join(' / ')} 被压制。` +
+          `请在 插件页 → CN-gpt → 配置卡 关掉多余的开关（打开一个会自动关闭其它）。`
+        )
+      }),
     /** 关闭的工具名列表（用于 restrict）。 */
     disabledNames: () => TOOL_SWITCHES.filter((entry) => !isEnabled(entry.tool)).map((entry) => entry.tool),
     /** 能力 → 开关状态（用于 health 报表）。 */
     snapshot: () => Object.fromEntries(TOOL_SWITCHES.map((entry) => [entry.capability, isEnabled(entry.tool)])),
     /**
-     * 六个开关的即时签名（`"1,0,1,…"`），用于**廉价判断"配置有没有变"**。
+     * 八个开关的即时签名（`"1,0,1,…"`），用于**廉价判断"配置有没有变"**。
      *
      * 用途：`syncRestrictions()` 每秒跑一次，会话多时"逐个 agent 重算掩码"是纯浪费
      * （实测 1000 个会话 2.3 ms/秒）。有了签名，开关没变的那一秒可以整轮跳过，
-     * 只付 6 次配置读取的固定成本（≈0.002 ms），与会话数无关。
+     * 只付 8 次配置读取的固定成本（≈0.002 ms），与会话数无关。
      *
      * 为什么用字符串而不是数组：比较两个字符串是 O(1) 语义、无分配；
      * 而每次 `disabledNames()` 都要新分配一个数组，1 秒 1000 次就是 1000 个垃圾对象。
-     * @returns {string} 例如 '1,0,1,1,1,1'
+     * @returns {string} 例如 '1,0,1,1,1,1,1,1'
      */
     signature: () => TOOL_SWITCHES.map((entry) => (isEnabled(entry.tool) ? '1' : '0')).join(','),
     /** guard 拒绝时给模型/用户看的人话。 */
     disabledMessage(tool) {
-      if (tool === 'ask_qwen' && conflict()) {
-        return 'ask_qwen 与 ask_glm 互斥：两个读图子代理不能同时开启，当前 ask_glm 生效、ask_qwen 被停用。请在 插件页 → CN-gpt → 配置卡 关闭 ask_glm（打开 ask_qwen 会自动关闭它），或继续使用 ask_glm。'
-      }
-      if (tool === 'ask_glm' && conflict()) {
-        return 'ask_glm 与 ask_qwen 互斥：两个读图子代理不能同时开启，当前 ask_qwen 生效、ask_glm 被停用。请在 插件页 → CN-gpt → 配置卡 关闭 ask_qwen（打开 ask_glm 会自动关闭它），或继续使用 ask_qwen。'
-      }
       const spec = specOf(tool)
+      const group = spec === undefined ? undefined : groupOfField(spec.field)
+      if (group !== undefined && rawOfSpec(spec)) {
+        const winner = winnerOf(group)
+        if (winner !== undefined && winner !== spec.field) {
+          const others = group.fields.filter((field) => field !== spec.field).map(labelOfField)
+          return (
+            tool + ' 与 ' + others.join(' / ') + ' 互斥：' + group.label + '同一时刻只能开一个，' +
+            '当前 ' + labelOfField(winner) + ' 生效、' + tool + ' 被停用。' +
+            '请在 插件页 → CN-gpt → 配置卡 关闭 ' + labelOfField(winner) +
+            '（打开 ' + tool + ' 会自动关闭其它），或继续使用当前生效的那个。'
+          )
+        }
+      }
       const label = spec?.label ?? tool
       return '已关闭：' + tool + '（' + label + '）在 插件页 → CN-gpt → 配置卡 的开关里处于关闭状态。请不要重试；需要时请让用户打开该开关。'
     },
@@ -265,17 +325,12 @@ export function createSwitches(config) {
 }
 
 /**
- * 互斥开关对：同一时刻只允许一个为真（规划 [2.2]）。
- * ask_glm / ask_qwen 都是"读图子代理"，同时挂两个只会让主模型无所适从，故二选一。
- */
-export const MUTEX_PAIRS = Object.freeze([Object.freeze({ a: 'enableAskGlm', b: 'enableAskQwen' })])
-
-/**
- * 把一组配置写入操作按互斥规则归一化，保证"同一时刻只有一个读图子代理"。
+ * 把一组配置写入操作按互斥规则归一化，保证"同一时刻只有一个读图子代理、
+ * 以及只有一个生视频模型"。
  *
  * 语义（与设置卡一致）：**最后写入者胜出**。打开一个开关的同一个批量写入里，
- * 若另一个仍是 true，就补一条把它关掉的 set。补出来的 set 排在触发它的 set
- * 之后，所以同一个 patch 里两者都被显式赋值时，以靠后的那次为准（不做"报错
+ * 若同组另一个仍是 true，就补一条把它关掉的 set。补出来的 set 排在触发它的 set
+ * 之后，所以同一个 patch 里多个都被显式赋值时，以靠后的那次为准（不做"报错
  * 拒绝"，避免用户的保存莫名其妙失败）。
  *
  * @param {Array<{op: string, path: (string|number)[], value?: unknown}>} ops - 原始写入操作。
@@ -304,9 +359,12 @@ export function normalizeSettingsOps(ops) {
     // unset（删除用户层字段，回落默认值 = 关）同样让出互斥位。
     effective.set(name, op.value)
     ordered.push(op)
-    for (const pair of MUTEX_PAIRS) {
-      if (pair.a === name && op.value === true) pushComplement(pair.b, false)
-      else if (pair.b === name && op.value === true) pushComplement(pair.a, false)
+    if (op.value !== true) continue
+    for (const group of MUTEX_GROUPS) {
+      if (!group.fields.includes(name)) continue
+      for (const other of group.fields) {
+        if (other !== name) pushComplement(other, false)
+      }
     }
   }
   return ordered

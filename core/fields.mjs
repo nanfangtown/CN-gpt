@@ -162,8 +162,60 @@ export const ARK_FIELDS = Object.freeze({
 })
 
 /**
+ * MiniMax（海螺）视频生成 —— 2026-10-20 按官方文档落地。
+ *
+ * 协议形态（与 Ark / 百炼都不同，注意三点）：
+ *   POST {base}/v1/video_generation
+ *        body: { model, prompt?, duration?, resolution?, first_frame_image?, last_frame_image? }
+ *   GET  {base}/v1/query/video_generation?task_id=...   →  status / file_id
+ *   GET  {base}/v1/files/retrieve?file_id=...           →  file.download_url（1 小时有效）
+ *
+ * ⚠ v1 的 **HTTP 状态码恒为 200**：成败只看 `base_resp.status_code === 0`。
+ *   这是与另外两家最大的差异，所以 adapter 在 parseSubmit / parseQuery / resolveArtifacts
+ *   三处都必须检查这个信封，不能只看 response.ok。
+ *
+ * ⚠ 状态大小写不一致（官方文档自身也不一致）：查询返回 `Success` / `Fail`，
+ *   回调示例却是 `success` / `failed`。adapter 统一转小写后比较。
+ *
+ * ⚠ `file_id` 在查询响应里是 string，而 `/v1/files/retrieve` 的参数是 int64；
+ *   adapter 会显式转字符串/数字，不依赖隐式转换。
+ */
+export const MINIMAX_FIELDS = Object.freeze({
+  /** 提交：POST {base}/v1/video_generation */
+  submitPath: '/v1/video_generation',
+  /** 查询：GET {base}/v1/query/video_generation?task_id={id} */
+  queryPath: (taskId) => `/v1/query/video_generation?task_id=${encodeURIComponent(taskId)}`,
+  /** 取文件：GET {base}/v1/files/retrieve?file_id={id} */
+  retrievePath: (fileId) => `/v1/files/retrieve?file_id=${encodeURIComponent(String(fileId))}`,
+  /** 请求体字段。 */
+  bodyModel: 'model',
+  bodyPrompt: 'prompt',
+  bodyDuration: 'duration',
+  bodyResolution: 'resolution',
+  bodyFirstFrame: 'first_frame_image',
+  bodyLastFrame: 'last_frame_image',
+  bodyPromptOptimizer: 'prompt_optimizer',
+  /** 响应里的任务 id / 状态 / 文件 id。 */
+  taskIdPaths: ['task_id'],
+  statusPaths: ['status'],
+  fileIdPaths: ['file_id'],
+  /** v1 的统一信封（HTTP 200 时也必须检查）。 */
+  baseRespCodePaths: ['base_resp.status_code'],
+  baseRespMessagePaths: ['base_resp.status_msg'],
+  /** 下载地址（`file.download_url`，1 小时有效）。 */
+  downloadUrlPaths: ['file.download_url'],
+  /** 状态取值集合（统一小写后比较）。 */
+  statusValues: Object.freeze({
+    queued: ['preparing', 'queueing', 'queued', 'pending'],
+    running: ['processing', 'running'],
+    succeeded: ['success', 'succeeded'],
+    failed: ['fail', 'failed', 'cancelled', 'canceled', 'expired'],
+  }),
+})
+
+/**
  * 把厂商 rawStatus 映射到归一化状态。
- * @param {object} spec - DASHSCOPE_FIELDS 或 ARK_FIELDS。
+ * @param {object} spec - DASHSCOPE_FIELDS / ARK_FIELDS / MINIMAX_FIELDS。
  * @param {unknown} rawStatus - 厂商状态字符串。
  * @returns {'queued'|'running'|'succeeded'|'failed'|'unknown'}
  */

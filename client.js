@@ -68,8 +68,10 @@ window.__ModuleLoader__.load({
       httpTimeoutMs: { kind: 'duration' },
       healthProbeTtlMs: { kind: 'duration' },
       cacheTtlMs: { kind: 'duration' },
+      ocrTimeoutMs: { kind: 'duration' },
       registryTtlMs: { kind: 'duration' },
       maxAttachImageBytes: { kind: 'bytes' },
+      ocrMaxBytes: { kind: 'bytes' },
       maxCacheEntries: undefined,
     }
 
@@ -117,8 +119,14 @@ window.__ModuleLoader__.load({
       ['enableQwenDraw', 'boolean', 'switches'],
       ['enableSeedanceVideo', 'boolean', 'switches'],
       ['enableVideoGen', 'boolean', 'switches'],
+      ['enableMinimaxVideo', 'boolean', 'switches'],
       ['enableMediaTask', 'boolean', 'switches'],
       ['enableMediaReport', 'boolean', 'switches'],
+      ['enableOcrImage', 'boolean', 'switches'],
+      ['ocrLanguage', 'text', 'misc'],
+      ['ocrTimeoutMs', 'number', 'misc'],
+      ['ocrMaxChars', 'number', 'misc'],
+      ['ocrMaxBytes', 'number', 'misc'],
       ['attachResultImages', 'boolean', 'switches'],
       ['maxAttachImageBytes', 'number', 'switches'],
       ['cacheResults', 'boolean', 'switches'],
@@ -131,12 +139,15 @@ window.__ModuleLoader__.load({
       ['dashscopeApiKeyEnv', 'text', 'keys'],
       ['arkApiKeyEnv', 'text', 'keys'],
       ['zhipuApiKeyEnv', 'text', 'keys'],
+      ['minimaxApiKeyEnv', 'text', 'keys'],
       ['qwenModel', 'text', 'media'],
       ['dashscopeImageMode', 'text', 'media'],
       ['dashscopeBase', 'text', 'media'],
       ['outDir', 'text', 'media'],
       ['seedanceModel', 'text', 'media'],
       ['videoModel', 'text', 'media'],
+      ['minimaxBase', 'text', 'media'],
+      ['minimaxModel', 'text', 'media'],
       ['dashscopeWorkspaceId', 'text', 'media'],
       ['dashscopeVideoBase', 'text', 'media'],
       ['arkBase', 'text', 'media'],
@@ -168,6 +179,7 @@ window.__ModuleLoader__.load({
       { ref: 'DASHSCOPE_API_KEY', label: 'key.dashscope', hint: 'key.dashscopeHint' },
       { ref: 'ARK_API_KEY', label: 'key.ark', hint: 'key.arkHint' },
       { ref: 'ZHIPU_API_KEY', label: 'key.zhipu', hint: 'key.zhipuHint' },
+      { ref: 'MINIMAX_API_KEY', label: 'key.minimax', hint: 'key.minimaxHint' },
     ]
 
     const GROUPS = [
@@ -213,6 +225,12 @@ window.__ModuleLoader__.load({
         url: 'https://docs.bigmodel.cn/cn/guide/start/quick-start',
       },
       {
+        id: 'minimax',
+        label: 'key.src.minimax',
+        hint: 'key.src.minimaxHint',
+        url: 'https://platform.minimax.cn/user-center/basic-information/interface-key',
+      },
+      {
         id: 'deepseek',
         label: 'key.src.deepseek',
         hint: 'key.src.deepseekHint',
@@ -221,19 +239,25 @@ window.__ModuleLoader__.load({
     ]
 
     /**
-     * 读图子代理互斥对：ask_glm（智谱）与 ask_qwen（百炼 Qwen-VL）二选一。
-     * 打开其中一个会自动把另一个关掉（同一个批量写入里补一条 set false）。
+     * 互斥开关组（与 Host 侧 core/tool-kit.mjs 的 MUTEX_GROUPS 同构）。
+     *
+     *   - 读图子代理二选一：ask_glm（智谱）⇄ ask_qwen（百炼 Qwen-VL）；
+     *   - 出片模型三选一：seedance_video ⇄ video_gen（百炼）⇄ minimax_video。
+     *
+     * 打开其中一个会自动把同组其它关掉（同一个批量写入里补 set false）。
+     * Host 侧还有一层 normalizeSettingsOps 兜底，所以手改配置也不会真的同时生效。
      */
-    const MUTEX = [
+    const MUTEX_GROUPS = [
       ['enableAskGlm', 'enableAskQwen'],
-      ['enableAskQwen', 'enableAskGlm'],
+      ['enableSeedanceVideo', 'enableVideoGen', 'enableMinimaxVideo'],
     ]
     const mutexOf = (name) => {
-      const pair = MUTEX.find(([self]) => self === name)
-      return pair === undefined ? undefined : pair[1]
+      const group = MUTEX_GROUPS.find((fields) => fields.includes(name))
+      return group === undefined ? [] : group.filter((field) => field !== name)
     }
-    /** 读图开关所在的行需要额外提示（互斥 / 未选）。 */
+    /** 需要“二选一 / 三选一”提示的开关行。 */
     const READER_FIELDS = new Set(['enableAskGlm', 'enableAskQwen'])
+    const VIDEO_FIELDS = new Set(['enableSeedanceVideo', 'enableVideoGen', 'enableMinimaxVideo'])
 
     const DICT = {
       zh: {
@@ -246,7 +270,7 @@ window.__ModuleLoader__.load({
         dirty: '有未保存的修改',
         unavailable: '插件未激活，或 Host 暂未提供该配置。',
         readOnly: '当前连接为只读，无法保存。',
-        note: 'Key 真值放 ~/.dsh/.env（DASHSCOPE_API_KEY / ARK_API_KEY / ZHIPU_API_KEY），或用 设置→模型 的 GLM 行；本卡只改引用名与开关。单价表请编辑 cordis.patch.yml 的 pricing。',
+        note: 'Key 真值放 ~/.dsh/.env（DASHSCOPE_API_KEY / ARK_API_KEY / ZHIPU_API_KEY / MINIMAX_API_KEY），或用 设置→模型 的 GLM 行；本卡只改引用名与开关。单价表请编辑 cordis.patch.yml 的 pricing。',
         'group.switches': '工具开关（一键允许 / 禁止）',
         'group.keys': 'Key 引用名',
         'group.media': '端点与型号',
@@ -261,8 +285,14 @@ window.__ModuleLoader__.load({
         'field.enableQwenDraw': '允许 qwen_draw（Qwen 制图）',
         'field.enableSeedanceVideo': '允许 seedance_video（Seedance 出片）',
         'field.enableVideoGen': '允许 video_gen（百炼出片：可灵 / 万相）',
+        'field.enableMinimaxVideo': '允许 minimax_video（MiniMax 海螺出片）',
         'field.enableMediaTask': '允许 media_task（重查 / 补下载）',
         'field.enableMediaReport': '允许 media_report（成本 / 健康）',
+        'field.enableOcrImage': '允许 ocr_image（本地 OCR：纯文字截图抄字，不出网）',
+        'field.ocrLanguage': 'OCR 语言（留空 / auto = 按内容自动选）',
+        'field.ocrTimeoutMs': 'OCR 超时',
+        'field.ocrMaxChars': 'OCR 返回字数上限',
+        'field.ocrMaxBytes': 'OCR 图片字节上限',
         'field.attachResultImages': '把生成的图片附回模型上下文（默认关）',
         'field.maxAttachImageBytes': '附图字节上限（默认 4 MiB，0 = 不限）',
         'field.cacheResults': '出图缓存（相同 prompt 不重复计费）',
@@ -274,6 +304,8 @@ window.__ModuleLoader__.load({
         'field.arkApiKeyEnv': 'ARK_API_KEY 引用名',
         'field.zhipuApiKey': '智谱 API Key（ask_glm 读图）',
         'field.zhipuApiKeyEnv': 'ZHIPU_API_KEY 引用名',
+        'field.minimaxApiKey': 'MiniMax API Key（minimax_video 出片）',
+        'field.minimaxApiKeyEnv': 'MINIMAX_API_KEY 引用名',
         'key.set': '✅ 已配置',
         'key.unset': '⛔ 未配置',
         'key.sourceEnv': '来自环境变量 / ~/.dsh/.env',
@@ -296,6 +328,8 @@ window.__ModuleLoader__.load({
         'key.arkHint': 'seedance_video 出片',
         'key.zhipu': '智谱 BigModel API Key',
         'key.zhipuHint': 'ask_glm 读图',
+        'key.minimax': 'MiniMax（海螺）API Key',
+        'key.minimaxHint': 'minimax_video 出片（国内 .cn / 国际 .io 的 key 不通用）',
         'key.src.title': '去哪儿申请这些 Key（官方页面）',
         'key.src.dashscope': '阿里云百炼 DashScope API Key',
         'key.src.dashscopeHint': '（qwen_draw 制图 + ask_qwen 读图）',
@@ -305,6 +339,8 @@ window.__ModuleLoader__.load({
         'key.src.arkHint': '（seedance_video 出片）',
         'key.src.zhipu': '智谱 BigModel API Key',
         'key.src.zhipuHint': '（ask_glm 读图）',
+        'key.src.minimax': 'MiniMax 开放平台 API Key',
+        'key.src.minimaxHint': '（minimax_video 出片；key 与区域必须匹配）',
         'key.src.deepseek': 'DeepSeek 开放平台 API Key',
         'key.src.deepseekHint': '（主模型用；在 设置 → 模型 里配，不在本插件）',
         'field.qwenModel': 'Qwen 制图模型',
@@ -313,6 +349,8 @@ window.__ModuleLoader__.load({
         'field.outDir': '图片目录',
         'field.seedanceModel': 'Seedance 模型',
         'field.videoModel': '百炼视频模型 id',
+        'field.minimaxBase': 'MiniMax 基址（国内 .cn / 国际 .io）',
+        'field.minimaxModel': 'MiniMax 视频模型 id',
         'field.dashscopeWorkspaceId': '百炼业务空间 ID（WorkspaceId）',
         'field.dashscopeVideoBase': '百炼视频基址（留空自动拼）',
         'field.arkBase': 'Ark 基址',
@@ -337,11 +375,13 @@ window.__ModuleLoader__.load({
         'hint.switches': '关闭后：调用被 guard 拒绝，新会话的工具清单与提示词里不再出现；打开立即生效。',
         'hint.reader': '读图子代理二选一：打开 ask_glm 会自动关闭 ask_qwen，反之亦然；两个都关则没有读图工具。',
         'hint.readerOff': '未开启：当前没有读图子代理，需要看图请先打开上面其中一个。',
+        'hint.videoMutex': '出片三选一：打开一个会自动关闭另外两个；同一时刻只允许一个出片工具生效。',
         'hint.nativeVision': '打开后：主代理自己的读图工具被摘掉，所有读图强制走上面选中的读图子代理（子代理不受影响）。改这个开关需要完整重启 dsh 才生效。',
         'hint.attachImages': '默认关：出图后只把「路径 + 规格」回给模型。打开后会把图片本身作为内容块附回上下文，由模型自己看图。注意：数 MB 的大图会触发视觉路由的上传/内联工作，失败会让整轮报 TRANSPORT；而且多数路由对单图有硬 token 上限，本来就会降采样——所以默认关。',
         'hint.keys': '密钥保存在 DSH 官方凭据文件里（<harness home>/.credentials.yaml），不进 profile 配置；写盘即重载，保存后下一次调用就用新 key，无需重启。已存的值不会显示（凭据服务按设计不回显），只报「是否已配置 + 来自哪一层」。凭据里没存过时，回退到下面的引用名 → 环境变量 / ~/.dsh/.env。',
         'hint.seedance': 'Ark 需先开通 Seedance / 提供接入点；未接通前建议保持关闭。',
         'hint.video': '百炼出片复用 DASHSCOPE_API_KEY：先填业务空间 ID，再到百炼控制台「模型市场」搜 kling 点「立即开通」；未接通前保持关闭。',
+        'hint.minimax': 'MiniMax 用独立的 MINIMAX_API_KEY；国内 .cn 与国际 .io 的 key 不通用（混用会报 Invalid API key）。默认 Hailuo-02 按条计费，未计价会 fail-closed。',
       },
       en: {
         title: 'CN-gpt (read / draw / video)',
@@ -353,7 +393,7 @@ window.__ModuleLoader__.load({
         dirty: 'Unsaved changes',
         unavailable: 'Plugin inactive, or the Host does not serve this configuration yet.',
         readOnly: 'This connection is read-only; saving is unavailable.',
-        note: 'Key values live in ~/.dsh/.env (DASHSCOPE_API_KEY / ARK_API_KEY / ZHIPU_API_KEY) or the Models page for GLM; this card edits references and switches only. Edit pricing in cordis.patch.yml.',
+        note: 'Key values live in ~/.dsh/.env (DASHSCOPE_API_KEY / ARK_API_KEY / ZHIPU_API_KEY / MINIMAX_API_KEY) or the Models page for GLM; this card edits references and switches only. Edit pricing in cordis.patch.yml.',
         'group.switches': 'Tool switches (one-click allow / deny)',
         'group.keys': 'Credential references',
         'group.media': 'Endpoints and models',
@@ -368,8 +408,14 @@ window.__ModuleLoader__.load({
         'field.enableQwenDraw': 'Allow qwen_draw (Qwen images)',
         'field.enableSeedanceVideo': 'Allow seedance_video (Seedance video)',
         'field.enableVideoGen': 'Allow video_gen (Bailian video: Kling / Wan)',
+        'field.enableMinimaxVideo': 'Allow minimax_video (MiniMax Hailuo video)',
         'field.enableMediaTask': 'Allow media_task (re-query / download)',
         'field.enableMediaReport': 'Allow media_report (cost / health)',
+        'field.enableOcrImage': 'Allow ocr_image (local OCR for text screenshots, offline)',
+        'field.ocrLanguage': 'OCR language (empty / auto = pick by content)',
+        'field.ocrTimeoutMs': 'OCR timeout',
+        'field.ocrMaxChars': 'OCR max characters',
+        'field.ocrMaxBytes': 'OCR max image bytes',
         'field.attachResultImages': 'Attach generated images back into the model context (default off)',
         'field.maxAttachImageBytes': 'Attach size cap (default 4 MiB, 0 = unlimited)',
         'field.cacheResults': 'Image cache (same prompt is not billed twice)',
@@ -381,12 +427,16 @@ window.__ModuleLoader__.load({
         'field.arkApiKeyEnv': 'ARK_API_KEY reference',
         'field.zhipuApiKey': 'Zhipu API key (ask_glm reader)',
         'field.zhipuApiKeyEnv': 'ZHIPU_API_KEY reference',
+        'field.minimaxApiKey': 'MiniMax API key (minimax_video)',
+        'field.minimaxApiKeyEnv': 'MINIMAX_API_KEY reference',
         'field.qwenModel': 'Qwen image model',
         'field.dashscopeImageMode': 'Image mode (auto / sync / async)',
         'field.dashscopeBase': 'DashScope base URL',
         'field.outDir': 'Image directory',
         'field.seedanceModel': 'Seedance model',
         'field.videoModel': 'Bailian video model id',
+        'field.minimaxBase': 'MiniMax base URL (CN .cn / global .io)',
+        'field.minimaxModel': 'MiniMax video model id',
         'field.dashscopeWorkspaceId': 'Bailian workspace ID',
         'field.dashscopeVideoBase': 'Bailian video base URL (blank = auto)',
         'field.arkBase': 'Ark base URL',
@@ -411,6 +461,7 @@ window.__ModuleLoader__.load({
         'hint.switches': 'When off: calls are denied by the guard, and new sessions hide the tool from both the tool list and the prompt section; turning it on takes effect immediately.',
         'hint.reader': 'Pick exactly one image reader: turning ask_glm on turns ask_qwen off, and vice versa; with both off there is no image-reading tool.',
         'hint.readerOff': 'Not enabled: no image reader is active. Turn one of the two above on to read images.',
+        'hint.videoMutex': 'Pick exactly one video generator: turning one on turns the other two off; only one video tool can be active at a time.',
         'hint.nativeVision': 'When on: the main agent loses its own image-reading tool and every image read goes through the reader selected above (subagents are unaffected). Changing this takes effect only after a full dsh restart.',
         'hint.attachImages': 'Default off: after generating, only the path + spec return to the model. When on, the image itself is attached as a content block so the model can look at it. Caveat: multi-MB images trigger the vision route upload/inline work, and a failure there fails the whole turn with TRANSPORT; most routes also hard-cap a single image and downscale it anyway — hence off by default.',
         'hint.keys': 'Keys live in the DSH credential file (<harness home>/.credentials.yaml), never in the profile config; the file is watched, so a saved key is used by the next call with no restart. Stored values are never displayed (the credential service does not return them by design) — only whether each ref is configured and which layer it comes from. When nothing is stored, resolution falls back to the reference names below → environment / ~/.dsh/.env.',
@@ -436,6 +487,8 @@ window.__ModuleLoader__.load({
         'key.arkHint': 'seedance_video',
         'key.zhipu': 'Zhipu BigModel API key',
         'key.zhipuHint': 'ask_glm reader',
+        'key.minimax': 'MiniMax (Hailuo) API key',
+        'key.minimaxHint': 'minimax_video (CN .cn and global .io keys are not interchangeable)',
         'key.src.title': 'Where to get these keys (official pages)',
         'key.src.dashscope': 'Alibaba Bailian DashScope API key',
         'key.src.dashscopeHint': 'for qwen_draw images + ask_qwen reading',
@@ -449,10 +502,13 @@ window.__ModuleLoader__.load({
         'key.src.arkHint': 'for seedance_video',
         'key.src.zhipu': 'Zhipu BigModel API key',
         'key.src.zhipuHint': 'for ask_glm reading',
+        'key.src.minimax': 'MiniMax platform API key',
+        'key.src.minimaxHint': 'for minimax_video; the key must match the region',
         'key.src.deepseek': 'DeepSeek platform API key',
         'key.src.deepseekHint': 'for the main model (configured in Settings > Models, not here)',
         'hint.seedance': 'Requires Seedance activation / an Ark endpoint; keep off until it works.',
         'hint.video': 'Bailian video reuses DASHSCOPE_API_KEY: set the workspace ID, then activate Kling in the Model Studio marketplace. Keep off until it works.',
+        'hint.minimax': 'MiniMax uses its own MINIMAX_API_KEY; CN .cn and global .io keys are not interchangeable (mixing them returns Invalid API key). Hailuo-02 is billed per clip; unpriced models fail closed.',
       },
     }
 
@@ -538,12 +594,16 @@ window.__ModuleLoader__.load({
         if (spec === undefined) return
         baseline ??= raw()
         stage(name, text)
-        const complement = mutexOf(name)
-        if (complement !== undefined && spec.kind === 'boolean') {
+        const complements = mutexOf(name)
+        if (complements.length > 0 && spec.kind === 'boolean') {
           mutexOrder.set(name, ++mutexTick)
-          // 只有"打开"才需要互斥处理；关闭一个开关不牵连另一个。
-          const complementOn = staged.has(complement) ? staged.get(complement).text === 'true' : currentValue(complement) === true
-          if (text === 'true' && complementOn) stage(complement, 'false')
+          // 只有"打开"才需要互斥处理；关闭一个开关不牵连其它。
+          if (text === 'true') {
+            for (const complement of complements) {
+              const complementOn = staged.has(complement) ? staged.get(complement).text === 'true' : currentValue(complement) === true
+              if (complementOn) stage(complement, 'false')
+            }
+          }
         }
         failed = false
         publish()
@@ -571,8 +631,8 @@ window.__ModuleLoader__.load({
           }
           if (spec.kind === 'boolean') {
             const op = { op: 'set', path: [name], value: entry.text === 'true' }
-            // 互斥对：被点开的那个要排在自动关闭的那个之后（末次写入生效）。
-            if (mutexOf(name) === undefined) ops.push(op)
+            // 互斥组：被点开的那个要排在自动关闭的那些之后（末次写入生效）。
+            if (mutexOf(name).length === 0) ops.push(op)
             else delayed.push({ name, op })
             continue
           }
@@ -695,10 +755,12 @@ window.__ModuleLoader__.load({
       const hint = (on) => {
         if (spec.name === 'enableSeedanceVideo') return t('hint.seedance')
         if (spec.name === 'enableVideoGen') return t('hint.video')
+        if (spec.name === 'enableMinimaxVideo') return t('hint.minimax')
         if (spec.name === 'blockMainAgentNativeVision') return t('hint.nativeVision')
         if (spec.name === 'blockSubagentNativeVision') return t('hint.subagentVision')
         if (spec.name === 'attachResultImages' || spec.name === 'maxAttachImageBytes') return t('hint.attachImages')
         if (READER_FIELDS.has(spec.name)) return on ? t('hint.reader') : t('hint.readerOff')
+        if (VIDEO_FIELDS.has(spec.name)) return t('hint.videoMutex')
         return undefined
       }
       if (spec.kind === 'boolean') {
@@ -801,6 +863,7 @@ window.__ModuleLoader__.load({
         if (groupId === 'switches') {
           rows.push(h('p', { key: 'hint', style: styles.note }, tr('hint.switches')))
           rows.push(h('p', { key: 'hint-reader', style: styles.note }, tr('hint.reader')))
+          rows.push(h('p', { key: 'hint-video', style: styles.note }, tr('hint.videoMutex')))
         }
         if (groupId === 'keys') {
           // 官方获取入口：折叠块，默认展开，放在引用名输入框**上面**。
@@ -894,7 +957,7 @@ window.__ModuleLoader__.load({
      *      必须判 `ok` 再取 `value` —— 直接 `await` 拿到的不是数据。
      *
      * 两个都写错时 `credentials` 恒为 undefined，`describe` 一次都不会被调用，
-     * 表现就是"三把 key 全显示未配置"。所以这里两条路都试，并且把失败原因留给 UI 呈现。
+     * 表现就是"四把 key 全显示未配置"。所以这里两条路都试，并且把失败原因留给 UI 呈现。
      *
      * @param {object} ctx - Client 插件上下文。
      * @returns {object|undefined} 归一化后的 { describe, set, unset }。
@@ -924,7 +987,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 凭据状态：向官方凭据服务问三把 key 的 `{configured, source, writable}`。
+     * 凭据状态：向官方凭据服务问四把 key 的 `{configured, source, writable}`。
      *
      * 关键约束（官方设计）：`describe` **绝不返回值**，所以卡片不可能回显已存的 key ——
      * 这正是"值不进配置文件"能成立的原因。卡片能做的是：报状态、报来源、接受新值。

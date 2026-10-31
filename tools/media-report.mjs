@@ -1,8 +1,8 @@
 /**
- * media_report —— 成本估算 + 三把 key / 三条链路健康状态（规划 [2.5]）。
+ * media_report —— 成本估算 + 四把 key / 各条链路健康状态（规划 [2.5]）。
  *
  * action=cost  ：按用量账本 × 单价表给出预估费用（session | today | all），返回表格文本 + 免责声明。
- * action=health：三把 key 的配置状态 + 三条链路最近成功/失败 + 轻量连通性探测（5 分钟 TTL 缓存）。
+ * action=health：四把 key 的配置状态 + 各条链路最近成功/失败 + 轻量连通性探测（5 分钟 TTL 缓存）。
  * 管理类能力合成一个工具，控制每请求固定 schema 成本。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -14,6 +14,7 @@ const PROBE_ADAPTERS = Object.freeze({
   dashscope: 'dashscope-image',
   'dashscope-vl': 'dashscope-image',
   ark: 'ark-video',
+  minimax: 'minimax-video',
 })
 
 /**
@@ -117,7 +118,18 @@ export function createMediaReportTool(deps) {
         } catch {
           llmProviders = undefined
         }
-        const report = renderHealthReport({ keyEntries, health, probes, llmProviders, config, switches: switches?.snapshot?.() ?? {}, readerConflict: switches?.conflict?.() === true, verbose })
+        const extraConflictNotes = (switches?.conflictNotes?.() ?? []).filter((note) => note.includes('生视频模型'))
+        const report = renderHealthReport({
+          keyEntries,
+          health,
+          probes,
+          llmProviders,
+          config,
+          switches: switches?.snapshot?.() ?? {},
+          readerConflict: switches?.conflict?.() === true,
+          extraConflictNotes,
+          verbose,
+        })
         let backendLine = '\n\n账本后端：' + ledgerBackend + '（storage = 宿主 storage 服务；file = 插件 JSON 回退）'
         // 退回文件后端是**降级**，必须说清原因：否则表现就是"报表里历史用量凭空消失"，
         // 而用户没有任何线索。两种起因都要走这里：
@@ -166,6 +178,10 @@ export function createMediaReportTool(deps) {
             ' ｜ 读图员豁免：' + (vision.readerProviders.length > 0 ? vision.readerProviders.join(',') : '（无）') +
             '（契约 ' + vision.readerRouteDeclarations + ' 处）' +
             ' ｜ 掩码 ' + String(vision.maskedAgents ?? 0) + '/' + String(vision.knownAgents ?? 0)
+          // 本地 OCR（2026-10-30）：纯文字截图走它、不走读图员，所以"它开没开"同样属于
+          // "谁能看图"的一部分，且它的可用性取决于系统 OCR 语言包（首次调用才暴露）。
+          const ocrOn = typeof switches?.isEnabled === 'function' ? switches.isEnabled('ocr_image') === true : true
+          backendLine += '\n本地 OCR：' + (ocrOn ? '✅ 开（Windows 引擎，不出网）' : '⛔ 关')
           if (vision.readerRoutesUnknown) {
             backendLine += '\n⚠ **认不出任何读图员路由**：已放弃对子代理的原生读图屏蔽（fail-open），请检查契约文件。'
           }

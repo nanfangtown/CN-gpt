@@ -1,7 +1,7 @@
 /**
  * 试运行：不安装 dsh、不联网、不花 key 的完整验收。
  *
- * 覆盖：配置默认值 → 9 个工具的注册面 → submit/poll/fetch 全链路 →
+ * 覆盖：配置默认值 → 10 个工具的注册面 → submit/poll/fetch 全链路 →
  *       错误归一化与固定文案 → 超时/取消保留 task_id → media_task 补下载 →
  *       成本账本两种后端 + 报表 → 健康探测 → 预算保护 → 附件退化路径。
  *
@@ -273,13 +273,16 @@ async function main() {
   console.log('\n[mm-models 试运行] 本地假厂商：' + mock.base + '\n')
 
   // ---------------------------------------------------------------- 配置与注册面
-  await test('Config 默认值：三把 key 引用名 / 型号 / 超时 / 真实单价', async () => {
+  await test('Config 默认值：四把 key 引用名 / 型号 / 超时 / 真实单价', async () => {
     const config = new Config({})
     assert.equal(plain(config.dashscopeApiKeyEnv), 'DASHSCOPE_API_KEY')
     assert.equal(plain(config.arkApiKeyEnv), 'ARK_API_KEY')
     assert.equal(plain(config.zhipuApiKeyEnv), 'ZHIPU_API_KEY')
+    assert.equal(plain(config.minimaxApiKeyEnv), 'MINIMAX_API_KEY')
     assert.equal(plain(config.qwenModel), 'qwen-image-3.0')
     assert.equal(plain(config.seedanceModel), 'doubao-seedance-2-5-260628')
+    assert.equal(plain(config.minimaxModel), 'MiniMax-Hailuo-02')
+    assert.equal(plain(config.minimaxBase), 'https://api.minimax.cn')
     // 任务等待上限（2026-10-14 收紧）：出图 3 分钟、出片 15 分钟。
     // 它们是**同步阻塞**的等待上限，默认取"够用但早失败"；超时后仍可靠任务注册表找回。
     assert.equal(plain(config.taskTimeoutMs), 180000)
@@ -294,6 +297,9 @@ async function main() {
     assert.equal(plain(config.pricing)['qwen-image-3.0'].unitPrice, 0.18)
     assert.equal(plain(config.pricing)['doubao-seedance-1-0-pro-fast-251015'].unitPrice, 0.206)
     assert.equal(plain(config.pricing)['glm-4.6v'].inputPrice, null)
+    // MiniMax 按条计价：768P 6 秒 = ¥2.00（2026-10-20 官方人民币价）。
+    assert.equal(plain(config.pricing)['MiniMax-Hailuo-02'].unit, 'call')
+    assert.equal(plain(config.pricing)['MiniMax-Hailuo-02'].unitPrice, 2)
     assert.equal(plain(config.promptSection), true)
   })
 
@@ -303,6 +309,7 @@ async function main() {
     const config = new Config({})
     assert.equal(plain(config.enableAskGlm), true, '出厂默认开启 ask_glm')
     assert.equal(plain(config.enableAskQwen), false, 'ask_qwen 仍默认关（与 ask_glm 互斥，二选一）')
+    assert.equal(plain(config.enableMinimaxVideo), false, 'MiniMax 出片默认关（未接通）')
     assert.equal(plain(config.blockMainAgentNativeVision), true, '默认屏蔽主代理原生读图')
     assert.equal(plain(config.blockSubagentNativeVision), true, '默认屏蔽通用子代理原生读图')
     // 想用原生：把两个 block 关掉即可，读图员不必动（提示词是原生优先）。
@@ -323,15 +330,16 @@ async function main() {
     assert.ok(!text.includes('undefined'), '不得出现 undefined 单位：' + text)
   })
 
-  await test('apply() 注册 9 个工具 + 分工说明段落（读图员与窄委派都由插件自己注册）', async () => {
+  await test('apply() 注册 11 个工具 + 分工说明段落（读图员与窄委派都由插件自己注册）', async () => {
     const tmp = await makeTmp()
     const { fake, tools } = setup(mock, tmp)
     assert.deepEqual(Object.keys(tools).sort(), [
-      'ask_glm', 'ask_qwen', 'media_report', 'media_task', 'qwen_draw',
+      'ask_glm', 'ask_qwen', 'media_report', 'media_task', 'minimax_video', 'ocr_image', 'qwen_draw',
       'seedance_video', 'subagent_code', 'subagent_research', 'video_gen',
     ])
     // 2026-10-18：窄委派也不能再用 tool-subagent 那句通用文案 —— 模型得能一眼分清
     // "执行"（会改文件）和"资料"（只读、不跑命令）。
+    assert.ok(tools.minimax_video.description.includes('MiniMax'), 'minimax_video 描述必须自带厂商：' + tools.minimax_video.description)
     assert.ok(tools.subagent_code.description.includes('执行子代理'), 'subagent_code 描述必须自带身份：' + tools.subagent_code.description)
     assert.ok(tools.subagent_research.description.includes('资料子代理'), 'subagent_research 描述必须自带身份：' + tools.subagent_research.description)
     assert.ok(tools.subagent_code.parameters.prompt, '必须暴露 prompt 参数')
@@ -344,7 +352,7 @@ async function main() {
     // 2026-10-17 事故：描述写死 GLM-4.6V，配置默认却是 glm-5.3-flash —— 工具"自称 4.6V、实际调 5.3-flash"。
     // 型号必须来自 Config，改配置后描述跟着变。
     assert.ok(tools.ask_glm.description.includes('glm-5.3-flash'), '描述里的型号必须来自 Config：' + tools.ask_glm.description)
-    assert.ok(tools.ask_qwen.description.includes('qwen3-vl-plus'), '描述里的型号必须来自 Config：' + tools.ask_qwen.description)
+    assert.ok(tools.ask_qwen.description.includes('qwen3.8-max'), '描述里的型号必须来自 Config：' + tools.ask_qwen.description)
     assert.ok(!tools.ask_glm.description.includes('GLM-4.6V'), '不能残留写死的旧型号：' + tools.ask_glm.description)
     assert.equal(fake.sections.length, 1)
     assert.equal(fake.sections[0].name, 'mm-models:division')
@@ -355,13 +363,15 @@ async function main() {
     assert.ok(sectionText.includes('【读图路由】'), '要保留读图路由策略：' + sectionText)
     assert.ok(sectionText.includes('【窄委派】'), '要保留窄委派建议：' + sectionText)
     assert.ok(!sectionText.includes('你是主创兼工程师'), '不该再有"你是主创兼工程师"这类身份声明（读图员也收得到）：' + sectionText)
-    // 段落基本不列工具名（不泄漏能力）。**有意的例外**是读图员与两条窄委派工具：
-    // 不点名就没法下达"只许走这两条路"的指令。
+    // 段落基本不列工具名（不泄漏能力）。**有意的例外**是读图相关的三条：
+    // 不点名就没法下达"这几条路怎么分工"的指令（ocr_image 是 2026-10-30 加的本地 OCR）。
     assert.ok(!/qwen_draw|seedance_video|media_task|media_report/.test(sectionText), '提示词段落不应出现其它工具名')
     assert.ok(sectionText.includes('ask_glm') && sectionText.includes('ask_qwen'), '读图路由策略必须点名两个读图员')
-    // 字节预算：实测原版 710 B（274 字符），瘦身后必须显著更小，且不许再长回去。
+    assert.ok(sectionText.includes('ocr_image'), '文字图分流策略必须点名 ocr_image：' + sectionText)
+    // 字节预算：实测原版 710 B（274 字符），瘦身后 560 B；2026-10-30 加"文字图"一行
+    //（+128 B）后上限同步上浮。它挡的是"把提示词写成小作文"，不是禁止新增能力。
     const bytes = Buffer.byteLength(sectionText, 'utf8')
-    assert.ok(bytes <= 560, '提示词段落必须 ≤ 560 B（实测瘦身前 710 B），当前 ' + bytes + ' B')
+    assert.ok(bytes <= 700, '提示词段落必须 ≤ 700 B（瘦身后 560 B，+文字图一行），当前 ' + bytes + ' B')
   })
 
   await test('提示词段落与开关无关：打开 seedance 后仍不出现其它工具名', async () => {
@@ -425,7 +435,7 @@ async function main() {
     const { tools } = setup(mock, tmp, { subagents })
     const value = await tools.ask_qwen.execute({ image_path: 'b.png' }, { agent: { id: 'p' }, signal: undefined })
     assert.equal(value.subagentId, 'child-2')
-    assert.deepEqual(activations[0].request.agentOptions, { provider: 'qwen-vl', model: 'qwen3-vl-plus' })
+    assert.deepEqual(activations[0].request.agentOptions, { provider: 'qwen-vl', model: 'qwen3.8-max' })
     assert.equal(activations[0].request.agentPreset, 'mm-reader')
   })
 
@@ -574,13 +584,21 @@ async function main() {
     }
     createdListener.callback({ agent, source: 'test' })
     // 顺序无关比较：deny 名单的语义是集合，"谁先谁后"不是契约。
-    assert.deepEqual([...denyLists.at(-1)].sort(), ['ask_qwen', 'video_gen'], '开了 ask_glm 之后只有互斥的 ask_qwen 与默认关闭的 video_gen 在 deny 名单里')
+    assert.deepEqual(
+      [...denyLists.at(-1)].sort(),
+      ['ask_qwen', 'video_gen', 'minimax_video'].sort(),
+      '开了 ask_glm 之后只有互斥的 ask_qwen 与默认关闭的两个出片工具在 deny 名单里',
+    )
 
     const tmp2 = await makeTmp()
     const offSetup = setup(mock, tmp2)
     const offListener = offSetup.fake.listeners.find((entry) => entry.event === 'agent/created')
     offListener.callback({ agent, source: 'test' })
-    assert.deepEqual([...denyLists.at(-1)].sort(), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'].sort(), '关闭的工具应进入该 agent 的 deny 名单')
+    assert.deepEqual(
+      [...denyLists.at(-1)].sort(),
+      ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video'].sort(),
+      '关闭的工具应进入该 agent 的 deny 名单',
+    )
   })
 
   // ---------------------------------------------------------------- 读图子代理互斥
@@ -614,6 +632,44 @@ async function main() {
     })
     assert.equal(denyLists.at(-1).includes('ask_glm'), false, 'GLM 不应被隐藏')
     assert.ok(denyLists.at(-1).includes('ask_qwen'), 'ask_qwen 应被隐藏')
+  })
+
+  await test('出片三选一：只开 video_gen 时另外两个是普通“已关闭”，不是冲突', async () => {
+    const tmp = await makeTmp()
+    const { fake } = setup(mock, tmp, { overrides: { enableVideoGen: true } })
+    const guard = guardOf(fake, GUARD_TOOL_SWITCH)
+    assert.equal(guard({ name: 'video_gen' }), undefined, '打开的 video_gen 应放行')
+    for (const tool of ['seedance_video', 'minimax_video']) {
+      const denied = guard({ name: tool })
+      assert.ok(typeof denied === 'string' && denied.includes('已关闭'), tool + ' 应是普通关闭：' + String(denied))
+    }
+  })
+
+  await test('出片互斥：三个都是 true（手改配置）→ 声明顺序第一个生效，其余被压制', async () => {
+    const tmp = await makeTmp()
+    const { fake } = setup(mock, tmp, { overrides: { enableSeedanceVideo: true, enableVideoGen: true, enableMinimaxVideo: true } })
+    const guard = guardOf(fake, GUARD_TOOL_SWITCH)
+    assert.equal(guard({ name: 'seedance_video' }), undefined, '冲突时 seedance 优先')
+    for (const tool of ['video_gen', 'minimax_video']) {
+      const denied = guard({ name: tool })
+      assert.ok(typeof denied === 'string' && denied.includes('互斥') && denied.includes('seedance_video'), tool + ' 应被压制：' + String(denied))
+    }
+  })
+
+  await test('出片互斥：normalizeSettingsOps 打开 minimax 会关掉另外两个', async () => {
+    assert.deepEqual(
+      normalizeSettingsOps([{ op: 'set', path: ['enableMinimaxVideo'], value: true }]).map((op) => op.path[0] + '=' + op.value),
+      ['enableMinimaxVideo=true', 'enableSeedanceVideo=false', 'enableVideoGen=false'],
+    )
+    assert.deepEqual(
+      normalizeSettingsOps([{ op: 'set', path: ['enableVideoGen'], value: true }]).map((op) => op.path[0] + '=' + op.value),
+      ['enableVideoGen=true', 'enableSeedanceVideo=false', 'enableMinimaxVideo=false'],
+    )
+    // 关闭不牵连其它。
+    assert.deepEqual(
+      normalizeSettingsOps([{ op: 'set', path: ['enableMinimaxVideo'], value: false }]),
+      [{ op: 'set', path: ['enableMinimaxVideo'], value: false }],
+    )
   })
 
   await test('热更新：配置原地变更后，掩码会对账（无需新开会话）', async () => {
@@ -1029,6 +1085,8 @@ async function main() {
       assert.ok(reason.includes('ask_glm'), '应指向当前开着的读图员：' + reason)
       assert.ok(!reason.includes('read_image'), '不该推荐已被屏蔽的 read_image：' + reason)
       assert.ok(reason.includes('不要用 read 重试'), '必须明确禁止重试：' + reason)
+      // 2026-10-30：纯文字截图有本地 OCR 这条路，指引里必须点名，否则模型只会去派子代理。
+      assert.ok(reason.includes('ocr_image'), '纯文字截图应指向本地 OCR：' + reason)
     }
 
     // 情形 2：原生读图可用 → 指向 read_image
@@ -1044,6 +1102,7 @@ async function main() {
     assert.ok(reasonNone.includes('没有任何看图途径'), '没有途径时要说清楚：' + reasonNone)
     assert.ok(!reasonNone.includes('read_image'), '不该推荐已被屏蔽的 read_image：' + reasonNone)
     assert.ok(reasonNone.includes('读图员都没开'), '要说明读图员都没开，而不是说成可用：' + reasonNone)
+    assert.ok(reasonNone.includes('ocr_image'), '连读图员都没开时，纯文字截图仍可走本地 OCR：' + reasonNone)
     // 只有"真的没途径"时才需要把用户引到配置卡（有可用工具时不该多此一举）
     assert.ok(reasonNone.includes('CN-gpt'), '没途径时要指路到配置卡：' + reasonNone)
 
@@ -1286,7 +1345,7 @@ async function main() {
     const bytes = (text) => Buffer.byteLength(text, 'utf8')
 
     // 2026-10-17 新增一条能力行（dashscope_video），+95 B；上限同步上浮，仍然挡"把报表写成小作文"。
-    assert.ok(bytes(health) <= 2350, '紧凑 health 超预算：' + bytes(health) + ' B（实测原版 2667 B / 线上约 3.5 KB）')
+    assert.ok(bytes(health) <= 2600, '紧凑 health 超预算：' + bytes(health) + ' B（实测原版 2667 B / 线上约 3.5 KB）')
     assert.ok(bytes(cost) <= 700, '紧凑 cost 超预算：' + bytes(cost) + ' B（实测原版 895 B）')
     assert.ok(bytes(healthVerbose) > bytes(health), 'verbose 必须比紧凑更长（否则等于没实现）')
     // 红线：紧凑模式只删样板/明细，**告警一个都不能省**
@@ -1520,12 +1579,13 @@ async function main() {
     assert.equal(allow({ name: 'qwen_draw', arguments: {}, agent: subAgent }), undefined, '默认必须允许子代理生成')
     assert.equal(allow({ name: 'seedance_video', arguments: {}, agent: subAgent }), undefined, '默认必须允许子代理出片')
     assert.equal(allow({ name: 'video_gen', arguments: {}, agent: subAgent }), undefined, '默认必须允许子代理用百炼出片')
+    assert.equal(allow({ name: 'minimax_video', arguments: {}, agent: subAgent }), undefined, '默认必须允许子代理用 MiniMax 出片')
     assert.equal(allow({ name: 'qwen_draw', arguments: {}, agent: mainAgent }), undefined, '主代理永远允许')
     assert.equal(allow({ name: 'media_report', arguments: {}, agent: subAgent }), undefined, '这条守卫只管生成类工具')
 
     const blocked = setup(mock, await makeTmp(), { overrides: { requireSpendConfirm: false, blockSubagentSpend: true } })
     const brake = guardOf(blocked.fake, GUARD_SUBAGENT_SPEND)
-    for (const tool of ['qwen_draw', 'seedance_video', 'video_gen']) {
+    for (const tool of ['qwen_draw', 'seedance_video', 'video_gen', 'minimax_video']) {
       const verdict = brake({ name: tool, arguments: {}, agent: subAgent })
       assert.ok(typeof verdict === 'string' && verdict.includes('只允许主代理调用'), tool + ' 应被刹车拦下：' + String(verdict))
     }
@@ -1534,7 +1594,7 @@ async function main() {
     // 分级刹车（2026-10-17）：只挡出片，不挡出图与读图。
     const videoOnly = setup(mock, await makeTmp(), { overrides: { requireSpendConfirm: false, blockSubagentVideoSpend: true } })
     const videoBrake = guardOf(videoOnly.fake, GUARD_SUBAGENT_SPEND)
-    for (const tool of ['video_gen', 'seedance_video']) {
+    for (const tool of ['video_gen', 'seedance_video', 'minimax_video']) {
       const verdict = videoBrake({ name: tool, arguments: {}, agent: subAgent })
       assert.ok(typeof verdict === 'string' && verdict.includes('只允许主代理调用'), tool + ' 应被"只挡出片"拦下：' + String(verdict))
     }
@@ -1850,9 +1910,9 @@ async function main() {
     const base = switches.signature()
     assert.equal(typeof base, 'string')
     assert.equal(base, switches.signature(), '同一状态必须得到同一个签名（否则短路失效）')
-    assert.equal(base.split(',').length, 7, '七个开关都要进签名：' + base)
+    assert.equal(base.split(',').length, 9, '九个开关都要进签名：' + base)
 
-    const fields = ['enableAskGlm', 'enableAskQwen', 'enableQwenDraw', 'enableSeedanceVideo', 'enableVideoGen', 'enableMediaTask', 'enableMediaReport']
+    const fields = ['enableAskGlm', 'enableAskQwen', 'enableOcrImage', 'enableQwenDraw', 'enableSeedanceVideo', 'enableVideoGen', 'enableMinimaxVideo', 'enableMediaTask', 'enableMediaReport']
     for (const field of fields) {
       const one = setupSwitches()
       const before = one.switches.signature()
@@ -1877,7 +1937,7 @@ async function main() {
 
     // 初始状态：seedance / 两个读图员都关着 → 创建时就按实时配置贴掩码
     // （顺序跟随 TOOL_SWITCHES 的声明顺序：ask_glm、ask_qwen、seedance_video）
-    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'], '创建时应按实时配置贴掩码：' + JSON.stringify(applied))
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video'], '创建时应按实时配置贴掩码：' + JSON.stringify(applied))
 
     // 稳态：连跑 5 次 tick，不该有任何新掩码（短路生效）
     const before = applied.length
@@ -1888,12 +1948,12 @@ async function main() {
     config.enableSeedanceVideo = true
     tick()
     assert.equal(applied.length, before + 1, '开关变了下一次 tick 必须重新对账：' + JSON.stringify(applied))
-    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'video_gen'], '打开后 seedance_video 不该再被 deny：' + JSON.stringify(applied))
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'video_gen', 'minimax_video'], '打开后 seedance_video 不该再被 deny：' + JSON.stringify(applied))
 
     // 反向：关掉 qwen_draw → 下一次 tick 必须把它 deny 掉（deny 顺序 = TOOL_SWITCHES 声明顺序）
     config.enableQwenDraw = false
     tick()
-    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'qwen_draw', 'video_gen'], '关掉后必须立刻 deny：' + JSON.stringify(applied))
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'qwen_draw', 'video_gen', 'minimax_video'], '关掉后必须立刻 deny：' + JSON.stringify(applied))
   })
 
   await test('性能：工具 schema 体积有上限（每个请求都要发送，胖描述是持续成本）', async () => {
@@ -1907,14 +1967,16 @@ async function main() {
     // 合计上限同步上调。描述值钱的地方是"读图"这两个字，别写小作文。
     // 2026-10-18：窄委派两行改由插件注册（988 B / 957 B；stock 工具那份通用文案
     // 与 subagent 逐字相同，等于白占字节还认不出身份）。合计上限同步上调到 8.6 KB。
-    const budget = { ask_glm: 1300, ask_qwen: 1300, qwen_draw: 700, seedance_video: 1200, video_gen: 1200, media_task: 800, media_report: 500, subagent_code: 1050, subagent_research: 1050 }
+    // 2026-10-30：新增 ocr_image（本地 OCR）。描述压到 ~640 B：卖点只有一句
+    // "纯文字截图走它、图像理解走读图员"，其余细节留在 README。
+    const budget = { ask_glm: 1300, ask_qwen: 1300, ocr_image: 700, qwen_draw: 700, seedance_video: 1200, video_gen: 1200, minimax_video: 1200, media_task: 860, media_report: 500, subagent_code: 1050, subagent_research: 1050 }
     let total = 0
     for (const [name, definition] of Object.entries(tools)) {
       const bytes = Buffer.byteLength(JSON.stringify({ name: definition.name, description: definition.description, parameters: definition.parameters }), 'utf8')
       total += bytes
       assert.ok(bytes <= budget[name], `${name} 的 schema 超预算：${bytes} B > ${budget[name]} B（描述该写进 README，不是写进每个请求）`)
     }
-    assert.ok(total <= 8600, '九个工具 schema 合计超预算：' + total + ' B/请求（实测 8357）')
+    assert.ok(total <= 10100, '十一个工具 schema 合计超预算：' + total + ' B/请求（实测约 9950）')
   })
 
   // ---------------------------------------------------------------- 生成物附回上下文（默认关）
@@ -2417,6 +2479,16 @@ async function main() {
     assert.equal(arkProbes.length, 0, '关闭的链路不应被探测')
     const dashProbes = mock.state.probes.slice(before).filter((entry) => String(entry.path).includes('compatible-mode'))
     assert.ok(dashProbes.length >= 1, '开启的链路应正常探测')
+  })
+
+  await test('media_report(health)：出片互斥冲突可见（手改同时开启时点名被压制者）', async () => {
+    const tmp = await makeTmp()
+    const { tools } = setup(mock, tmp, { overrides: { enableVideoGen: true, enableMinimaxVideo: true, healthProbe: false } })
+    const { exec } = newExec(tmp)
+    const health = await tools.media_report.execute({ action: 'health' }, exec)
+    assert.ok(health.report.includes('minimax_video'), 'health 必须列出 MiniMax 行：' + health.report)
+    assert.ok(health.report.includes('生视频模型同时开启了'), '冲突必须在紧凑模式也可见：' + health.report)
+    assert.ok(health.report.includes('被压制'), '要说明谁被压制：' + health.report)
   })
 
   // ---------------------------------------------------------------- 读图子代理"只看图"契约
@@ -3167,7 +3239,7 @@ async function main() {
       const matched = new RegExp(`\\n {10}${escaped}:\\n([\\s\\S]*?)(?=\\n {10}[^\\s]|\\n {8}[A-Za-z])`).exec(block)
       return matched === null ? null : /unitPrice:\s*([^\s]+)/.exec(matched[1])?.[1]
     }
-    for (const field of ['seedanceModel', 'qwenModel']) {
+    for (const field of ['seedanceModel', 'qwenModel', 'minimaxModel']) {
       const model = modelOf(field)
       assert.ok(typeof model === 'string' && model.length > 0, `模板里 ${field} 应有取值`)
       const price = priceOf(model)

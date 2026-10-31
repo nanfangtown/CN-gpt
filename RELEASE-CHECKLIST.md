@@ -37,8 +37,9 @@ npm pack --dry-run      # 检查包里只有 index/client/core/tasks/tools/local
 
 ## 4. 版本与发布
 
-- [x] `package.json` 与 `CHANGELOG.md` 的版本一致（当前 `0.1.1`）。
+- [x] `package.json` 与 `CHANGELOG.md` 的版本一致（当前 `0.2.0`）。
 - [x] `v0.1.1` annotated tag 已创建并推送。
+- [x] `v0.2.0` annotated tag（随本次发布创建，待推送）。
 - [ ] 可选：发布 npm（已移除 `private`，`publishConfig.access = public`）：
 
       npm publish --access public

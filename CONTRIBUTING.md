@@ -21,11 +21,11 @@ npm run test:docs    # 文档相对链接检查
 
 | 命令 | 需要 DSH / key | 覆盖 |
 | --- | --- | --- |
-| `npm test` | 否 / 否 | 配置默认值、9 个工具的注册面、submit → poll → fetch、错误映射、账本、花费闸门、开关、读图守卫、卡片 |
+| `npm test` | 否 / 否 | 配置默认值、10 个工具的注册面、submit → poll → fetch、错误映射、账本、花费闸门、开关、读图守卫、出片互斥、卡片 |
 | `npm run test:docs` | 否 / 否 | README / docs / CONTRIBUTING 的相对链接 |
 | `npm run test:mutation` | 否 / 否 | 故意改坏关键逻辑，确认测试会红（**会改写工作区源码再还原，勿与其它测试并发**） |
 | `npm run test:perf` | 否 / 否 | 每请求固定成本与 guard 链开销 |
-| `npm run test:sizes` | 否 / 否 | 9 个工具 schema 的字符数 |
+| `npm run test:sizes` | 否 / 否 | 10 个工具 schema 的字符数 |
 | `node --import ./tests/register.mjs ./tests/e2e-*.mjs` | 是 / 是 | 真实 harness / 真实厂商；缺条件时打印 `SKIPPED:` |
 
 `tests/README.md` 有路径探测、沙箱初始化和各 e2e 的详细说明。
@@ -33,7 +33,7 @@ npm run test:docs    # 文档相对链接检查
 ## 代码结构
 
 ```text
-index.js              Config + 9 个工具注册 + 提示词段落 + 六条 guard
+index.js              Config + 10 个工具注册 + 提示词段落 + 多条 guard
 client.js             插件页里的配置卡（唯一前端代码）
 core/                 字段映射、错误、密钥、成本/账本、落盘、工具开关、读图守卫
 tasks/                异步任务 manager + 三个厂商 adapter

@@ -1,5 +1,5 @@
 /**
- * 三把 key 的解析、状态描述与优先级（规划 [4]）。
+ * 四把 key 的解析、状态描述与优先级（规划 [4]）。
  *
  * 取值优先级（与官方 dsh-web-search-deepseek 一致）：
  *   字面值（secret 字段）  >  引用名（credential-ref → ctx.credentials → 环境变量）
@@ -8,7 +8,7 @@
  */
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 
-/** 三把 key 的固定引用名与归属（规划 [4.4]）。 */
+/** 四把 key 的固定引用名与归属（规划 [4.4]）。 */
 export const KEY_SPECS = Object.freeze([
   Object.freeze({
     id: 'dashscope',
@@ -53,6 +53,18 @@ export const KEY_SPECS = Object.freeze([
     usage: '仅 video_gen 出片使用（与 qwen_draw 共用 DASHSCOPE_API_KEY；另需业务空间 ID）',
     settingsWhere: '插件页 → CN-gpt → 配置卡',
     capability: 'dashscope_video',
+  }),
+  // MiniMax（海螺）出片：独立 key，和另外三家都不共用。
+  // 国内 .cn 与国际 .io 的 key 不通用，minimaxBase 必须与 key 同区域。
+  Object.freeze({
+    id: 'minimax',
+    ref: 'MINIMAX_API_KEY',
+    literalField: 'minimaxApiKey',
+    envField: 'minimaxApiKeyEnv',
+    label: 'MiniMax（海螺）API Key',
+    usage: '仅 minimax_video 出片使用',
+    settingsWhere: '插件页 → CN-gpt → 配置卡',
+    capability: 'minimax_video',
   }),
   // DashScope 同一把 key 也供 ask_qwen 的 qwen-vl 路由使用：
   // 单独成行只为让健康报告能独立报出"读图子代理"这一行，不额外要求第四把 key。
@@ -124,7 +136,7 @@ export function createKeyResolver(ctx, config) {
       return { ref: refName, configured: nonEmptyString(process.env[refName]) !== undefined, source: 'environment', writable: false }
     },
 
-    /** 三把 key 的状态快照。 */
+    /** 四把 key 的状态快照。 */
     async describeAll() {
       const entries = await Promise.all(
         KEY_SPECS.map(async (spec) => ({ spec, status: await this.describe(spec) })),

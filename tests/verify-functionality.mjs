@@ -94,9 +94,10 @@ async function setup(overrides = {}) {
 await test('① 削减字节后，schema 的**功能面**一个都没少（与优化前提交逐字对比）', async () => {
   const { tools } = await setup({ enableSeedanceVideo: true })
 
-  // 1) 九个工具都还在（2026-10-17：读图员改由插件注册；2026-10-18：窄委派也改由插件注册）
+  // 1) 工具都还在（2026-10-17：读图员改由插件注册；2026-10-18：窄委派也改由插件注册；
+  //    2026-10-30：新增本地 OCR ocr_image）
   assert.deepEqual(Object.keys(tools).sort(), [
-    'ask_glm', 'ask_qwen', 'media_report', 'media_task', 'qwen_draw',
+    'ask_glm', 'ask_qwen', 'media_report', 'media_task', 'minimax_video', 'ocr_image', 'qwen_draw',
     'seedance_video', 'subagent_code', 'subagent_research', 'video_gen',
   ])
 
@@ -271,7 +272,7 @@ await test('④ 签名短路：方向、规模、多 agent 都不会吞掉配置
   const agents = [makeAgent('a'), makeAgent('b'), makeAgent('c')]
   for (const agent of agents) created({ agent })
   for (const agent of agents) {
-    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'], agent.id + ' 创建时掩码不对')
+    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video'], agent.id + ' 创建时掩码不对')
   }
 
   // 稳态：3 个 agent × 3 次 tick，一次都不该重复贴
@@ -285,20 +286,20 @@ await test('④ 签名短路：方向、规模、多 agent 都不会吞掉配置
   live.enableSeedanceVideo = true
   tick()
   for (const agent of agents) {
-    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'video_gen'], agent.id + ' 没跟上开关变更（多 agent 漏同步）')
+    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'video_gen', 'minimax_video'], agent.id + ' 没跟上开关变更（多 agent 漏同步）')
   }
 
   // 再翻转（反向）→ 仍必须跟上
   live.enableSeedanceVideo = false
   tick()
   for (const agent of agents) {
-    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'], agent.id + ' 反向变更没跟上')
+    assert.deepEqual(applied.get(agent.id).at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video'], agent.id + ' 反向变更没跟上')
   }
 
   // 新增 agent（运行中出现）→ 立刻拿到当前掩码
   const late = makeAgent('late')
   created({ agent: late })
-  assert.deepEqual(applied.get('late').at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'], '新 agent 没拿到当前掩码')
+  assert.deepEqual(applied.get('late').at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video'], '新 agent 没拿到当前掩码')
 
   // 连续快速翻转：每次**真实变化**都必须被跟进、且最后一次必须赢。
   //
@@ -307,17 +308,17 @@ await test('④ 签名短路：方向、规模、多 agent 都不会吞掉配置
   //      所以断言必须是"末态掩码与末态开关一致"，而不是"翻转次数 = 贴掩码次数"。
   //   2. 必须记录**起点状态**，断言才严密（否则可能拿一个错误的状态当期望值）。
   const clipCountBefore = applied.get('a').length
-  let expected = ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'] // 当前 live.enableSeedanceVideo === false
+  let expected = ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video'] // 当前 live.enableSeedanceVideo === false
   let flips = 0
   for (let i = 0; i < 6; i += 1) {
     live.enableSeedanceVideo = i % 2 === 0 // true,false,true,false,true,false
-    expected = live.enableSeedanceVideo ? ['ask_glm', 'ask_qwen', 'video_gen'] : ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen']
+    expected = live.enableSeedanceVideo ? ['ask_glm', 'ask_qwen', 'video_gen', 'minimax_video'] : ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video']
     tick()
     flips += 1
     assert.deepEqual(applied.get('a').at(-1), expected, `第 ${flips} 次翻转（值=${live.enableSeedanceVideo}）后掩码不对`)
   }
   assert.equal(live.enableSeedanceVideo, false, '末态应是 false')
-  assert.deepEqual(applied.get('a').at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen'], '末态掩码必须与末态开关一致')
+  assert.deepEqual(applied.get('a').at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video'], '末态掩码必须与末态开关一致')
   // 这一串翻转里每次值都真的变了 → 每次都该被跟进（数量等于翻转次数）
   assert.equal(applied.get('a').length - clipCountBefore, flips, '每次真实变化都该被跟进')
 

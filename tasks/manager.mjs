@@ -260,7 +260,22 @@ export function createTaskManager({ adapters, config, logger }) {
    */
   async function fetchArtifacts(state, options = {}) {
     const adapter = get(state.adapter)
-    const urls = Array.isArray(state.artifacts) ? state.artifacts : []
+    // 可选适配器钩子（2026-10-20 加，为 MiniMax）：成功响应只给 file_id，
+    // 需要先换一次带时效的下载地址。其它厂商没有这个钩子，走 state.artifacts。
+    const urls =
+      typeof adapter.resolveArtifacts === 'function'
+        ? await adapter.resolveArtifacts(state, {
+            credential: options.credential,
+            config,
+            fetchImpl: options.fetchImpl,
+            signal: options.signal,
+          })
+        : Array.isArray(state.artifacts)
+          ? state.artifacts
+          : []
+    if (!Array.isArray(urls)) {
+      throw new MediaError(CODES.UNKNOWN, '内部错误：adapter.resolveArtifacts 未返回 URL 数组')
+    }
     if (urls.length === 0) return []
     const outDir = options.outDir
     await ensureDir(outDir)

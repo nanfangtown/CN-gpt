@@ -138,6 +138,51 @@ export const DEFAULT_PRICING = {
     ],
     source: 'https://help.aliyun.com/zh/model-studio/wan2-5-t2v',
   },
+  // ---- MiniMax（海螺）视频（2026-10-20 加）----
+  //
+  // 计费口径与上面所有视频都不同：**按条**（分辨率 × 时长），不是按秒。
+  // `unitPrice` 只是兜底展示价；真实取价走 tiers，tiers 存在时必须精确命中，
+  // 否则返回 null 让闸门 fail-closed（与可灵 4K 那条同一原则：宁可不报，不许低报）。
+  // 单价来源：https://platform.minimax.cn/docs/pricing/overview.md （人民币「历史模型」区，
+  // 2026-10-20 取价；Hailuo 系列在国际站已折叠进 Legacy Models）。
+  'MiniMax-Hailuo-02': {
+    unit: 'call',
+    unitPrice: 2,
+    currency: 'CNY',
+    asOf: '2026-10-20',
+    tiers: [
+      { resolution: '512P', duration: 6, unitPrice: 0.6 },
+      { resolution: '512P', duration: 10, unitPrice: 1 },
+      { resolution: '768P', duration: 6, unitPrice: 2 },
+      { resolution: '768P', duration: 10, unitPrice: 4 },
+      { resolution: '1080P', duration: 6, unitPrice: 3.5 },
+    ],
+    source: 'https://platform.minimax.cn/docs/pricing/overview.md',
+  },
+  'MiniMax-Hailuo-2.3': {
+    unit: 'call',
+    unitPrice: 2,
+    currency: 'CNY',
+    asOf: '2026-10-20',
+    tiers: [
+      { resolution: '768P', duration: 6, unitPrice: 2 },
+      { resolution: '768P', duration: 10, unitPrice: 4 },
+      { resolution: '1080P', duration: 6, unitPrice: 3.5 },
+    ],
+    source: 'https://platform.minimax.cn/docs/pricing/overview.md',
+  },
+  'MiniMax-Hailuo-2.3-Fast': {
+    unit: 'call',
+    unitPrice: 1.35,
+    currency: 'CNY',
+    asOf: '2026-10-20',
+    tiers: [
+      { resolution: '768P', duration: 6, unitPrice: 1.35 },
+      { resolution: '768P', duration: 10, unitPrice: 2.25 },
+      { resolution: '1080P', duration: 6, unitPrice: 2.31 },
+    ],
+    source: 'https://platform.minimax.cn/docs/pricing/overview.md',
+  },
   // ---- Legacy：2026-10-15 之前的模型 id，保留仅为兼容旧配置 ----
   //
   // ⚠ 上面的三个 `doubao-seedance-*` 键才是**真实模型 id**（按 id 计价，别再用 'seedance-2.0'）。
@@ -167,6 +212,14 @@ export const DEFAULT_PRICING = {
     currency: 'CNY',
     asOf: '2026-10-13',
     source: 'https://bigmodel.cn/pricing',
+  },
+  'qwen3.8-max': {
+    unit: 'ktoken',
+    inputPrice: null,
+    outputPrice: null,
+    currency: 'CNY',
+    asOf: '2026-10-31',
+    source: 'https://help.aliyun.com/zh/model-studio/model-pricing',
   },
   'qwen3-vl-plus': {
     unit: 'ktoken',
@@ -294,6 +347,7 @@ export function pricingWarnings(config, plain = (value) => value) {
     ['qwenModel', '制图'],
     ['seedanceModel', '出片'],
     ['videoModel', '出片（百炼）'],
+    ['minimaxModel', '出片（MiniMax）'],
   ]
   const known = new Set()
   for (const [field, label] of configured) {
@@ -769,6 +823,8 @@ export async function openLedger(ctx, config, logger) {
 const PROVIDER_LABELS = Object.freeze({
   'dashscope-image': 'DashScope',
   'ark-video': '方舟 Ark',
+  'dashscope-video': '百炼（可灵/万相）',
+  'minimax-video': 'MiniMax（海螺）',
 })
 
 /** 记录 → 按 厂商+型号 聚合。 */
@@ -962,7 +1018,7 @@ export function renderCostReport({ records, config, scope = 'session', sessionId
  * @param {object} options - keyEntries / health / probes / llmProviders / config / switches / readerConflict / verbose。
  * @returns {string}
  */
-export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmProviders, config, switches = {}, readerConflict = false, verbose = false }) {
+export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmProviders, config, switches = {}, readerConflict = false, extraConflictNotes = [], verbose = false }) {
   const lines = []
   lines.push('# 链路健康')
   lines.push('')
@@ -1035,6 +1091,10 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
     lines.push(...conflictNotes)
     lines.push('')
   }
+  if (Array.isArray(extraConflictNotes) && extraConflictNotes.length > 0) {
+    lines.push(...extraConflictNotes)
+    lines.push('')
+  }
   // 「当前能力可用性」是上面那张表的口语版；紧凑模式下不重复（省 ~230 B/次），
   // 但**任何"不可用"的结论都必须在紧凑模式里也看得见** —— 所以下面只挑异常的报。
   const unavailable = Object.entries(capability).filter(([cap, ok]) => switches[cap] !== false && !ok)
@@ -1059,9 +1119,10 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
     ['qwen_draw（制图）', plainValue(config?.qwenModel)],
     ['seedance_video（出片）', plainValue(config?.seedanceModel)],
     ['video_gen（百炼出片）', plainValue(config?.videoModel)],
+    ['minimax_video（MiniMax 出片）', plainValue(config?.minimaxModel)],
   ]
-  /** 单价表里的单位是机器口径（image / second），给人看要说人话。 */
-  const UNIT_LABEL = { image: '张', second: '秒', call: '次' }
+  /** 单价表里的单位是机器口径（image / second / call），给人看要说人话。 */
+  const UNIT_LABEL = { image: '张', second: '秒', call: '条' }
   for (const [label, id] of modelRows) {
     if (typeof id !== 'string' || id.trim() === '') continue
     const entry = pricing?.[id]
@@ -1093,6 +1154,7 @@ function adapterOfCapability(capability) {
   if (capability === 'qwen_draw') return 'dashscope-image'
   if (capability === 'seedance_video') return 'ark-video'
   if (capability === 'dashscope_video') return 'dashscope-video'
+  if (capability === 'minimax_video') return 'minimax-video'
   return undefined
 }
 

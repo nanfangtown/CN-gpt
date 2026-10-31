@@ -3,7 +3,33 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 本项目在 `0.x` 期间允许有行为变更，破坏性变更会写在 `Changed` 里。
 
-## [Unreleased]
+## [0.2.0] - 2026-10-31
+
+### Added
+
+- **本地 OCR `ocr_image`**（2026-10-30）：纯文字截图（报错 / 日志 / 代码 / 表格 / 文档 / 聊天记录）
+  不再派读图子代理 —— 用 Windows 自带的 `Windows.Media.Ocr` 直接抄字：免费、离线、截图不出网，
+  通常 0.3–1.5 秒。按内容自动在中文 / 英文引擎间选择（中文引擎会把 ASCII 认成形近字），
+  小字自动放大后重认一次，并按词框把引擎拆乱的行重排回阅读顺序（中文不再逐字带空格）。
+  与读图员互补：图表读数 / 排版 / 画面仍走 `ask_qwen`；开关 `enableOcrImage` 默认开，
+  `media_report(action=health)` 里有一行「本地 OCR」状态。
+- **MiniMax（海螺）出片**：新增 `minimax_video`（文生 / 图生 / 首尾帧），走 MiniMax v1
+  `POST /v1/video_generation` → `GET /v1/query/video_generation` → `GET /v1/files/retrieve`；
+  独立 `MINIMAX_API_KEY`，国内 `.cn` / 国际 `.io` 可配。
+- 按条计费：`unit: call` + `tiers`（分辨率 × 时长），缺档位 fail-closed；账本/健康/成本报表同步。
+- 测试：适配器契约 12 项 + 工具层闸门/记账 5 项；CI 增加 OCR / MiniMax suite。
+
+### Changed
+
+- **读图员默认模型升级到 `qwen3.8-max`**（2026-10-31）：`qwen-vl` provider 白名单新增
+  `qwen3.8-max`，`readerQwenModel` 默认切到它，保留 `qwen3-vl-plus` 作回退；实测支持图像输入，
+  文本逐字与场景事实探针均通过；单价表新增 `qwen3.8-max`（未计价，需按官网补价）。
+- **读图员 prompt 从“文字优先”改为“内容优先”**：persona 由“文字与结构”改为“内容进行转述”，
+  新增“区分看到的与推断的”；默认问题、子代理指令模板与两个工具的 description 不再只提
+  文字/界面，补上人物、物体、布局、光线与场景；工具 schema 总量仍守住上限。
+- **出片模型互斥**：`seedance_video` / `video_gen` / `minimax_video` 三选一；
+  设置卡打开一个自动关闭另外两个，Host 侧 `normalizeSettingsOps` + guard 双重兜底。
+- 子代理出片刹车（`blockSubagentSpend` / `blockSubagentVideoSpend`）覆盖 `minimax_video`。
 
 ## [0.1.1] - 2026-10-19
 

@@ -158,6 +158,74 @@ test('无关开关不受影响：翻转 qwen_draw 不触碰读图开关', async 
   assert.deepEqual(switches(), { glm: true, qwen: false })
 })
 
+// ---- 出片三选一（2026-10-20 加）----
+const videos = () => ({
+  seedance: holder.value.enableSeedanceVideo,
+  bailian: holder.value.enableVideoGen,
+  minimax: holder.value.enableMinimaxVideo,
+})
+
+test('出片互斥：seedance 开着 → 打开 video_gen：先关 seedance、再开 video_gen', async () => {
+  const { before } = await mount(
+    { enableSeedanceVideo: true, enableVideoGen: false, enableMinimaxVideo: false },
+    [['enableVideoGen', 'true']],
+  )
+  assert.equal(before.fields.enableSeedanceVideo.text, 'false', 'UI 上 seedance 立即变关')
+  opsAre(holder.calls[0], [
+    { op: 'set', path: ['enableSeedanceVideo'], value: false },
+    { op: 'set', path: ['enableVideoGen'], value: true },
+  ], '末次写入必须是用户点开的 video_gen')
+  assert.deepEqual(videos(), { seedance: false, bailian: true, minimax: false })
+})
+
+test('出片互斥：video_gen 开着 → 打开 minimax：另外两个都关掉', async () => {
+  const { before } = await mount(
+    { enableSeedanceVideo: false, enableVideoGen: true, enableMinimaxVideo: false },
+    [['enableMinimaxVideo', 'true']],
+  )
+  assert.equal(before.fields.enableVideoGen.text, 'false', 'UI 上 video_gen 立即变关')
+  opsAre(holder.calls[0], [
+    { op: 'set', path: ['enableVideoGen'], value: false },
+    { op: 'set', path: ['enableMinimaxVideo'], value: true },
+  ])
+  assert.deepEqual(videos(), { seedance: false, bailian: false, minimax: true })
+})
+
+test('出片互斥：seedance 开着 → 打开 minimax：seedance 关、minimax 开', async () => {
+  await mount(
+    { enableSeedanceVideo: true, enableVideoGen: false, enableMinimaxVideo: false },
+    [['enableMinimaxVideo', 'true']],
+  )
+  opsAre(holder.calls[0], [
+    { op: 'set', path: ['enableSeedanceVideo'], value: false },
+    { op: 'set', path: ['enableMinimaxVideo'], value: true },
+  ])
+  assert.deepEqual(videos(), { seedance: false, bailian: false, minimax: true })
+})
+
+test('出片互斥：来回换（seedance → video_gen → minimax）末次点开的胜出', async () => {
+  await mount(
+    { enableSeedanceVideo: false, enableVideoGen: false, enableMinimaxVideo: false },
+    [
+      ['enableSeedanceVideo', 'true'],
+      ['enableVideoGen', 'true'],
+      ['enableMinimaxVideo', 'true'],
+    ],
+  )
+  const batch = holder.calls[0]
+  assert.equal(JSON.stringify(batch.at(-1)), JSON.stringify({ op: 'set', path: ['enableMinimaxVideo'], value: true }))
+  assert.deepEqual(videos(), { seedance: false, bailian: false, minimax: true })
+})
+
+test('出片互斥：关闭开着的那个不牵连另外两个', async () => {
+  await mount(
+    { enableSeedanceVideo: false, enableVideoGen: true, enableMinimaxVideo: false },
+    [['enableVideoGen', 'false']],
+  )
+  opsAre(holder.calls[0], [{ op: 'set', path: ['enableVideoGen'], value: false }])
+  assert.deepEqual(videos(), { seedance: false, bailian: false, minimax: false })
+})
+
 
 let failed = 0
 for (const item of cases) {
