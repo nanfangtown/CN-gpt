@@ -3,6 +3,24 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 本项目在 `0.x` 期间允许有行为变更，破坏性变更会写在 `Changed` 里。
 
+## [0.2.1] - 2026-10-31
+
+### Added
+
+- **发布到 npm**：包名 `dsh-mm-models`。`dsh plugin --profile desktop add dsh-mm-models`
+  即可安装，装到的是预构建代码，用户不需要授权任何构建脚本（DSH 把这句转发给 profile 内的 pnpm）。
+  README 安装段改为 npm 优先，本地目录保留为"改源码 / 跟未发布分支"的方式。
+- **CI 发布流水线** `.github/workflows/publish.yml`：推 `v*` 标签触发，先硬校验
+  "标签 == `v` + `package.json` 版本"，再跑离线套件，最后 `npm publish --provenance`
+  （来源证明）。鉴权支持 `NPM_TOKEN` 与 Trusted Publisher（OIDC）两种。
+- **维护者文档** `PUBLISHING.md`：发布前置、两种鉴权、发布后验证、出错回滚口径。
+
+### Changed
+
+- `files` 补 `SECURITY.md` / `CHANGELOG.md`，npm 包内的文档链接不再指向包外；
+  README 的文档链接改为绝对地址（npm 页面只渲染 README，相对路径会失效）。
+- `prepublishOnly` 钉住 `npm test && npm run test:docs`，本地误发会被拦。
+
 ## [0.2.0] - 2026-10-31
 
 ### Added

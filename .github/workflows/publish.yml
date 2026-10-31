@@ -1,0 +1,65 @@
+# 发布到 npm：推 v* 标签触发。
+#
+# 鉴权二选一（详见 PUBLISHING.md）：
+#   A. 仓库 Secrets 放 NPM_TOKEN（granular access token，能 publish 该包）
+#      —— 下面 NODE_AUTH_TOKEN 那行保持现状即可。
+#   B. npmjs.com → 包 Settings → Trusted Publisher（GitHub Actions + 本文件名）
+#      —— 删掉 NODE_AUTH_TOKEN 那行，走 OIDC，不需要长期 token。
+#
+# 为什么不在本地发：这台开发机可能没有 npm（DSH 只带自己的 node 运行时）。
+# CI 发布还能顺带拿到 npm provenance（来源证明），用户能核对包是从这个 commit 构建的。
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # npm provenance / trusted publishing 都要它
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # npm test 里的 verify-functionality 会 `git show` 一个历史 commit，浅克隆会失败。
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # 标签和版本必须一字不差：否则会出现「tag v0.2.2 发出去的却是 0.2.1」这种不可挽回的错。
+      - name: Tag must match package.json version
+        run: |
+          want="v$(node -p "require('./package.json').version")"
+          echo "tag=$GITHUB_REF_NAME  package=$want"
+          test "$GITHUB_REF_NAME" = "$want"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # 与 offline-tests.yml 同口径：不联网、不花钱，用的是本地假厂商。
+      - name: Offline suite
+        env:
+          DSH_REQUIRE_REAL_SCHEMASTERY: '1'
+        run: npm test
+
+      - name: Documentation links
+        run: npm run test:docs
+
+      - name: Publish
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -26,7 +26,7 @@
 npm ci || npm install
 npm test
 npm run test:docs
-npm pack --dry-run      # 检查包里只有 index/client/core/tasks/tools/locale/patch/README
+npm pack --dry-run      # 检查包里只有 index/client/core/tasks/tools/locale/patch + README/SECURITY/CHANGELOG
 ```
 
 - [ ] 确认包内容**不含** `tests/`、`_sandbox/`、`docs/`、`.env`、账本、截图。
@@ -40,9 +40,8 @@ npm pack --dry-run      # 检查包里只有 index/client/core/tasks/tools/local
 - [x] `package.json` 与 `CHANGELOG.md` 的版本一致（当前 `0.2.0`）。
 - [x] `v0.1.1` annotated tag 已创建并推送。
 - [x] `v0.2.0` annotated tag（随本次发布创建，待推送）。
-- [ ] 可选：发布 npm（已移除 `private`，`publishConfig.access = public`）：
-
-      npm publish --access public
+- [ ] 发布 npm：按 [PUBLISHING.md](PUBLISHING.md) 走。两条路：本地 `npm publish`，或推 `v*`
+      标签由 `.github/workflows/publish.yml` 发布（首版建议用 CI + `NPM_TOKEN`）。
 
 - [ ] 发布后回填 README 的状态行（是否已上 npm）。
 - [ ] 本次首次 push 用了一把 **repo-scoped deploy key**（`.deploy/`，已 gitignore）。

@@ -1,6 +1,6 @@
 {
   "name": "dsh-mm-models",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DeepSeek 主脑 + GLM/Qwen 读图 / Qwen 制图 / Seedance·可灵·万相·MiniMax 出片：把外部多模态能力做成与 bash 同级的顶级工具，共用异步任务层、多 key 管理与成本闸门。",
   "type": "module",
   "license": "MIT",
@@ -45,6 +45,8 @@
     "locale",
     "icon.svg",
     "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
     "cordis.patch.yml"
   ],
   "peerDependencies": {
@@ -74,6 +76,7 @@
     "test:perf": "node --import ./tests/register.mjs ./tests/_perf-bench.mjs",
     "test:sizes": "node --import ./tests/register.mjs ./tests/size-report.mjs",
     "test:docs": "node tests/check-doc-links.mjs",
+    "prepublishOnly": "npm test && npm run test:docs",
     "probe:video": "node tests/probe-dashscope-video.mjs",
     "test:ocr": "node --import ./tests/register.mjs ./tests/ocr-image.test.mjs"
   },

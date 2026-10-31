@@ -2,9 +2,11 @@
 
 > **给 DeepSeek 主脑补上「眼睛 + 画笔 + 摄像机 + 剪辑台」。**
 >
-> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.2.0` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
+> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.2.1` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
 
+[![npm](https://img.shields.io/npm/v/dsh-mm-models.svg)](https://www.npmjs.com/package/dsh-mm-models)
 [![offline-tests](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml)
+[![license](https://img.shields.io/npm/l/dsh-mm-models.svg)](https://github.com/nanfangtown/CN-gpt/blob/main/LICENSE)
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）bundle：把 GLM / Qwen-VL 读图、Qwen 制图、Seedance / 可灵 / 万相 / MiniMax 海螺出片做成与 `bash`、`ops_*` 同级的顶级工具，并共用一层异步任务管理、一套多 key 管理与一套**花钱闸门**。
 
@@ -39,12 +41,16 @@ DeepSeek 主模型负责思考与交付；外部模型只负责"看 / 画 / 拍"
 ## 安装
 
 前置：DSH Desktop `0.2.1-rc.1` 或更高（`0.2.x` 线），profile 默认 `desktop`。
+`dsh plugin` 在 profile 内转发给 pnpm，所以 npm 上的包与本地目录都能装。
 
 ```bat
-:: 从本地目录安装（当前推荐；尚未发布到 npm）
-dsh plugin --profile desktop add "D:\path\to\CN-gpt"
+:: 从 npm 安装（推荐）——装到的是预构建代码，不需要构建脚本授权
+dsh plugin --profile desktop add dsh-mm-models
 
-:: 或从 clone 下来的仓库安装
+:: 锁定版本，便于复现
+dsh plugin --profile desktop add dsh-mm-models@0.2.1
+
+:: 改源码 / 跟未发布分支时，从本地目录安装
 git clone https://github.com/nanfangtown/CN-gpt.git
 dsh plugin --profile desktop add ".\CN-gpt"
 ```
@@ -108,7 +114,7 @@ minimax_video(prompt="镜头缓慢推进，雨滴打在窗上", duration=6, reso
 4. **复述金额**：预估超过 `noConfirmUnderCNY`（默认 1 元）时必须传回精确到分的 `confirm_estimate`。
 
 单价表在配置卡里可改；**填错价拦不住**（只拦"缺档位"），请按厂商官网核对。
-金额是估算，不是账单。详见 [SECURITY.md](SECURITY.md)。
+金额是估算，不是账单。详见 [SECURITY.md](https://github.com/nanfangtown/CN-gpt/blob/main/SECURITY.md)。
 
 ## 出片三选一（互斥）
 
@@ -187,12 +193,13 @@ MiniMax 的计费单位是**条**（分辨率 × 时长），与另外两家的"
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/ENGINEERING-NOTES.md](docs/ENGINEERING-NOTES.md) | 完整工程记录：设计取舍、事故复盘、性能与测试数据（历史快照，可能过时） |
-| [docs/reports/](docs/reports/) | 三次修复 / 性能 / 读图路由的专项报告 |
-| [SECURITY.md](SECURITY.md) | 密钥处理、花费安全、漏洞报告方式 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、测试、提交规范、发布流程 |
-| [CHANGELOG.md](CHANGELOG.md) | 版本变更 |
-| [tests/README.md](tests/README.md) | 测试矩阵与试运行脚本 |
+| [docs/ENGINEERING-NOTES.md](https://github.com/nanfangtown/CN-gpt/blob/main/docs/ENGINEERING-NOTES.md) | 完整工程记录：设计取舍、事故复盘、性能与测试数据（历史快照，可能过时） |
+| [docs/reports/](https://github.com/nanfangtown/CN-gpt/tree/main/docs/reports) | 三次修复 / 性能 / 读图路由的专项报告 |
+| [SECURITY.md](https://github.com/nanfangtown/CN-gpt/blob/main/SECURITY.md) | 密钥处理、花费安全、漏洞报告方式 |
+| [PUBLISHING.md](https://github.com/nanfangtown/CN-gpt/blob/main/PUBLISHING.md) | 发布到 npm：鉴权、首发步骤、发布后验证与回滚 |
+| [CONTRIBUTING.md](https://github.com/nanfangtown/CN-gpt/blob/main/CONTRIBUTING.md) | 开发环境、测试、提交规范、发布流程 |
+| [CHANGELOG.md](https://github.com/nanfangtown/CN-gpt/blob/main/CHANGELOG.md) | 版本变更 |
+| [tests/README.md](https://github.com/nanfangtown/CN-gpt/blob/main/tests/README.md) | 测试矩阵与试运行脚本 |
 
 ## 开发
 
@@ -214,4 +221,4 @@ npm run test:docs    # 文档相对链接检查
 
 ## 许可
 
-MIT。见 [LICENSE](LICENSE)。
+MIT。见 [LICENSE](https://github.com/nanfangtown/CN-gpt/blob/main/LICENSE)。

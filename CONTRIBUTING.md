@@ -68,7 +68,8 @@ tests/                离线套件、假厂商、假 LLM、真实 harness e2e
 1. 更新 `CHANGELOG.md`，`package.json` 的 `version` 同步。
 2. `npm test && npm run test:docs`，再跑一次 `npm pack --dry-run` 检查包内容。
 3. 打 tag（`v0.1.1`）并推送；GitHub Actions 跑离线矩阵。
-4. 可选发布 npm：`npm publish --access public`（`private` 已移除，`publishConfig` 为 public）。
+4. 发布 npm：按 [PUBLISHING.md](PUBLISHING.md) 走 —— 推 `v*` 标签由 CI 发布（带 provenance），
+   或本地 `npm publish`（`private` 已移除，`publishConfig` 为 public）。
 5. 发布后在一个干净的 profile 里按 README 安装一遍，确认 `--dump-config` 里有两行 + 三个 preset。
 
 ## 安全
