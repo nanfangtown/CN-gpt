@@ -49,7 +49,9 @@ function ocrAvailable() {
     '-Command',
     '$v = $PSVersionTable.PSVersion.Major; if ($v -lt 5) { exit 2 }; ' +
       '[Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType=WindowsRuntime] | Out-Null; ' +
-      'if ($null -eq [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()) { exit 3 }',
+      '$langs = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages | ForEach-Object { $_.LanguageTag }; ' +
+      'if (-not ($langs -match "^zh-Hans")) { exit 3 }; ' +
+      'if (-not ($langs -contains "en-US")) { exit 4 }',
   ], { encoding: 'utf8' })
   return probe.status === 0
 }
@@ -171,7 +173,7 @@ await test('ocr_image：空参数 → BAD_REQUEST', async () => {
 // ---------------------------------------------------------------- 真实 OCR（Windows）
 
 if (!ocrAvailable()) {
-  console.log('  - SKIP 真实 OCR 用例：本机不是 Windows、没有 Windows PowerShell 5.1，或没有可用的 OCR 语言包')
+  console.log('  - SKIP 真实 OCR 用例：本机不是 Windows、没有 Windows PowerShell 5.1，或没有中/英 OCR 语言包')
 } else {
   await test('真实 OCR：中文界面截图（不再逐字带空格）', async () => {
     const raw = await runWindowsOcr({ imagePath: fixture('screenshot-zh.png'), language: '' })
