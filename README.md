@@ -1,6 +1,7 @@
-# CN-gpt
+# 给 DeepSeek Harness 装上眼睛、画笔和摄像机
 
-> **给 DeepSeek 主脑补上「眼睛 + 画笔 + 摄像机 + 剪辑台」。**
+> **GLM/Qwen 读图 · Qwen 出图 · Seedance/可灵/海螺 出片**
+> **外加一道 fail-closed 花费闸门：未计价一律拒付。**
 >
 > 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.2.2` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
 
@@ -266,7 +267,9 @@ npm run test:docs    # 文档相对链接检查
 
 ## 名字
 
-插件页显示名是 **CN-gpt**（仓库同名），包名 `dsh-mm-models`，插件 id `mm-models`。**这是玩梗，不是技术栈**——调用链里 GPT 含量 0%，实际是 GLM / Qwen / Seedance / 可灵 / 万相 / MiniMax 海螺。主脑仍是 DeepSeek。
+插件页显示名暂时仍是 **CN-gpt**（历史遗留，后续统一成功能名），包名 `dsh-mm-models`，插件 id `mm-models`。**这是玩梗，不是技术栈**——调用链里 GPT 含量 0%，实际是 GLM / Qwen / Seedance / 可灵 / 万相 / MiniMax 海螺。主脑仍是 DeepSeek。
+
+仓库标题、README 标题与 GitHub About 从 0.2.2 之后统一改成功能定位（见页面顶部），`CN-gpt` 只保留为彩蛋式别名。
 
 ## 许可
 
