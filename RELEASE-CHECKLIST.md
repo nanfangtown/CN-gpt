@@ -41,9 +41,8 @@ npm pack --dry-run      # 检查包里只有 index/client/core/tasks/tools/local
 - [x] `v0.1.1` annotated tag 已创建并推送。
 - [x] `v0.2.0` annotated tag（随该次发布创建）。
 - [x] `v0.2.1` annotated tag 已发布 npm。
-- [ ] `v0.2.2` annotated tag（随本次发布创建，待推送）：`git tag -a v0.2.2 -m "v0.2.2" && git push origin v0.2.2`。
-- [ ] 发布 npm：按 [PUBLISHING.md](PUBLISHING.md) 走。两条路：本地 `npm publish`，或推 `v*`
-      标签由 `.github/workflows/publish.yml` 发布（建议用 CI + `NPM_TOKEN`）。
+- [x] `v0.2.2` annotated tag（2026-11-01 创建并推送；CI publish run #5 成功）。
+- [x] 发布 npm：CI + `NPM_TOKEN`，`dsh-mm-models@0.2.2` 已上架（带 provenance，gitHead `c0a93e9`）。
 
 - [ ] 发布后回填 README 的状态行（是否已上 npm）。
 - [ ] 本次首次 push 用了一把 **repo-scoped deploy key**（`.deploy/`，已 gitignore）。
