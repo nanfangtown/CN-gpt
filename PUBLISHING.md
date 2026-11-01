@@ -83,3 +83,34 @@ dsh --profile npmtest --dump-config | findstr mm-models
   0.3.x 没验证过就保持排除。
 - **provenance 失败**（私有仓库 / 缺 `id-token: write`）：公开仓库 + 上面 workflow 的权限已够；
   实在不行去掉 `--provenance` 再发，但要在 Release Notes 里说明。
+
+## 6. 仓库 About 与 Topics（GitHub 侧，唯一事实源在 README 标题）
+
+仓库首页右侧 About 面板与 README 标题必须一致，否则新访客会看到两套定位。定稿文本：
+
+```
+DSH plugin for text-only agents: GLM/Qwen-VL vision, Qwen-Image generation, Seedance/Kling/MiniMax video — with a fail-closed spend gate (per-call cap, session cap, exact-amount confirmation), task recovery and cost reporting.
+```
+
+Topics（GitHub 搜索的主要入口）：
+
+```
+deepseek-harness  dsh-plugin  multimodal  vision  image-generation  video-generation
+llm-agent  cost-control  qwen-vl  glm  seedance  minimax  agent-tools
+```
+
+两种改法：
+
+- 网页：仓库首页 About 旁的齿轮 → Description / Topics；
+- API（需要 `Administration: write` + `Contents: write` 的细粒度 token）：
+
+```bash
+curl -X PATCH -H "Authorization: Bearer $GITHUB_TOKEN" \
+     -H "Accept: application/vnd.github+json" \
+     https://api.github.com/repos/nanfangtown/CN-gpt \
+     -d '{"description":"<上面那段>"}'
+curl -X PUT -H "Authorization: Bearer $GITHUB_TOKEN" \
+     -H "Accept: application/vnd.github+json" \
+     https://api.github.com/repos/nanfangtown/CN-gpt/topics \
+     -d '{"names":["deepseek-harness","dsh-plugin","multimodal","vision","image-generation","video-generation","llm-agent","cost-control","qwen-vl","glm","seedance","minimax","agent-tools"]}'
+```
