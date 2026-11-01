@@ -182,6 +182,26 @@ export function createMediaReportTool(deps) {
           // "谁能看图"的一部分，且它的可用性取决于系统 OCR 语言包（首次调用才暴露）。
           const ocrOn = typeof switches?.isEnabled === 'function' ? switches.isEnabled('ocr_image') === true : true
           backendLine += '\n本地 OCR：' + (ocrOn ? '✅ 开（Windows 引擎，不出网）' : '⛔ 关')
+          // 读图回合闸门（2026-11-01）：闸门卡住时必须一眼看出"是在等谁"。
+          // 紧凑模式只给状态与 pending（预算红线 2600 B），明细放 verbose。
+          const gate = vision.turnGate
+          if (gate !== undefined && gate !== null) {
+            backendLine +=
+              '\n读图闸门：' + (gate.enabled === false ? '⛔ 关' : '✅ 开') +
+              ' ｜ 在等 ' + String(gate.pending ?? 0)
+            if (verbose) {
+              backendLine +=
+                '（等待上限 ' + String(Math.round(Number(gate.timeoutMs ?? 0) / 1000)) + 's，已登记 ' +
+                String(gate.known ?? 0) + ' 个'
+              // 上次自动 OCR：tried=找到几张图（找到但失败也会记），ok=成功拿到文本几张。
+              // 粘贴图的路径只在 image 块里——这行用来区分"没找到图"与"OCR 失败"。
+              if (gate.lastAutoOcr !== undefined && gate.lastAutoOcr !== null) {
+                backendLine += '；上次 OCR 找到 ' + String(gate.lastAutoOcr.tried ?? 0) +
+                  ' 张/成功 ' + String(gate.lastAutoOcr.ok ?? 0) + ' 张'
+              }
+              backendLine += '）'
+            }
+          }
           if (vision.readerRoutesUnknown) {
             backendLine += '\n⚠ **认不出任何读图员路由**：已放弃对子代理的原生读图屏蔽（fail-open），请检查契约文件。'
           }

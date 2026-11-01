@@ -510,5 +510,15 @@
         # 其它
         promptSection: true
         degradeToText: false
+        # 读图回合闸门（2026-11-01）：读图员没回来之前不许开口
+        readerGate: true
+        readerGateTimeoutMs: 90000
+        readerGateImageHint: true
+        readerGateForceEvidence: true
+        # 有图自动跑本地 OCR（免费、离线、约 0.4s）
+        autoOcrOnImage: true
+        # 批量读图（默认关闭；打开后强制数组入参）
+        readerBatchMode: false
+        readerBatchMax: 4
         healthProbe: true
         healthProbeTtlMs: 300000

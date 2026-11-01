@@ -19,7 +19,7 @@ npm view dsh-mm-models version    # 应报 404（= 名字可用）
 ## 1. 版本与标签
 
 1. `CHANGELOG.md` 写版本段，`package.json` 的 `version` 同步（两者必须一致）。
-2. 提交后打 annotated tag：`git tag -a v0.2.1 -m "v0.2.1"`，然后 `git push origin v0.2.1`。
+2. 提交后打 annotated tag：`git tag -a v0.2.2 -m "v0.2.2"`，然后 `git push origin v0.2.2`。
 3. **标签必须等于 `v` + `package.json` 版本** —— `publish.yml` 会硬校验，不等就停。
 
 ## 2. 本地发布（有 npm 时）

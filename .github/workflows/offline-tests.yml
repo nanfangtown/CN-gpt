@@ -57,6 +57,14 @@ jobs:
       - name: Settings card mutex + API-key fields
         run: node tests/_card-mutex.test.mjs
 
+      # 读图回合闸门：pre-step join / 自动 OCR / 附件路径还原 / 无证据收尾（桩测试，不联网）
+      - name: Reader turn gate
+        run: node tests/turn-gate.test.mjs
+
+      # 批量读图：数组入参 / 上限点名拒绝 / 回滚单图（桩测试，不派子代理）
+      - name: Reader batch mode
+        run: node --import ./tests/register.mjs ./tests/reader-batch.test.mjs
+
       # 安全不变量：密钥闸门、花费闸门、账本降级语义
       - name: Safety invariants
         env:

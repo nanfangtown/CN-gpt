@@ -2,7 +2,7 @@
 
 > **给 DeepSeek 主脑补上「眼睛 + 画笔 + 摄像机 + 剪辑台」。**
 >
-> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.2.1` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
+> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.2.2` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
 
 [![npm](https://img.shields.io/npm/v/dsh-mm-models.svg)](https://www.npmjs.com/package/dsh-mm-models)
 [![offline-tests](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml)
@@ -48,7 +48,7 @@ DeepSeek 主模型负责思考与交付；外部模型只负责"看 / 画 / 拍"
 dsh plugin --profile desktop add dsh-mm-models
 
 :: 锁定版本，便于复现
-dsh plugin --profile desktop add dsh-mm-models@0.2.1
+dsh plugin --profile desktop add dsh-mm-models@0.2.2
 
 :: 改源码 / 跟未发布分支时，从本地目录安装
 git clone https://github.com/nanfangtown/CN-gpt.git
@@ -177,6 +177,55 @@ MiniMax 的计费单位是**条**（分辨率 × 时长），与另外两家的"
 
 ⚠ 语言包：Windows OCR 是**按语言**安装的。本机已有 `zh-Hans-CN` 与 `en-US`；精简系统第
 一次调用会返回安装指引（设置 → 时间和语言 → 语言 → 可选功能 → 光学字符识别）。
+
+## 读图回合闸门：结论没回来，不许先开口（0.2.2）
+
+旧行为：模型派出读图员 → 工具立刻返回 `subagentId` → 模型**下一步**就凭印象作答，
+读图结论几秒后才到。于是同一张图先给一条错的、再给一条"更正"。
+
+0.2.2 起，插件在宿主的 `agent/pre-step` 上加了一道闸：
+
+- 主 agent 派出读图员后，**下一步不会开始**，一直等到读图结论回来（默认上限 90 s）；
+- 结论取回后并入本步消息，模型第一次看到它就是在作答的那一步；
+- 为什么不在 `agent/turn-stopping` 拦：宿主顺序是**先 step**（assistant 文本已流式发出、
+  已入库）**后 turn-stopping**，在那里拦只能"补一条更正"，拦不住"先说错"。
+
+同一道闸还管两件事：
+
+- **有图自动 OCR**（`autoOcrOnImage`，默认开）：本轮消息含图时先在本机抄一遍字
+  （免费、离线、约 0.4 s）再交给模型。粘贴图在 `.dsh/attachments` 下是无扩展名对象、
+  路径也不在消息文本里，插件从 `sha256` 还原对象路径再 OCR。
+- **有图无证据**（`readerGateImageHint`）：模型一次读图 / OCR 都没调时注入机械提醒（每轮一次）；
+  收尾仍无证据则拒绝结束该回合、补一个纠正回合（`readerGateForceEvidence`）。
+
+只作用于读图员——出片 / 视频 / 复杂工作流的异步链路完全不动（它们不登记在闸门表里）。
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `readerGate` | `true` | 闸门总开关 |
+| `readerGateTimeoutMs` | `90000` | 等待上限；超时放行并提示"待确认" |
+| `readerGateImageHint` | `true` | 本轮有图未取证 → 注入提醒 |
+| `readerGateForceEvidence` | `true` | 无证据收尾 → 补纠正回合 |
+| `autoOcrOnImage` | `true` | 有图先跑本地 OCR |
+
+**代价要如实说：慢。** 闸门不产生延迟，它只是把读图员的延迟如实等完。视觉模型单次延迟
+实测 40–200 s（含一次 120 s 的尾延迟），所以带图回合的体感会明显变慢；不接受就关掉 `readerGate`。
+
+`media_report(action=health)` 里有一行「读图闸门：✅ 开 ｜ 在等 N」；`verbose` 下还能看到
+「上次 OCR 找到 X 张/成功 Y 张」——用来区分"没找到图"和"OCR 失败"。
+
+## 批量读图（默认关闭）
+
+打开 `readerBatchMode` 后，读图员变成"一次读一批"：schema 里只有 `image_paths`（数组，
+≤ `readerBatchMax`，默认 4），不再有单图入口。定位：
+
+- **同一批图一次传完**：分两次调用会各自独立、无法互相参照；
+- 结论按「图1/图2」分段，溯源不断；
+- 超过上限**点名拒绝**（不静默截断），请分组成多次调用；
+- 不相关、或每张要分别提问 → 分开调用。
+
+收益是形状唯一、行为可预测（没有"逐张调三次"的岔路）；代价是单图精细度与失败隔离下降。
+所以默认关闭，出厂行为与 0.2.1 一致。`image_path` 仍被接受（旧会话兼容），但批量 schema 里不出现。
 
 ## 兼容性
 

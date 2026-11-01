@@ -25,7 +25,7 @@
  *   - 不装任何运行时依赖：只用 Windows 已有的能力（无需 tesseract / Python / 在线模型）。
  */
 import { spawn } from 'node:child_process'
-import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { extname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,6 +38,109 @@ const SCRIPT_PATH = fileURLToPath(new URL('./ocr/windows-ocr.ps1', import.meta.u
 
 /** 允许的位图扩展名（其余交给 Windows 解码器报错，文案更准确）。 */
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tif', '.tiff', '.webp'])
+
+/** 嗅探文件头时读的字节数（够覆盖 ftyp 品牌）。 */
+const MAGIC_BYTES = 32
+
+/**
+ * 按文件头判断位图格式。
+ *
+ * 为什么需要：粘贴进对话的图在 `.dsh/attachments/v1/objects/…` 下是**无扩展名**对象，
+ * 按后缀判断会直接拒绝——"纯文字截图先走本地 OCR"这条策略在最常见的场景里就失效了。
+ * Windows 解码器本身按内容解码（脚本用 `BitmapDecoder.CreateAsync(stream)`），
+ * 所以只需要我们不再把后缀当唯一判据。
+ *
+ * @param {string} imagePath - 绝对路径。
+ * @returns {Promise<string|undefined>} 扩展名（.png/.jpg/…）；认不出返回 undefined。
+ */
+export async function sniffImageExtension(imagePath) {
+  let handle
+  try {
+    handle = await open(imagePath, 'r')
+    const buffer = Buffer.alloc(MAGIC_BYTES)
+    const { bytesRead } = await handle.read(buffer, 0, MAGIC_BYTES, 0)
+    if (bytesRead < 12) return undefined
+    const head = buffer.subarray(0, bytesRead)
+    const ascii = (start, end) => head.toString('latin1', start, end)
+    if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) return '.png'
+    if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return '.jpg'
+    if (ascii(0, 3) === 'GIF') return '.gif'
+    if (head[0] === 0x42 && head[1] === 0x4d) return '.bmp'
+    if ((head[0] === 0x49 && head[1] === 0x49 && head[2] === 0x2a) || (head[0] === 0x4d && head[1] === 0x4d && head[3] === 0x2a)) return '.tiff'
+    if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return '.webp'
+    if (head[0] === 0x00 && head[1] === 0x00 && head[2] === 0x01 && head[3] === 0x00) return '.ico'
+    if (ascii(4, 8) === 'ftyp') {
+      const brand = ascii(8, 12)
+      if (brand === 'heic' || brand === 'heix' || brand === 'mif1' || brand === 'msf1') return '.heic'
+      if (brand === 'avif' || brand === 'avis') return '.avif'
+    }
+    return undefined
+  } catch {
+    return undefined
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+}
+
+/**
+ * 把"路径本身不可解码"的图（无扩展名的粘贴对象）准备成引擎能打开的临时文件。
+ *
+ * 实测（2026-11-01）：同一个文件叫 `…/921ad8…` 时 WinRT `StorageFile` 打不开，
+ * 复制成 `image.png` 后同一份字节立刻能 OCR —— 所以按文件头嗅探后复制一次，
+ * 而不是指望引擎忽略后缀。
+ *
+ * @param {string} imagePath - 原始绝对路径。
+ * @returns {Promise<{ path: string, cleanup?: () => Promise<void> }>} 可解码路径与清理函数。
+ */
+async function ensureDecodablePath(imagePath) {
+  const extension = extname(imagePath).toLowerCase()
+  if (IMAGE_EXTENSIONS.has(extension)) return { path: imagePath }
+  const sniffed = await sniffImageExtension(imagePath)
+  if (sniffed === undefined) return { path: imagePath }
+  const dir = await mkdtemp(join(tmpdir(), 'mm-ocr-src-'))
+  const copy = join(dir, 'image' + sniffed)
+  await copyFile(imagePath, copy)
+  return {
+    path: copy,
+    cleanup: async () => {
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+    },
+  }
+}
+
+/**
+ * 一次完整 OCR：校验 → 嗅探 → 跑引擎 → 重排。
+ *
+ * 给 `ocr_image` 之外的调用方复用（读图员预读、回合闸门的自动 OCR），
+ * 这样"本地抄字"只有一条实现，三处不会各自漂移。
+ *
+ * @param {object} options - 参数。
+ * @param {string} options.imagePath - 绝对路径。
+ * @param {string} [options.language] - '' / zh-Hans / en-US。
+ * @param {number} [options.maxChars] - 文本上限。
+ * @param {number} [options.timeoutMs] - 超时。
+ * @param {AbortSignal} [options.signal] - 取消信号。
+ * @returns {Promise<{text: string, weak: boolean, stats: object, extension: string, elapsedMs: number}>} 结果。
+ */
+export async function ocrFileText({ imagePath, language = '', maxChars = 4000, timeoutMs = 20000, signal } = {}) {
+  const info = await stat(imagePath)
+  if (!info.isFile()) throw new MediaError(CODES.BAD_REQUEST, `不是文件：${imagePath}。image_path 需要指向一张图片。`)
+  let extension = extname(imagePath).toLowerCase()
+  if (!IMAGE_EXTENSIONS.has(extension)) {
+    const sniffed = await sniffImageExtension(imagePath)
+    if (sniffed === undefined) {
+      throw new MediaError(
+        CODES.BAD_REQUEST,
+        `不是支持的位图格式：${extension || '（无扩展名）'}，且文件头不是已知位图。` +
+          `支持 ${[...IMAGE_EXTENSIONS].join('/')}；其它格式请先转 PNG，或改用 ask_qwen。`,
+      )
+    }
+    extension = sniffed
+  }
+  const raw = await runWindowsOcr({ imagePath, language, timeoutMs, signal })
+  const { text, weak, stats } = formatOcrResult(raw, { imagePath, displayPath: imagePath, maxChars })
+  return { text, weak, stats, extension, elapsedMs: Number(raw?.elapsedMs ?? 0) }
+}
 
 /** 一次 OCR 结果缓存条数（同一张图反复看很常见）。 */
 const CACHE_LIMIT = 32
@@ -185,11 +288,14 @@ function powershellPath() {
  * @throws {MediaError} 失败时给出可执行的人话。
  */
 export async function runWindowsOcr({ imagePath, language = '', timeoutMs = 20000, signal, scriptPath = SCRIPT_PATH }) {
+  // 无扩展名的粘贴图：WinRT 的 StorageFile 打不开（实测 DECODE_FAILED），
+  // 所以先复制成一个带正确后缀的临时文件再交给引擎。原始路径只用于报错文案。
+  const prepared = await ensureDecodablePath(imagePath)
   const dir = await mkdtemp(join(tmpdir(), 'mm-ocr-'))
   const requestPath = join(dir, 'request.json')
   const resultPath = join(dir, 'result.json')
   try {
-    await writeFile(requestPath, JSON.stringify({ imagePath, language, scale: 0 }), 'utf8')
+    await writeFile(requestPath, JSON.stringify({ imagePath: prepared.path, language, scale: 0 }), 'utf8')
     const { code, stdout, stderr, timedOut, aborted } = await runPowerShell({
       args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-RequestPath', requestPath, '-ResultPath', resultPath],
       timeoutMs,
@@ -225,6 +331,7 @@ export async function runWindowsOcr({ imagePath, language = '', timeoutMs = 2000
     return raw
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {})
+    await prepared.cleanup?.()
   }
 }
 
@@ -444,11 +551,15 @@ export function createOcrImageTool(deps) {
       }
       const extension = extname(imagePath).toLowerCase()
       if (!IMAGE_EXTENSIONS.has(extension)) {
-        throw new MediaError(
-          CODES.BAD_REQUEST,
-          `不是支持的位图格式：${extension || '（无扩展名）'}。支持 ${[...IMAGE_EXTENSIONS].join('/')}；` +
-            '其它格式请先转 PNG，或改用 ask_qwen。',
-        )
+        // 粘贴图是**无扩展名对象**：按文件头嗅探，别直接拒绝（2026-11-01 修）。
+        const sniffed = await sniffImageExtension(imagePath)
+        if (sniffed === undefined) {
+          throw new MediaError(
+            CODES.BAD_REQUEST,
+            `不是支持的位图格式：${extension || '（无扩展名）'}，且文件头不是已知位图。` +
+              `支持 ${[...IMAGE_EXTENSIONS].join('/')}；其它格式请先转 PNG，或改用 ask_qwen。`,
+          )
+        }
       }
       const maxBytes = numberConfig('ocrMaxBytes', 20 * 1024 * 1024)
       if (info.size > maxBytes) {
@@ -467,7 +578,10 @@ export function createOcrImageTool(deps) {
       const realPath = await realpath(imagePath).catch(() => imagePath)
       const cacheKey = `${realPath}|${info.mtimeMs}|${info.size}|${resolvedLanguage}`
       const cached = cacheGet(cacheKey)
-      if (cached !== undefined) return { text: cached }
+      if (cached !== undefined) {
+        deps.turnGate?.noteEvidence(exec?.agent)
+        return { text: cached }
+      }
 
       const raw = await runWindowsOcr({
         imagePath,
@@ -482,6 +596,7 @@ export function createOcrImageTool(deps) {
         maxChars: numberConfig('ocrMaxChars', 12000),
       })
       if (!weak) cacheSet(cacheKey, text)
+      deps.turnGate?.noteEvidence(exec?.agent)
       logger?.debug?.(`[mm-models] ocr_image ${imagePath}: ${stats.charCount} chars in ${raw.elapsedMs} ms (scale ${raw.scale})`)
       return { text }
     },

@@ -3,6 +3,48 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 本项目在 `0.x` 期间允许有行为变更，破坏性变更会写在 `Changed` 里。
 
+## [0.2.2] - 2026-11-01
+
+### Added
+
+- **读图回合闸门（`guard/turn-gate.mjs`）**：修复"派了读图员却抢先作答"。
+  主 agent 派出读图员后，闸门在宿主 `agent/pre-step`（模型下一次开口之前）等结论回来，
+  取回后才允许开下一步——模型在物理上无法抢答。四个开关：
+  `readerGate`（总闸）、`readerGateImageHint`（本轮有图未取证 → 注入提醒）、
+  `readerGateForceEvidence`（无证据收尾 → 补一个纠正回合）、`readerGateTimeoutMs`（默认 90s，超时 fail-open）。
+  只作用于读图员：出片 / 视频 / 复杂工作流的异步链路完全不动（它们不登记在闸门表里）。
+  状态可在 `media_report(action=health)` 的 `visionStatus.turnGate` 里查到。
+- **有图自动跑本地 OCR（`autoOcrOnImage`，默认开）**：闸门在模型开口前先把图里的"字"抄一遍
+  （免费、离线、约 0.4s），作为证据注入——不需要模型决定，所以不会出现"为省事直接派读图员"。
+  OCR 失败或认不出字（照片/画面）时不注入，退回原有的提醒路径。
+- **读图员预读 OCR**：派单前先本地抄字，把结果附在给读图员的 prompt 里让它校对错字、补漏行
+  （同一张图上，读图员从"从零描述"变成"核对 + 补版式/归属"）。
+- **批量读图（`readerBatchMode`，默认关闭）**：打开后 schema 里只有 `image_paths`（数组，≤ `readerBatchMax`），
+  不再提供单图入口——批量是**显式开启**的强制模式，出厂仍是一图一读图员。
+  定位：**一次读一批**——同一批图分两次调用会各自独立、无法互相参照；
+  结论必须按「图1/图2」分段；超过上限点名拒绝（不静默截断），请分组成多次调用；
+  不相关或每张要分别提问就分开调用。
+  收益是形状唯一、行为可预测（没有"逐张调三次"的岔路）；代价是单图精细度与失败隔离下降。
+  实现细节：`image_path` 仍被**接受**（旧会话/旧测试兼容），但批量模式的 schema 里不出现。
+
+### Fixed
+
+- **无扩展名的粘贴图现在能走本地 OCR**：`.dsh/attachments/v1/objects/…` 是无后缀对象，
+  过去 `ocr_image` 直接按后缀拒绝（"纯文字截图先走 OCR"在最常见场景下失效）。
+  现在按文件头嗅探格式（PNG/JPEG/WEBP/HEIC…），并在交给 WinRT 前复制成带后缀的临时文件
+  （实测同一个文件无后缀时 `StorageFile` 打不开、复制成 `image.png` 后同一份字节立刻可 OCR）。
+- **自动 OCR 在真实粘贴图上不触发**：会话日志里，粘贴图消息只有 `image` 块 + 用户那句短话，
+  **本地路径不在消息文本里**（模型看到的那行 `Normalized copy …` 是渲染层补的）。
+  闸门现在能从 `attachment.attachmentId`（`sha256:<hex>`）还原
+  `<DSH_HOME>/attachments/v1/objects/<前两位>/<hex>`，粘贴图也能自动 OCR。
+- 闸门为什么开在 `pre-step` 而不是 `turn-stopping`：宿主顺序是**先 step**（assistant 文本已
+  流式发出、已入库）**后 turn-stopping**，在后者拦只能"补一条更正"，拦不住"先说错"。
+
+### Changed
+
+- `media_report(action=health)` 增加「读图闸门：开/关 ｜ 在等 N」一行；`verbose` 下补
+  「上次 OCR 找到 X 张/成功 Y 张」，用来区分"没找到图"与"OCR 失败"。
+
 ## [0.2.1] - 2026-10-31
 
 ### Added

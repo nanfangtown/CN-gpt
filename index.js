@@ -32,8 +32,9 @@ import { createMinimaxVideoTool } from './tools/minimax-video.mjs'
 import { createMediaTaskTool } from './tools/media-task.mjs'
 import { createMediaReportTool } from './tools/media-report.mjs'
 import { createReaderTools } from './tools/reader.mjs'
-import { createOcrImageTool } from './tools/ocr-image.mjs'
+import { createOcrImageTool, ocrFileText } from './tools/ocr-image.mjs'
 import { createDelegationTools } from './tools/delegation.mjs'
+import { createTurnGate } from './guard/turn-gate.mjs'
 import { createKeyResolver } from './core/keys.mjs'
 import { createReaderUsageMeter } from './core/reader-usage.mjs'
 import { DEFAULT_PRICING, PRICING_ZERO_HINT, openLedger, pricingOf, pricingWarnings } from './core/cost.mjs'
@@ -457,6 +458,20 @@ export const Config = z.object({
   // ---- 其它 ----
   promptSection: z.boolean().default(true).volatile().description('是否注册"分工说明"系统提示词段落。'),
   degradeToText: z.boolean().default(false).volatile().description('保留开关：ask_glm 读图失败时是否给出明显的替代指引（默认关闭）。'),
+  // ---- 读图回合闸门（2026-11-01）----
+  // 解决"派了读图员却抢先作答"：在 `agent/pre-step`（模型下一次开口之前）等结论。
+  // 只作用于读图员，出片/视频的异步任务完全不受影响（它们不登记在闸门里）。
+  readerGate: z.boolean().default(true).volatile().description('读图回合闸门：主 agent 派出读图员后，在结论回来之前不允许开始下一步（模型物理上无法抢答）。只影响读图，不影响出片/视频的异步。'),
+  readerGateTimeoutMs: z.number().step(1000).min(1000).default(90000).volatile().description('闸门等待读图员的上限（毫秒）。超时放行并提示"待确认"，避免把回合钉死。'),
+  readerGateImageHint: z.boolean().default(true).volatile().description('本轮消息含图片、却一次读图/OCR 都没调用时，机械注入一条提醒（每轮一次，不依赖模型自觉）。'),
+  readerGateForceEvidence: z.boolean().default(true).volatile().description('收尾时仍无读图证据：拒绝结束该回合并补一个纠正回合（每轮最多一次）。'),
+  autoOcrOnImage: z.boolean().default(true).volatile().description('本轮消息含图片时，先在本机自动跑一次 OCR（免费、离线、约 0.4s），把文字作为证据注入；画面/版式/产品归属仍走读图员。'),
+  // ---- 批量读图（2026-11-01）----
+  // 默认**关闭**：出厂行为仍是稳定的一图一读图员。打开后是"强制批量"——
+  // schema 里只有 image_paths（数组），没有单图入口，形状唯一、行为可预测，
+  // 代价是单图精细度与失败隔离下降 —— 用 batchMax 和"结论按图1/图2分段"的契约兜住。
+  readerBatchMode: z.boolean().default(false).volatile().description('批量读图模式（默认关闭）。打开后强制数组入参：读图员一次读一批图，只接受 image_paths（数组）。关闭时维持一图一读图员。'),
+  readerBatchMax: z.number().step(1).min(2).default(4).volatile().description('批量模式一次最多几张图。超过请分组成多次调用（工具会点名拒绝，不会静默截断）。'),
   healthProbe: z.boolean().default(true).volatile().description('media_report(action=health) 是否做轻量连通性探测。'),
   healthProbeTtlMs: z.number().step(1000).min(1000).default(300000).volatile().description('健康探测结果缓存 TTL（毫秒），默认 5 分钟。'),
 })
@@ -1255,9 +1270,29 @@ export function apply(ctx, config) {
     knownAgents: restrictions.size,
     maskedAgents: [...restrictions.values()].filter((entry) => Array.isArray(entry.deny) && entry.deny.length > 0).length,
     decisions: [...visionDecisions],
+    // 读图回合闸门现状（2026-11-01）：开关、超时、还有几个读图员在跑。
+    // 与其它判定一样必须能在对话里查到 —— 闸门卡住时要能一眼看出"是在等谁"。
+    turnGate: turnGate.snapshot(),
+  })
+  // 读图回合闸门（2026-11-01）：读图员没返回之前，主 agent 不允许开始下一步。
+  // 开在 `agent/pre-step` 而不是 `agent/turn-stopping`，因为宿主先 step（assistant 文本
+  // 已流式发出）后 turn-stopping —— 后者的位置只能"补更正"，拦不住"先说错"。
+  const turnGate = createTurnGate({
+    ctx, logger, liveConfig, isSubagent, isReader,
+    // 自动 OCR（2026-11-01）：本地、免费、同步。闸门拿到文本就免掉"凭印象描述"；
+    // 失败返回 null，闸门自动退回"注入提醒"那条路，不会把回合卡住。
+    autoOcr: async (imagePath, signal) => {
+      try {
+        return await ocrFileText({ imagePath, signal, maxChars: 4000, timeoutMs: 15000 })
+      } catch (error) {
+        logger?.debug?.('[mm-models] 自动 OCR 失败（已忽略）：' + String(error?.message ?? error))
+        return null
+      }
+    },
   })
   const deps = {
     ctx, config: liveConfig, manager, keys, getLedger, getTaskRegistry, getImageCache, budget, switches, logger, visionStatus,
+    turnGate,
     // 读图 token 计量的观测摘要：cost 报表用它把"未计入"改成实际记账情况。
     readerUsage,
     // 会话树（子代理花费汇总用）：花钱闸门与 cost 报表都靠它把子会话一起算进来。

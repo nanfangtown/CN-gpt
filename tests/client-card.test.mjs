@@ -290,9 +290,12 @@ const walk = (node) => {
 }
 walk(tree)
 const switches = flat.filter((node) => node.type === 'button' && node.props?.role === 'switch')
-// 19 个布尔开关：9 个 enable*（2026-10-30 加了 ocr_image）+ blockMainAgentNativeVision + blockSubagentNativeVision
+// 23 个布尔开关：9 个 enable*（2026-10-30 加了 ocr_image）+ blockMainAgentNativeVision + blockSubagentNativeVision
 // + blockSubagentVideoSpend + attachResultImages + cacheResults + persistTasks + requireSpendConfirm + 3 个 misc
-assert.equal(switches.length, 19, 'nineteen boolean switches rendered')
+// + 3 个读图闸门开关（2026-11-01：readerGate / readerGateImageHint / readerGateForceEvidence）
+// + autoOcrOnImage（2026-11-01：有图自动跑本地 OCR）
+// + readerBatchMode（2026-11-01：批量读图，强制数组入参）
+assert.equal(switches.length, 24, 'twenty-four boolean switches rendered')
 assert.equal(switches.filter((node) => String(node.props['aria-label']).includes('field.enable')).length, 9, 'nine enable* tool switches (+ ocr_image)')
 assert.ok(
   switches.some((node) => String(node.props['aria-label']).includes('field.enableAskQwen')),

@@ -314,6 +314,8 @@ async function main() {
     assert.equal(plain(config.blockSubagentNativeVision), true, '默认屏蔽通用子代理原生读图')
     // 想用原生：把两个 block 关掉即可，读图员不必动（提示词是原生优先）。
     // 出厂模板（cordis.patch.yml）必须与这里一致 —— 由「发布用 patch 与出厂 Config 对齐」用例兜底。
+    // 2026-11-01：批量读图是**显式开启**的强制模式，出厂必须关（行为与旧版一致，避免升级即变脸）。
+    assert.equal(plain(config.readerBatchMode), false, '批量读图默认关：升级不改变既有行为')
   })
 
   await test('成本报表：未计价显式写「未计价」，不伪装成 0.0000', async () => {
@@ -348,7 +350,11 @@ async function main() {
     // 模型在 40+ 个工具里认不出 ask_glm 是"读图"的原因。
     assert.ok(tools.ask_glm.description.includes('读图'), 'ask_glm 描述必须自带"读图"：' + tools.ask_glm.description)
     assert.ok(tools.ask_qwen.description.includes('读图'), 'ask_qwen 描述必须自带"读图"：' + tools.ask_qwen.description)
-    assert.ok(tools.ask_glm.parameters.image_path, '必须暴露 image_path 参数（而不是只给一个泛化 prompt）')
+    // 2026-11-01：批量模式（默认）下参数叫 image_paths（数组），单图模式仍是 image_path。
+    assert.ok(
+      tools.ask_glm.parameters.image_path || tools.ask_glm.parameters.image_paths,
+      '必须暴露图片路径参数（image_path / image_paths），而不是只给一个泛化 prompt',
+    )
     // 2026-10-17 事故：描述写死 GLM-4.6V，配置默认却是 glm-5.3-flash —— 工具"自称 4.6V、实际调 5.3-flash"。
     // 型号必须来自 Config，改配置后描述跟着变。
     assert.ok(tools.ask_glm.description.includes('glm-5.3-flash'), '描述里的型号必须来自 Config：' + tools.ask_glm.description)
