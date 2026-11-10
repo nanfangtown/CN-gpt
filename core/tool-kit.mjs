@@ -204,6 +204,7 @@ export const TOOL_SWITCHES = Object.freeze([
   Object.freeze({ tool: 'minimax_video', field: 'enableMinimaxVideo', capability: 'minimax_video', label: 'MiniMax 出片' }),
   Object.freeze({ tool: 'media_task', field: 'enableMediaTask', capability: 'media_task', label: '任务重查/补下载' }),
   Object.freeze({ tool: 'media_report', field: 'enableMediaReport', capability: 'media_report', label: '成本/健康报告' }),
+  Object.freeze({ tool: 'run_batch', field: 'enableRunBatch', capability: 'run_batch', label: '批量执行' }),
 ])
 
 /**

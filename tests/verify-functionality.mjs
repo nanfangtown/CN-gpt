@@ -98,14 +98,21 @@ await test('① 削减字节后，schema 的**功能面**一个都没少（与�
   //    2026-10-30：新增本地 OCR ocr_image）
   assert.deepEqual(Object.keys(tools).sort(), [
     'ask_glm', 'ask_qwen', 'media_report', 'media_task', 'minimax_video', 'ocr_image', 'qwen_draw',
-    'seedance_video', 'subagent_code', 'subagent_research', 'video_gen',
+    'run_batch', 'seedance_video', 'subagent_code', 'subagent_research', 'subagent_script', 'video_gen',
   ])
 
   // 2) 与优化前的提交**逐字对比参数结构**：参数集合 / 类型 / required / enum / 输出契约
   //    为什么这么做而不是手写期望值：手写期望值会把我对设计的误解写成"规格"
   //    （第一版就误以为 media_task.task_id 带 required 标记）。与历史版本对比才是客观的。
+  //    ⚠ 2026-11-10：这一步依赖 git 与历史提交。没有 git 的环境（例如 DSH 关掉 shell 插件、
+  //    或浅克隆缺 commit）**显式跳过这一段并打印 SKIPPED**，不能静默变成假绿、也不能让整条用例失败。
   const { execFileSync } = await import('node:child_process')
-  const before = execFileSync('git', ['show', 'ccc80b1~1:tools/seedance-video.mjs'], { encoding: 'utf8' })
+  let before = null
+  try {
+    before = execFileSync('git', ['show', 'ccc80b1~1:tools/seedance-video.mjs'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    before = null
+  }
   const after = await readFile(new URL('../tools/seedance-video.mjs', import.meta.url), 'utf8')
   /**
    * 从源码里抽出 parameters 段，**把描述文本整个抹掉**后比对
@@ -125,7 +132,11 @@ await test('① 削减字节后，schema 的**功能面**一个都没少（与�
       .replace(/\s+/g, ' ')
       .trim()
   }
-  assert.equal(structureOf(after), structureOf(before), 'seedance_video 的参数结构（去掉描述后）必须与优化前逐字一致')
+  if (before === null) {
+    console.log('    SKIPPED：没有 git 或缺少历史提交 ccc80b1，跳过"参数结构逐字对比"（其余断言照跑）')
+  } else {
+    assert.equal(structureOf(after), structureOf(before), 'seedance_video 的参数结构（去掉描述后）必须与优化前逐字一致')
+  }
 
   // 3) 枚举值（模型靠它知道 action 能填什么）一个字都没少
   assert.deepEqual(tools.media_report.parameters.action.enum, ['cost', 'health'])

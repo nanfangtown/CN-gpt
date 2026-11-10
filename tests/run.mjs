@@ -72,6 +72,7 @@ const GUARD_IMAGE_READ = 'image-read-guard'
 const GUARD_VISION_DELEGATION = 'vision-delegation-guard'
 const GUARD_READER_CONTRACT = 'reader-contract-guard'
 const GUARD_SUBAGENT_SPEND = 'subagent-spend-guard'
+const GUARD_NATIVE_SHELL = 'native-shell-guard'
 
 function guardOf(fake, label) {
   const hit = (fake.guards ?? []).find((entry) => entry?.label === label)
@@ -126,8 +127,8 @@ function setup(mock, tmp, options = {}) {
   // 而不是让后面某条用例拿着错误的 guard 静默跑出假绿。
   assert.equal(
     fake.guards.length,
-    7,
-    'apply() 应恰好注册七个 guard（工具开关 + 读图守卫 + 原生读图兜底 + 图片路径守卫 + 视觉委派守卫 + 读图员契约守卫 + 子代理生成刹车）',
+    8,
+    'apply() 应恰好注册八个 guard（工具开关 + 读图守卫 + 原生读图兜底 + 图片路径守卫 + 视觉委派守卫 + 读图员契约守卫 + 子代理生成刹车 + 激进模式 shell 屏蔽）',
   )
   fake.guards[0].label = GUARD_TOOL_SWITCH
   fake.guards[1].label = GUARD_READER
@@ -136,6 +137,7 @@ function setup(mock, tmp, options = {}) {
   fake.guards[4].label = GUARD_VISION_DELEGATION
   fake.guards[5].label = GUARD_READER_CONTRACT
   fake.guards[6].label = GUARD_SUBAGENT_SPEND
+  fake.guards[7].label = GUARD_NATIVE_SHELL
   const tools = Object.fromEntries(fake.tools.map((definition) => [definition.name, definition]))
   return { config, fake, tools }
 }
@@ -332,17 +334,17 @@ async function main() {
     assert.ok(!text.includes('undefined'), '不得出现 undefined 单位：' + text)
   })
 
-  await test('apply() 注册 11 个工具 + 分工说明段落（读图员与窄委派都由插件自己注册）', async () => {
+  await test('apply() 注册 13 个工具 + 分工说明段落（读图员与窄委派都由插件自己注册）', async () => {
     const tmp = await makeTmp()
     const { fake, tools } = setup(mock, tmp)
     assert.deepEqual(Object.keys(tools).sort(), [
       'ask_glm', 'ask_qwen', 'media_report', 'media_task', 'minimax_video', 'ocr_image', 'qwen_draw',
-      'seedance_video', 'subagent_code', 'subagent_research', 'video_gen',
+      'run_batch', 'seedance_video', 'subagent_code', 'subagent_research', 'subagent_script', 'video_gen',
     ])
     // 2026-10-18：窄委派也不能再用 tool-subagent 那句通用文案 —— 模型得能一眼分清
     // "执行"（会改文件）和"资料"（只读、不跑命令）。
     assert.ok(tools.minimax_video.description.includes('MiniMax'), 'minimax_video 描述必须自带厂商：' + tools.minimax_video.description)
-    assert.ok(tools.subagent_code.description.includes('执行子代理'), 'subagent_code 描述必须自带身份：' + tools.subagent_code.description)
+    assert.ok(tools.subagent_code.description.includes('编码子代理'), 'subagent_code 描述必须自带身份：' + tools.subagent_code.description)
     assert.ok(tools.subagent_research.description.includes('资料子代理'), 'subagent_research 描述必须自带身份：' + tools.subagent_research.description)
     assert.ok(tools.subagent_code.parameters.prompt, '必须暴露 prompt 参数')
     assert.ok(tools.subagent_code.parameters.description, '必须暴露 description 参数')
@@ -374,10 +376,11 @@ async function main() {
     assert.ok(!/qwen_draw|seedance_video|media_task|media_report/.test(sectionText), '提示词段落不应出现其它工具名')
     assert.ok(sectionText.includes('ask_glm') && sectionText.includes('ask_qwen'), '读图路由策略必须点名两个读图员')
     assert.ok(sectionText.includes('ocr_image'), '文字图分流策略必须点名 ocr_image：' + sectionText)
-    // 字节预算：实测原版 710 B（274 字符），瘦身后 560 B；2026-10-30 加"文字图"一行
-    //（+128 B）后上限同步上浮。它挡的是"把提示词写成小作文"，不是禁止新增能力。
+    // 字节预算：实测原版 710 B（274 字符），瘦身后 560 B；2026-10-30 加"文字图"一行；
+    // 2026-11-10 加"批量执行"一行，同日再强化触发词（回归/多端/CI + script 入口 + 反向约束）。
+    // 上限挡的是"把提示词写成小作文"，不是禁止新增能力。
     const bytes = Buffer.byteLength(sectionText, 'utf8')
-    assert.ok(bytes <= 700, '提示词段落必须 ≤ 700 B（瘦身后 560 B，+文字图一行），当前 ' + bytes + ' B')
+    assert.ok(bytes <= 1200, '提示词段落必须 ≤ 1200 B（瘦身后 560 B + 文字图 + 批量执行），当前 ' + bytes + ' B')
   })
 
   await test('提示词段落与开关无关：打开 seedance 后仍不出现其它工具名', async () => {
@@ -391,6 +394,19 @@ async function main() {
     const tmp = await makeTmp()
     const { fake } = setup(mock, tmp, { overrides: { promptSection: false } })
     assert.equal(fake.sections.length, 0)
+  })
+
+  await test('提示词里的批量执行一行由 enableRunBatch 控制（关掉即消失）', async () => {
+    // 2026-11-10：开关关掉后，提示词不该继续催模型用 run_batch —— 那是"指着一个不存在的工具"。
+    const readSection = (fake) => (typeof fake.sections[0].text === 'function' ? fake.sections[0].text({}) : fake.sections[0].text)
+    const on = setup(mock, await makeTmp(), { overrides: {} })
+    const onText = readSection(on.fake)
+    assert.ok(onText.includes('run_batch'), '开关打开时提示词要点名 run_batch：' + onText)
+
+    const off = setup(mock, await makeTmp(), { overrides: { enableRunBatch: false } })
+    const offText = readSection(off.fake)
+    assert.ok(!offText.includes('run_batch'), '开关关闭时提示词不得再提 run_batch：' + offText)
+    assert.ok(!offText.includes('批量执行'), '开关关闭时整行都应消失：' + offText)
   })
 
   // ---------------------------------------------------------------- 读图员（2026-10-17 插件自有工具）
@@ -1909,6 +1925,27 @@ async function main() {
     assert.equal(zeroPriceOverrides(repriced).length, 0, '改价是合法操作，不该报警')
   })
 
+  await test('激进模式 blockNativeShell：主代理 shell 被拦并指向 run_batch；子代理与 run_batch 放行', async () => {
+    // 2026-11-10：把"逐条跑"逼成"批量跑"的物理闸门。默认关，打开后主代理只剩 run_batch 一条执行路。
+    const tmp = await makeTmp()
+    const { fake } = setup(mock, tmp, { overrides: { blockNativeShell: true } })
+    const guard = guardOf(fake, GUARD_NATIVE_SHELL)
+    const mainAgent = { options: { provider: 'deepseek-account', model: 'deepseek-flash' } }
+    for (const name of ['pwsh', 'bash', 'ops_bash']) {
+      const verdict = guard({ name, args: {}, agent: mainAgent })
+      assert.ok(typeof verdict === 'string' && verdict.includes('run_batch'), name + ' 必须被拦并指向 run_batch：' + String(verdict))
+    }
+    assert.equal(guard({ name: 'run_batch', args: {}, agent: mainAgent }), undefined, 'run_batch 自己不能被拦')
+    assert.equal(guard({ name: 'read', args: {}, agent: mainAgent }), undefined, '文件工具不受影响')
+    assert.equal(
+      guard({ name: 'pwsh', args: {}, agent: { options: { provider: 'deepseek-account', model: 'deepseek-flash', subagentDepth: 1 } } }),
+      undefined,
+      '子代理不受影响（否则 subagent_script 会被一起弄哑）',
+    )
+    const off = setup(mock, await makeTmp(), { overrides: {} })
+    assert.equal(guardOf(off.fake, GUARD_NATIVE_SHELL)({ name: 'pwsh', args: {}, agent: mainAgent }), undefined, '默认关时必须放行')
+  })
+
   await test('性能：开关签名是纯函数式的稳定串，逐个开关都会改变它', async () => {
     // 签名是"每秒对账短路"的判据（2026-10-15 优化）。它一旦漏变，配置变更就会被吞掉；
     // 一旦乱变，优化就退化成每次全量重算。两个方向都要钉住。
@@ -1916,9 +1953,9 @@ async function main() {
     const base = switches.signature()
     assert.equal(typeof base, 'string')
     assert.equal(base, switches.signature(), '同一状态必须得到同一个签名（否则短路失效）')
-    assert.equal(base.split(',').length, 9, '九个开关都要进签名：' + base)
+    assert.equal(base.split(',').length, 10, '十个开关都要进签名：' + base)
 
-    const fields = ['enableAskGlm', 'enableAskQwen', 'enableOcrImage', 'enableQwenDraw', 'enableSeedanceVideo', 'enableVideoGen', 'enableMinimaxVideo', 'enableMediaTask', 'enableMediaReport']
+    const fields = ['enableAskGlm', 'enableAskQwen', 'enableOcrImage', 'enableQwenDraw', 'enableSeedanceVideo', 'enableVideoGen', 'enableMinimaxVideo', 'enableMediaTask', 'enableMediaReport', 'enableRunBatch']
     for (const field of fields) {
       const one = setupSwitches()
       const before = one.switches.signature()
@@ -1975,14 +2012,14 @@ async function main() {
     // 与 subagent 逐字相同，等于白占字节还认不出身份）。合计上限同步上调到 8.6 KB。
     // 2026-10-30：新增 ocr_image（本地 OCR）。描述压到 ~640 B：卖点只有一句
     // "纯文字截图走它、图像理解走读图员"，其余细节留在 README。
-    const budget = { ask_glm: 1300, ask_qwen: 1300, ocr_image: 700, qwen_draw: 700, seedance_video: 1200, video_gen: 1200, minimax_video: 1200, media_task: 860, media_report: 500, subagent_code: 1050, subagent_research: 1050 }
+    const budget = { ask_glm: 1300, ask_qwen: 1300, ocr_image: 700, qwen_draw: 700, seedance_video: 1200, video_gen: 1200, minimax_video: 1200, media_task: 860, media_report: 500, subagent_code: 1050, subagent_research: 1050, subagent_script: 1050, run_batch: 1100 }
     let total = 0
     for (const [name, definition] of Object.entries(tools)) {
       const bytes = Buffer.byteLength(JSON.stringify({ name: definition.name, description: definition.description, parameters: definition.parameters }), 'utf8')
       total += bytes
       assert.ok(bytes <= budget[name], `${name} 的 schema 超预算：${bytes} B > ${budget[name]} B（描述该写进 README，不是写进每个请求）`)
     }
-    assert.ok(total <= 10100, '十一个工具 schema 合计超预算：' + total + ' B/请求（实测约 9950）')
+    assert.ok(total <= 12200, '十三个工具 schema 合计超预算：' + total + ' B/请求（实测约 11880）')
   })
 
   // ---------------------------------------------------------------- 生成物附回上下文（默认关）
@@ -3223,7 +3260,7 @@ async function main() {
     const start = text.indexOf('- id: mm-models')
     assert.ok(start >= 0, 'cordis.patch.yml 里应有 mm-models 行')
     const rest = text.slice(start)
-    const next = rest.slice(1).search(/\n- id: /)
+    const next = rest.slice(1).search(/\n\s*- id: /)
     const block = next < 0 ? rest : rest.slice(0, next + 1)
 
     // ① 键集合必须与 Config 完全一致（缺键 ⇒ 新装用户看不到那些开关/闸门）

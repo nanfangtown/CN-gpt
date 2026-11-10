@@ -180,7 +180,7 @@ if (!ocrAvailable()) {
     assert.equal(raw.ok, true)
     const { text } = buildOcrText(raw, { maxChars: 4000 })
     assert.ok(/任务|系统|错误|连接/.test(text), '应认出中文：' + text.slice(0, 120))
-    // 逐字加空格是 Windows 中文引擎的既有行为；重排后应还原成词。注意"用户 陈成"这种
+    // 逐字加空格是 Windows 中文引擎的既有行为；重排后应还原成词。注意"用户 张三"这种
     // 原文本来就有的词间空格必须保留，所以只钉"逐字空格"的形态。
     assert.ok(text.includes('任务队列'), '中文词内的逐字空格没有被去掉：' + text.slice(0, 120))
     assert.ok(!/任 务|队 列|错 误/.test(text), '逐字空格应该已经消失：' + text.slice(0, 120))

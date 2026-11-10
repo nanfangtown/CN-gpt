@@ -469,6 +469,13 @@
         codeAgentPreset: mm-code
         researchAgentPreset: mm-research
         delegationMaxDepth: 1
+        # 脚本层子代理（subagent_script）的模型路线：默认走 MiniMax。
+        # 预检不过（provider 未注册 / 模型不在清单）就不注入，子代理照父路线派出。
+        scriptAgentPreset: mm-code
+        scriptRouteEnabled: true
+        scriptProvider: minimax
+        scriptModel: MiniMax-M3.1-Flash
+        scriptReasoningEffort: ''
         # 屏蔽主代理的原生读图：打开后主 agent 的工具列表里没有 read_image，读图只能走
         # 上面选中的读图子代理。子代理不受影响 —— 否则读图员会被一起弄瞎（实测过）。
         # 2026-10-17 起默认开（开箱即用的确定性路由）；想用原生读图就把它和下面那个一起关掉。
@@ -502,6 +509,15 @@
         enableMinimaxVideo: false
         enableMediaTask: true
         enableMediaReport: true
+        # 批量执行（2026-11-10）：多条命令合成一次调用。成本大头是步数（每步重发上下文），
+        # 所以跑测试/构建/批量检查时优先用它；完整日志落 gen/batch/，细节按需 read。
+        enableRunBatch: true
+        batchMaxCommands: 20
+        batchCommandTimeoutMs: 120000
+        batchParallelLimit: 4
+        # 激进模式（默认关）：屏蔽主 agent 的 pwsh / bash / ops_bash，命令只能经 run_batch 执行。
+        # shell 是执行基底，打开会失去交互式单步执行能力；子代理不受影响。改完需完整重启。
+        blockNativeShell: false
         # ---- 生成物是否附回模型上下文 ----
         # 默认关（只回文件路径 + 规格）：qwen_draw 默认产 2048×2048 大图，
         # 塞回上下文会触发上传/传输失败而拖垮整轮，且多数路由本来就会降采样它。
@@ -522,3 +538,15 @@
         readerBatchMax: 4
         healthProbe: true
         healthProbeTtlMs: 300000
+
+    # ---- 行4：MiniMax Code 订阅接入（合并自 dsh-minimax-connect 0.3.0，MIT）----
+    #
+    # 独立一行，不是塞进 mm-models 的 Config：
+    #   - 它挂了不影响读图/出片/委派；不想用 MiniMax 的人禁用这一行即可。
+    #   - 它自己注册 LLM provider（id: minimax）与 /plugins/dsh-mm-models/minimax/* 路由。
+    #   - 凭据来自本机 MiniMax Code 登录态；不含任何 key 字面值。
+    - id: mm-minimax
+      name: 'dsh-mm-models/minimax'
+      config:
+        baseUrl: https://agent.minimax.cn/mavis/api/v1/llm
+        cloudBaseUrl: https://agent.minimax.cn/minimax-cloud/api/v1

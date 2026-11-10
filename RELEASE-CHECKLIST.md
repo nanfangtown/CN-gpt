@@ -37,7 +37,7 @@ npm pack --dry-run      # 检查包里只有 index/client/core/tasks/tools/local
 
 ## 4. 版本与发布
 
-- [x] `package.json` 与 `CHANGELOG.md` 的版本一致（当前 `0.2.2`）。
+- [x] `package.json` 与 `CHANGELOG.md` 的版本一致（当前 `0.3.0`；0.2.2 及以前的记录见 CHANGELOG 与下面的历史行）。
 - [x] `v0.1.1` annotated tag 已创建并推送。
 - [x] `v0.2.0` annotated tag（随该次发布创建）。
 - [x] `v0.2.1` annotated tag 已发布 npm。
@@ -48,7 +48,16 @@ npm pack --dry-run      # 检查包里只有 index/client/core/tasks/tools/local
 - [ ] 本次首次 push 用了一把 **repo-scoped deploy key**（`.deploy/`，已 gitignore）。
       推完可在仓库 Settings → Deploy keys 删掉它，并删除本机 `.deploy/`；要保留以后继续推就留着。
 
-## 5. 已知取舍（发布时如实写进 Release Notes）
+## 5. 0.3.0 新增检查（本次发布）
+
+- [ ] 干净 profile 里跑一次 `run_batch`：串行 / `parallel: true` / `script: "test"` 三种形态各一次。
+- [ ] `blockNativeShell` 默认关；打开后主代理 `pwsh` 被拒（附指路文案），`run_batch` 与子代理 shell 不受影响。
+- [ ] 配置卡能看到 `run_batch` / `blockNativeShell` / `batchMaxCommands` / `batchCommandTimeoutMs` / `batchParallelLimit`（**先刷新页面**再确认）。
+- [ ] `run_batch` 子进程里看不到 `*_API_KEY` / `*_TOKEN`（密钥环境变量过滤生效）。
+- [ ] `npm test` 覆盖新用例（`run-batch` 16 项、`run.mjs` 142 项、全套 13 个文件）。
+- [ ] tag `v0.3.0`；Release Notes 写明批量执行与激进模式的取舍。
+
+## 6. 已知取舍（发布时如实写进 Release Notes）
 
 - 默认屏蔽原生读图；没有读图员 key 的用户会暂时"看不见图"。见 README 的说明。
 - bundle 的 `llm-pi-ai` 行是**覆盖**语义，可能覆盖用户已有 provider。

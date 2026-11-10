@@ -220,7 +220,7 @@ function render(result) {
 const workspaces = process.argv.slice(2)
 if (workspaces.length === 0) {
   console.log('用法：node tests/vision-ab-report.mjs "<工作区绝对路径>" ["<另一个工作区>"]')
-  console.log('例：  node tests/vision-ab-report.mjs "D:\\ds 2" "C:\\Users\\<你>\\Documents\\deepseek-harness\\default-workspace"')
+  console.log('例：  node tests/vision-ab-report.mjs "D:\\workspace-a" "D:\\workspace-b"')
   process.exit(1)
 }
 const results = workspaces.map(summarizeWorkspace)

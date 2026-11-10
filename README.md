@@ -3,7 +3,7 @@
 > **GLM/Qwen 读图 · Qwen 出图 · Seedance/可灵/海螺 出片**
 > **外加一道 fail-closed 花费闸门：未计价一律拒付。**
 >
-> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.2.2` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
+> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.3.0` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
 
 [![npm](https://img.shields.io/npm/v/dsh-mm-models.svg)](https://www.npmjs.com/package/dsh-mm-models)
 [![offline-tests](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml)
@@ -26,10 +26,12 @@ DeepSeek 主模型负责思考与交付；外部模型只负责"看 / 画 / 拍"
 | `minimax_video` | MiniMax（海螺）出片 | ⛔ 关 | 文生 / 图生 / 首尾帧；独立 `MINIMAX_API_KEY`；按条计费 |
 | `media_task` | 异步任务重查 / 补下载 | ✅ 开 | 整轮失败后按 `provider + task_id` 找回产物 |
 | `media_report` | 成本估算 / 链路健康 | ✅ 开 | 账本、单价自检、四把 key 与各条链路状态 |
-| `subagent_code` | 窄工具面执行子代理 | 常开 | 只有命令 + 文件读写 + 查找；适合改代码 / 跑构建 |
+| `run_batch` | 批量执行（一次多条命令） | ✅ 开 | 跑测试 / 构建 / 批量检查：步数从 N 降到 1，日志落 `gen/batch/` |
+| `subagent_code` | 窄工具面编码子代理 | 常开 | 命令 + 文件读写 + 查找；适合设计 / 重构 / 根因 |
+| `subagent_script` | 窄工具面脚本子代理 | 常开 | 命令 + 文件读写 + 查找；跑构建 / 测试到绿 / 批量机械改动，默认走 MiniMax 路线 |
 | `subagent_research` | 窄工具面资料子代理 | 常开 | 只有只读文件 + 网页检索；适合查文档 / 核实事实 |
 
-> 后两个工具是"窄委派"：通用子代理每轮要背全部工具表（约 35 个 / 32 KB），这两个只背 7 / 5 个（约 5.7 / 3.0 KB）。读图员本身也是子代理。
+> 后三个工具是"窄委派"：通用子代理每轮要背全部工具表（约 36 个 / 33 KB），这三个只背 7 / 7 / 5 个。读图员本身也是子代理。
 
 ## 为什么不是"让主模型自己看图"
 
@@ -48,8 +50,8 @@ DeepSeek 主模型负责思考与交付；外部模型只负责"看 / 画 / 拍"
 :: 从 npm 安装（推荐）——装到的是预构建代码，不需要构建脚本授权
 dsh plugin --profile desktop add dsh-mm-models
 
-:: 锁定版本，便于复现
-dsh plugin --profile desktop add dsh-mm-models@0.2.2
+:: 锁定版本，便于复现（0.3.0 发布后可用）
+dsh plugin --profile desktop add dsh-mm-models@0.3.0
 
 :: 改源码 / 跟未发布分支时，从本地目录安装
 git clone https://github.com/nanfangtown/CN-gpt.git
@@ -59,7 +61,7 @@ dsh plugin --profile desktop add ".\CN-gpt"
 装完**完整重启 DSH**。安装会在 profile 里加两行 + 三个 agent preset：
 
 1. `llm-pi-ai` —— 注册两条读图路由：`providers.glm`（智谱）与 `providers.qwen-vl`（百炼）。
-2. `mm-models` —— 插件本体（11 个工具 + 一段可关闭的分工提示词）。
+2. `mm-models` —— 插件本体（13 个工具 + 一段可关闭的分工提示词）。
 
 > ⚠ **第 1 行是覆盖语义**：`config` 整体替换，不与已有 `providers` 深合并。
 > 如果你在 设置 → 模型 里配过自定义 provider，安装前先备份 `cordis.patch.yml`，
@@ -116,6 +118,36 @@ minimax_video(prompt="镜头缓慢推进，雨滴打在窗上", duration=6, reso
 
 单价表在配置卡里可改；**填错价拦不住**（只拦"缺档位"），请按厂商官网核对。
 金额是估算，不是账单。详见 [SECURITY.md](https://github.com/nanfangtown/CN-gpt/blob/main/SECURITY.md)。
+
+## 批量执行：把「一步」做大（`run_batch`）
+
+逐条跑命令的成本不在执行，而在**步数**：每条命令都是一步，每步都要重发一遍上下文。
+实测一轮 12 个测试文件逐条跑 = 54 步、3M cacheRead；合成一次 `run_batch` 后是 1 步。
+
+- **串行 / 并行**：默认串行（有依赖的命令别并行）；`parallel: true` 时按 `batchParallelLimit`（默认 4）并发，结果顺序仍与输入一致。并行下 `stop_on_error` 不可用（已经起跑的命令停不下来，会直接拒绝）；
+- **脚本入口**：`script: "test"` 直接读 `package.json` 的 `scripts.test`，按 `&&` 拆条执行，`npm run x` 引用递归展开（最多 3 层）。会改变语义的构造（`||`、反引号、`$(...)`、行首 `cd`）整段当一条跑——机器上没装 npm 时这一条尤其有用；
+- **退出码原样保留**：Windows 下用包装脚本把真实退出码写出来（`powershell -Command` 会把 3 压成 1）；
+- **只回摘要**：每条命令都带一行输出尾巴（≤ 200 字符，"通过 13，失败 0"这类结论文本一次就能看到）；输出本身很短时标注「完整输出，无需再读日志」，避免模型为"逐字核对"再读一遍日志；失败另带摘要（≤ 600 字符），完整输出落 `gen/batch/<时间戳>/<序号>-<命令>.log`；
+- **超时杀进程树**：`batchCommandTimeoutMs`（默认 120 s）到点用 `taskkill /T` 连孙进程一起收；
+- **上限点名拒绝**：`batchMaxCommands`（默认 20）超过就报错，不静默截断。
+
+配置：`enableRunBatch`（默认开）、`batchMaxCommands`、`batchCommandTimeoutMs`。
+
+## 激进模式：屏蔽原生 shell（`blockNativeShell`，默认关）
+
+打开后主代理**不能**再调 `pwsh` / `bash` / `ops_bash`——命令只能经 `run_batch` 执行：
+要跑的命令一次都给它（只有一条时 `commands` 给一条即可）。这样"逐条跑"在物理上不可用，
+"批量"成为唯一路径；被拦时它会拿到明确的指路文案。
+
+⚠ 这是**动地基**的开关，所以默认关：
+
+- shell 是执行基底，不像 `read_image` 那样是叶子能力：打开后主代理失去交互式单步能力
+  （探针、调试、看输出再决定下一步）；
+- 子代理**不受影响**（`subagent_script` 仍可执行命令，它有自己的 shell 工具面）；
+- 如果同时把 `enableRunBatch` 关了，主代理将**无法执行任何命令**——启动自检会告警。
+
+保存后**立即生效**（守卫每次调用都读实时配置）；启动自检那条告警日志要重启后才会打印。
+工具表本身不变（pwsh 仍在表里，只是调用被拒），所以不需要为它重启。
 
 ## 出片三选一（互斥）
 
@@ -246,6 +278,7 @@ MiniMax 的计费单位是**条**（分辨率 × 时长），与另外两家的"
 | [docs/ENGINEERING-NOTES.md](https://github.com/nanfangtown/CN-gpt/blob/main/docs/ENGINEERING-NOTES.md) | 完整工程记录：设计取舍、事故复盘、性能与测试数据（历史快照，可能过时） |
 | [docs/reports/](https://github.com/nanfangtown/CN-gpt/tree/main/docs/reports) | 三次修复 / 性能 / 读图路由的专项报告 |
 | [SECURITY.md](https://github.com/nanfangtown/CN-gpt/blob/main/SECURITY.md) | 密钥处理、花费安全、漏洞报告方式 |
+| [THIRD_PARTY_NOTICES.md](https://github.com/nanfangtown/CN-gpt/blob/main/THIRD_PARTY_NOTICES.md) | 第三方代码来源与许可（vendored MiniMax 接入等） |
 | [PUBLISHING.md](https://github.com/nanfangtown/CN-gpt/blob/main/PUBLISHING.md) | 发布到 npm：鉴权、首发步骤、发布后验证与回滚 |
 | [CONTRIBUTING.md](https://github.com/nanfangtown/CN-gpt/blob/main/CONTRIBUTING.md) | 开发环境、测试、提交规范、发布流程 |
 | [CHANGELOG.md](https://github.com/nanfangtown/CN-gpt/blob/main/CHANGELOG.md) | 版本变更 |
@@ -255,7 +288,8 @@ MiniMax 的计费单位是**条**（分辨率 × 时长），与另外两家的"
 
 ```bash
 npm install          # 只装一个 devDependency（schemastery）
-npm test             # 离线套件：不需要 DSH、不需要 key、不联网、不花钱
+npm test             # 离线套件：13 个文件 / 约 160 项断言；不需要 DSH、不需要 key、不联网、不花钱
+npm run test:batch   # 只跑 run_batch 的 16 项（串行/并行、退出码、超时、脚本入口、环境隔离）
 npm run test:docs    # 文档相对链接检查
 ```
 
@@ -264,6 +298,14 @@ npm run test:docs    # 文档相对链接检查
 - **离线套件**用本地假厂商（`tests/mock-providers.mjs`）跑完 提交 → 轮询 → 下载 → 记账，CI 在 Linux / Windows × Node 22 / 24 上跑。
 - **真实 harness 脚本**（`tests/e2e-*.mjs`）需要本机 DSH 安装与真 key，`SKIPPED:` 与通过可区分，`DSH_E2E_STRICT=1` 时跳过会以 78 退出。
 - 变异测试（`npm run test:mutation`）会**直接改写工作区源码**再还原，不要与其它测试并发跑。
+
+## 参与
+
+- 问题 / 需求：[GitHub Issues](https://github.com/nanfangtown/CN-gpt/issues)
+- 提交代码：[CONTRIBUTING.md](https://github.com/nanfangtown/CN-gpt/blob/main/CONTRIBUTING.md)
+- 安全问题：**不要**开公开 issue，按 [SECURITY.md](https://github.com/nanfangtown/CN-gpt/blob/main/SECURITY.md) 私下报告
+- 行为准则：[CODE_OF_CONDUCT.md](https://github.com/nanfangtown/CN-gpt/blob/main/CODE_OF_CONDUCT.md)
+- 第三方代码来源：[THIRD_PARTY_NOTICES.md](https://github.com/nanfangtown/CN-gpt/blob/main/THIRD_PARTY_NOTICES.md)
 
 ## 名字
 

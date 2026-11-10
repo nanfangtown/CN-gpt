@@ -42,6 +42,8 @@ Thumbs.db
 *.bak
 *.bak-*
 *.tgz
+# 合并前备份目录（含嵌套 .git，体积大且无价值）
+.backup-*/
 
 # ---- 本机部署密钥（只用于首次 push，绝不进仓库）----
 .deploy/

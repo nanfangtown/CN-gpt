@@ -1,3 +1,38 @@
+# Changelog
+
+## [0.3.0] - 2026-11-10
+
+### Added
+
+- **`run_batch`（批量执行）**：一次跑多条命令（测试 / 构建 / 批量检查 / CI 复现），返回每条的命令、退出码、耗时、输出尾巴（≤200 字符）与失败摘要，完整日志落 `gen/batch/`。
+  - **为什么**：成本大头是**步数 × 上下文**——逐条跑 12 个测试文件 = 54 步 / 3M cacheRead；合成一次调用后是 1 步，实测 cacheRead 约降到 1/28。
+  - **串行 / 并行**：默认串行；`parallel: true` 按 `batchParallelLimit`（默认 4）并发，结果顺序不变；与 `stop_on_error` 互斥。实测 4 个测试文件 2.18 s → 1.04 s。
+  - **脚本入口**：`script: "test"` 直接读 `package.json` 脚本，按 `&&` 拆条、`npm run` 递归展开（最多 3 层）；没装 npm 的机器也能跑官方测试入口。
+  - **退出码保真**：Windows 下用包装脚本绕开 `powershell -Command` 把 3 压成 1 的问题；超时用 `taskkill /T` 收整棵进程树。
+  - **环境隔离**：子进程剔除 `*_API_KEY` / `*_TOKEN` / `*SECRET` 等密钥变量，与原生 shell 的 shell-env 策略一致。
+  - 新增 `tests/run-batch.test.mjs`（16 项，离线、不花钱）。
+- **`blockNativeShell`（激进模式，默认关）**：屏蔽主 agent 的 `pwsh` / `bash` / `ops_bash`，命令只能经 `run_batch` 执行。shell 是执行基底，所以默认关；子代理不受影响；与 `enableRunBatch=false` 同时打开时启动自检告警。
+- **合并 `dsh-minimax-connect` 0.3.0（MIT）**：新增 bundle 行 `mm-minimax`，注册 `minimax` LLM provider 与设置卡（积分 / 签到 / 订阅额度 / 模型清单）。
+- **合并 `dsh-coding-minimax`**：新增 `subagent_script` 工具（脚本 / 构建 / 测试 / 批量机械改动），默认走 `minimax/MiniMax-M3.1-Flash`，预检不过静默回落父路线。
+- 新增 `THIRD_PARTY_NOTICES.md`。
+
+### Changed
+
+- `subagent_code` 改为**核心编码**专用（设计 / 重构 / 根因），不再绑定 MiniMax 路线；与 `subagent_script` 的分工写进工具描述。
+- 提示词加强"批量执行"：触发从"跑测试 / 构建"扩到"改完代码跑回归、多包 / 多端 / 多版本验证、CI 复现"，点名 `script:"test"`，并加"依赖上一条输出才能决定下一条的不要批"的反向约束；该行由 `enableRunBatch` 控制。提示词段落预算 960 → 1200 B。
+- 配置卡新增 `run_batch`、`blockNativeShell`、`batchMaxCommands`、`batchCommandTimeoutMs`、`batchParallelLimit`。
+
+### Fixed
+
+- 修掉 0.3.0 遗留的 5 项红灯：工具数断言（11→13）、`subagent_code` schema 超预算、出厂 patch 对齐把 `mm-minimax` 行的键算进来、客户端测试不认识 `react/jsx-runtime` 与 `useCallback`。
+- 假 React 的两个真实缺陷：`createElement` 切换 slots 时**没有恢复 cursor**（嵌套组件让父组件 hook 下标漂移）、页面组件没走 `createElement`（cursor 跨次累积）。vendored 设置卡引入嵌套组件后才暴露。
+- `verify-functionality` ① 在没有 git / 浅克隆时**显式 SKIPPED**，不再假失败。
+- `run_batch` 子进程不再继承密钥环境变量（首跑时导致"缺 key"测试拿到真 key）。
+
+### Tests
+
+- `run.mjs` 142 项、`run-batch` 16 项、全套 13 个文件全绿；新增"提示词由 `enableRunBatch` 控制"、"shell 屏蔽与子代理豁免"等回归断言。
+
 # 变更记录
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本遵循 [SemVer](https://semver.org/lang/zh-CN/)。

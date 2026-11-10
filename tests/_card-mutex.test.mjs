@@ -21,8 +21,15 @@ const sandbox = { window: { __ModuleLoader__: { load(definition) { mod = definit
 vm.createContext(sandbox)
 vm.runInContext(source, sandbox)
 const React = { createElement: (type, props, ...children) => ({ type, props, children }) }
+// 2026-11-10：vendored MiniMax 设置卡用 `react/jsx-runtime`（宿主模块表里本来就有）。
+const JsxRuntime = {
+  Fragment: 'Fragment',
+  jsx: (type, props) => React.createElement(type, props ?? {}),
+  jsxs: (type, props) => React.createElement(type, props ?? {}),
+}
 const exported = mod.factory((name) => {
   if (name === 'react') return React
+  if (name === 'react/jsx-runtime') return JsxRuntime
   throw new Error('unexpected require: ' + name)
 })
 

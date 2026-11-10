@@ -32,7 +32,9 @@ function makeFakeReact() {
   let cursor = 0
   const useState = (initial) => {
     const index = cursor++
-    if (slots.length <= index) slots.push({ value: typeof initial === 'function' ? initial() : initial })
+    // 2026-11-10：按下标写槽位（而不是 push）。组件两次渲染间 hook 数量变化时 cursor 会跳号，
+    // push 只能追加到末尾，slots[index] 就成了 undefined。
+    if (slots.length <= index) slots[index] = { value: typeof initial === 'function' ? initial() : initial }
     const slot = slots[index]
     return [
       slot.value,
@@ -54,16 +56,23 @@ function makeFakeReact() {
       if (typeof type === 'function') {
         if (!byComponent.has(type)) byComponent.set(type, [])
         const saved = slots
+        // 2026-11-10：cursor 必须跟着 slots 一起保存/恢复。
+        // 只恢复 slots 会让嵌套组件（vendored MiniMax 卡）的 hook 计数泄漏给父组件：
+        // 父组件下一次渲染时 useState 的下标从 0 漂到 11，读到的就是另一个槽位（永远是初始值）。
+        const savedCursor = cursor
         slots = byComponent.get(type)
         cursor = 0
         const out = type({ ...(props ?? {}), children })
         slots = saved
+        cursor = savedCursor
         return out
       }
       return { type, props: props ?? {}, children }
     },
     useState,
     useEffect,
+    // 2026-11-10：vendored MiniMax 设置卡用 useCallback 缓存加载函数；桩里等价于直接返回原函数。
+    useCallback: (fn) => fn,
   }
 }
 const fakeReact = makeFakeReact()
@@ -73,9 +82,18 @@ const sandbox = {
 }
 vm.runInNewContext(code, sandbox, { filename: 'client.js' })
 assert.equal(sandbox.__definition.id, 'dsh-mm-models', 'client module id')
+// 2026-11-10：vendored 的 MiniMax 设置卡用 `require("react/jsx-runtime")` 编译产物；
+// 宿主客户端模块表里本来就有这一项（`{react, "react/jsx-runtime", "react-dom", ...}`），
+// 所以桩要一起提供，而不是断言"只允许 react"。
+const fakeJsxRuntime = {
+  Fragment: 'Fragment',
+  jsx: (type, props) => fakeReact.createElement(type, props ?? {}),
+  jsxs: (type, props) => fakeReact.createElement(type, props ?? {}),
+}
 const mod = sandbox.__definition.factory((name) => {
-  assert.equal(name, 'react')
-  return fakeReact
+  if (name === 'react') return fakeReact
+  if (name === 'react/jsx-runtime') return fakeJsxRuntime
+  throw new Error('unexpected require: ' + name)
 })
 assert.equal(
   JSON.stringify(mod.inject),
@@ -115,7 +133,7 @@ const credentialService = {
   async describe(refs) {
     credentialCalls.push({ op: 'describe', refs })
     if (credentialService.failDescribe === true) return fail('describe failed')
-    const out = {}
+    const out = {}; if (process.env.MM_DBG) console.log('[describe]', JSON.stringify(refs)); // DBG
     for (const ref of refs) {
       const entry = credentialStore.get(ref)
       out[ref] = entry === undefined ? { configured: false, writable: true } : { configured: true, source: entry.source, writable: entry.writable !== false }
@@ -197,6 +215,10 @@ mod.apply(fakeCtx)
 // ---- 注册点 ----
 assert.equal(registered.length, 1)
 const { options, component } = registered[0]
+// 2026-11-10：页面组件必须像 React 那样经由 createElement 渲染（而不是直接调用函数）。
+// 直接调用会让 fake React 的 cursor 在多次渲染间累积，hook 下标漂移（0 → 2 …），
+// 组件读到的就不是自己的槽位。vendored MiniMax 卡引入嵌套组件后，这个问题才暴露出来。
+const renderPage = (props) => fakeReact.createElement(component, props)
 assert.equal(options.name, 'plugins.bundle.config')
 assert.equal(options.key, 'dsh-mm-models')
 assert.equal(typeof options.inject, 'function')
@@ -264,7 +286,7 @@ credentialStore.set('DASHSCOPE_API_KEY', { value: 'sk-x', source: 'environment' 
 credentialStore.set('ZHIPU_API_KEY', { value: 'z', source: 'store' })
 
 // ---- 渲染：summary 不画，页面有 18 个开关 + 保存按钮 ----
-assert.equal(component({ view: 'summary', t: (key) => key }), null)
+assert.equal(renderPage({ view: 'summary', t: (key) => key }), null)
 const pageProps = {
   view: 'page',
   t: (key) => 'T:' + key,
@@ -275,7 +297,7 @@ const pageProps = {
   // 真机上由 slot inject 提供；测试必须同样传入，否则卡片拿不到凭据服务。
   credentials: props.credentials,
 }
-const tree = component(pageProps)
+const tree = renderPage(pageProps)
 const flat = []
 const walk = (node) => {
   if (node === null || node === undefined || typeof node === 'boolean') return
@@ -290,13 +312,15 @@ const walk = (node) => {
 }
 walk(tree)
 const switches = flat.filter((node) => node.type === 'button' && node.props?.role === 'switch')
-// 23 个布尔开关：9 个 enable*（2026-10-30 加了 ocr_image）+ blockMainAgentNativeVision + blockSubagentNativeVision
-// + blockSubagentVideoSpend + attachResultImages + cacheResults + persistTasks + requireSpendConfirm + 3 个 misc
+// 26 个布尔开关：10 个 enable*（2026-10-30 ocr_image；2026-11-10 run_batch）
+// + blockMainAgentNativeVision + blockSubagentNativeVision
+// + blockSubagentVideoSpend + blockNativeShell（2026-11-10 激进模式）
+// + attachResultImages + cacheResults + persistTasks + requireSpendConfirm + 3 个 misc
 // + 3 个读图闸门开关（2026-11-01：readerGate / readerGateImageHint / readerGateForceEvidence）
 // + autoOcrOnImage（2026-11-01：有图自动跑本地 OCR）
 // + readerBatchMode（2026-11-01：批量读图，强制数组入参）
-assert.equal(switches.length, 24, 'twenty-four boolean switches rendered')
-assert.equal(switches.filter((node) => String(node.props['aria-label']).includes('field.enable')).length, 9, 'nine enable* tool switches (+ ocr_image)')
+assert.equal(switches.length, 26, 'twenty-six boolean switches rendered')
+assert.equal(switches.filter((node) => String(node.props['aria-label']).includes('field.enable')).length, 10, 'ten enable* tool switches (+ ocr_image, + run_batch)')
 assert.ok(
   switches.some((node) => String(node.props['aria-label']).includes('field.enableAskQwen')),
   'ask_qwen switch rendered next to ask_glm',
@@ -323,7 +347,7 @@ const rerenderTree = () => {
       visit(node.children ?? node.props?.children)
     }
   }
-  visit(component(pageProps))
+  visit(renderPage(pageProps))
   return nodes
 }
 
@@ -342,8 +366,8 @@ for (const input of secretInputs) {
   assert.equal(input.props.value, "", "密钥框不得回显已存值（凭据服务不提供）：" + input.props["aria-label"])
 }
 
-// describe 是异步的：等一个微任务让 useEffect 里的调用落地
-await new Promise((resolve) => setTimeout(resolve, 0))
+// describe 是异步的：等一个宏任务让 useEffect 里的调用真正落地（只等微任务不够）
+await new Promise((resolve) => setTimeout(resolve, 20))
 
 // ---- 状态来自 describe：已配置 + 来自哪一层 ----
 assert.equal(credentialCalls.some((call) => call.op === "describe"), true, "页面加载应调用 credentials.describe")
@@ -373,7 +397,7 @@ const rerender = () => {
       visit(node.children ?? node.props?.children)
     }
   }
-  visit(component(pageProps))
+  visit(renderPage(pageProps))
   return nodes
 }
 /** 按 aria-label 找按钮。 */

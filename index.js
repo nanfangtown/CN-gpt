@@ -2,7 +2,7 @@
  * dsh-mm-models —— DeepSeek 主脑 + GLM 读图 / Qwen 制图 / Seedance 出片。
  *
  * 规划：dsh-创作模式插件-规划.txt v0.7。
- * 本文件 = Config + 注册 10 个工具 + 提示词段落（无 persona、无前端）。
+ * 本文件 = Config + 注册 13 个工具 + 提示词段落（无 persona、无前端）。
  *
  * 顶层工具（与 bash / ops_* 同级）：
  *   ask_glm        读图员（GLM-4.6V；2026-10-17 起由本插件自己注册，见 tools/reader.mjs）
@@ -34,6 +34,7 @@ import { createMediaReportTool } from './tools/media-report.mjs'
 import { createReaderTools } from './tools/reader.mjs'
 import { createOcrImageTool, ocrFileText } from './tools/ocr-image.mjs'
 import { createDelegationTools } from './tools/delegation.mjs'
+import { createRunBatchTool } from './tools/run-batch.mjs'
 import { createTurnGate } from './guard/turn-gate.mjs'
 import { createKeyResolver } from './core/keys.mjs'
 import { createReaderUsageMeter } from './core/reader-usage.mjs'
@@ -69,13 +70,21 @@ export const inject = ['tools', 'credentials', 'systemPrompt']
  *   1. 媒体分工与成本纪律（工具出素材、生成要花钱）；
  *   2. **读图路由**：原生优先；原生被屏蔽/不支持或要省钱时走已开启的读图员；
  *      两者都不可用才如实说没有途径、不要猜图（2026-10-17 起不再写死"一律走 ask_glm"）；
- *   3. **窄委派**：子代理每轮要背全部工具 schema（实测 35 个工具 ≈ 32 KB），
+ *   3. **窄委派**：子代理每轮要背全部工具 schema（实测 36 个工具 ≈ 33 KB），
  *      所以按用途选窄工具面的委派工具，别拿通用 subagent 干小活。
  */
 /** 媒体分工与窄委派两条固定策略（与读图路由无关的那部分）。 */
 const PROMPT_FIXED = {
   division: '【媒体分工】媒体工具只出素材与结论，交付由主模型负责并负全责；生成可能计费，先确认能力可用。',
-  delegate: '【窄委派】子代理每轮背全部工具表（35个≈32KB）：跑命令/改代码用 subagent_code，查资料用 subagent_research。',
+  delegate:
+    '【窄委派】子代理每轮背全部工具表（36个≈33KB）：脚本/构建/测试/批量机械改动用 subagent_script，'
+    + '核心编码（设计/重构/根因）用 subagent_code，查资料用 subagent_research。',
+  // 2026-11-10：把"一批命令"变成一个工具调用。成本大头是步数（每步重发上下文），
+  // 所以这里只讲三件事：什么算一批（回归/多端/CI）、脚本入口怎么用、什么不要批。
+  batch:
+    '【批量执行】改完代码跑回归、多包/多端/多版本验证、CI 复现：能提前列出且彼此不依赖的命令，'
+    + '合成一次 run_batch（独立的可加 parallel=true）；项目自带测试入口用 run_batch(script:"test")，不必手抄命令。'
+    + '⚠ 依赖上一条输出才能决定下一条的（调试/探针/看报错再改）仍用 shell 逐条跑。',
 }
 
 /**
@@ -89,7 +98,7 @@ const PROMPT_FIXED = {
  * @param {boolean} [ocrEnabled] - ocr_image 是否开着（默认 true，兼容旧调用）。
  * @returns {string} 段落文本。
  */
-function buildDivisionSection(nativeBlocked, ocrEnabled = true) {
+function buildDivisionSection(nativeBlocked, ocrEnabled = true, batchEnabled = true) {
   const ocrLine = ocrEnabled
     ? (nativeBlocked
       ? '【文字图】纯文字截图先用 ocr_image（本地、免费、不出网）；图表、排版、画面、照片走读图员。'
@@ -98,7 +107,7 @@ function buildDivisionSection(nativeBlocked, ocrEnabled = true) {
   const routing = nativeBlocked
     ? '【读图路由】主代理原生读图已屏蔽：图像识别/分析/审查一律走 ask_glm 或 ask_qwen（把图片路径交给它）；两个都关才如实说"没有看图途径"，不要猜图。'
     : '【读图路由】优先用原生 read_image 做细节审读；原生被屏蔽/不支持，或要批量省钱时走**已开启的** ask_glm / ask_qwen（把图片路径交给它）；两者都不可用就如实说"没有看图途径"，不要猜图。'
-  return [PROMPT_FIXED.division, routing, ocrLine, PROMPT_FIXED.delegate].filter((line) => line !== undefined).join('\n')
+  return [PROMPT_FIXED.division, routing, ocrLine, batchEnabled ? PROMPT_FIXED.batch : undefined, PROMPT_FIXED.delegate].filter((line) => line !== undefined).join('\n')
 }
 
 /** 插件配置：四把 key、端点与型号、任务层、成本、落盘、开关。 */
@@ -377,7 +386,13 @@ export const Config = z.object({
   // 现在 preset 在**调用时**才解析，装配期不再依赖 preset 是否已注册。
   codeAgentPreset: z.string().default('mm-code').volatile().description('subagent_code 的 agent preset id（persona + 命令 / 文件读写 / 查找的窄工具面）。'),
   researchAgentPreset: z.string().default('mm-research').volatile().description('subagent_research 的 agent preset id（persona + 只读文件 / 网页检索的窄工具面）。'),
-  delegationMaxDepth: z.number().step(1).min(1).max(9).default(1).volatile().description('窄委派（subagent_code / subagent_research）的绝对委派深度上限，默认 1（子代理不能再往下委派）。'),
+  delegationMaxDepth: z.number().step(1).min(1).max(9).default(1).volatile().description('窄委派（subagent_code / subagent_script / subagent_research）的绝对委派深度上限，默认 1（子代理不能再往下委派）。'),
+  // ---- 脚本层子代理的模型路线（2026-11-10 合并 dsh-minimax-connect 时加）----
+  scriptAgentPreset: z.string().default('mm-code').volatile().description('subagent_script 的 agent preset id（复用 mm-code 的命令 / 文件读写 / 查找窄工具面）。'),
+  scriptRouteEnabled: z.boolean().default(true).volatile().description('subagent_script 是否走独立模型路线；false = 跟父会话同模型。'),
+  scriptProvider: z.string().default('minimax').volatile().description('subagent_script 优先使用的 provider id（minimax 由本包的 mm-minimax 行注册）。'),
+  scriptModel: z.string().default('MiniMax-M3.1-Flash').volatile().description('subagent_script 优先使用的 model id。'),
+  scriptReasoningEffort: z.string().default('').volatile().description('subagent_script 的思考档位（空 = 模型默认；MiniMax-M3.1-Flash 支持 default/low/medium/high/xhigh/max）。'),
 
   enableQwenDraw: z.boolean().default(true).volatile().description('允许主 agent 使用 qwen_draw（Qwen 制图）。'),
   blockMainAgentNativeVision: z
@@ -434,6 +449,22 @@ export const Config = z.object({
     .description('允许主 agent 使用 minimax_video（MiniMax 海螺出片）。默认关闭：需要独立的 MINIMAX_API_KEY（国内 .cn / 国际 .io 不通用）。与 seedance_video / video_gen 互斥：同一时刻只允许一个出片工具开启。'),
   enableMediaTask: z.boolean().default(true).volatile().description('允许主 agent 使用 media_task（异步任务重查/补下载）。'),
   enableMediaReport: z.boolean().default(true).volatile().description('允许主 agent 使用 media_report（成本估算/链路健康）。'),
+
+  // ---- 批量执行（2026-11-10 加）----
+  //
+  // 成本大头是**步数 × 上下文**，不是命令本身：逐条跑 12 个测试文件 = 12 步，
+  // 每步重发一遍历史。run_batch 把 N 条命令收成 1 步，规划粒度不变（主代理仍决定跑哪批、
+  // 看结果、再决定），省的是重复发送的上下文。完整日志落盘，细节按需 read。
+  enableRunBatch: z.boolean().default(true).volatile().description('允许主 agent 使用 run_batch（一次按顺序跑多条命令：测试/构建/批量检查）。关掉后工具被拒，提示词里那行也会消失（提示词在启动时装配，改完需完整重启；工具本体的开关实时生效）。'),
+  batchMaxCommands: z.number().step(1).min(1).max(50).default(20).volatile().description('run_batch 单次命令数上限（默认 20）。超过直接拒绝并点名，不静默截断。'),
+  batchCommandTimeoutMs: z.number().step(1000).min(5000).max(1800000).default(120000).volatile().description('run_batch 单条命令超时（毫秒，默认 120 s）。超时会杀掉整棵进程树并标记 TIMEOUT，不会静默当成失败。'),
+  batchParallelLimit: z.number().step(1).min(1).max(8).default(4).volatile().description('run_batch(parallel=true) 的并发上限（默认 4，最大 8）。只对彼此独立的命令有意义；与 stop_on_error 互斥。'),
+  // ---- 激进模式（2026-11-10 加，默认关）----
+  //
+  // 打开后主代理不能调 pwsh / bash / ops_bash，命令**只能**经 run_batch 执行。
+  // 目的是把"逐条跑"逼成"批量跑"；代价是失去交互式单步执行能力（探针、调试）。
+  // 它是执行基底，所以默认关；要开必须是有意识的决定。
+  blockNativeShell: z.boolean().default(false).volatile().description('激进模式（默认关）：屏蔽主 agent 的 pwsh / bash / ops_bash，命令只能经 run_batch 执行——把"逐条跑"逼成"批量跑"。⚠ shell 是执行基底：打开后主代理失去交互式单步执行能力；子代理不受影响（subagent_script 仍可用）。改完需完整重启。'),
 
   // ---- 生成物是否附回模型上下文（2026-10-13 加，默认关）----
   // 背景：qwen_draw 默认产 2048×2048 / 数 MB 的 PNG。把它作为图片内容块塞回上下文会带来两个问题：
@@ -1104,6 +1135,28 @@ export function apply(ctx, config) {
     )
   })
 
+  // ---- 激进模式（默认关）：屏蔽原生 shell（2026-11-10）----
+  //
+  // 动机：shell 是"逐条执行"的入口。只要它还在工具表里，模型就会一条条跑——
+  // 实测 4 次测试型会话里模型只有在"已经想到批量"时才会用 run_batch，其余时候照旧逐条。
+  // 打开后主代理不能调 pwsh / bash / ops_bash，命令只能经 run_batch 执行（它自己 spawn 进程，
+  // 不依赖 shell 工具）——把"一批命令"变成物理上唯一的路径。
+  //
+  // 为什么默认关：shell 是执行基底，不像 read_image 那样是叶子能力。误开会直接让主代理
+  // 失去一切交互式单步执行能力（探针、调试、看输出再决定下一步）。子代理**不受影响**，
+  // 否则 subagent_script 也会被一起弄哑。
+  const SHELL_TOOLS = ['pwsh', 'bash', 'ops_bash']
+  ctx.tools.guard((exec) => {
+    if (liveConfig?.blockNativeShell !== true) return undefined
+    if (typeof exec?.name !== 'string' || !SHELL_TOOLS.includes(exec.name)) return undefined
+    if (isSubagent(exec?.agent)) return undefined
+    return (
+      '⛔ 原生 shell（' + exec.name + '）已被 ' + PLUGIN_LABEL + ' 屏蔽（blockNativeShell=true，激进模式）。' +
+      '请改用 run_batch：要跑的命令一次都给它（只有一条命令时 commands 给一条即可）——它自己启动进程，不依赖 shell 工具。' +
+      '需要交互式单步调试时，请让用户在 插件页 → ' + PLUGIN_LABEL + ' → 配置卡 里关闭 blockNativeShell。'
+    )
+  })
+
   /** 对账周期：够快（人感觉不到）又够省（一次数组比较）。 */
   const RESTRICT_SYNC_MS = 1000
   ctx.effect(() => {
@@ -1314,6 +1367,8 @@ export function apply(ctx, config) {
   // 窄委派（2026-10-18 起同样由插件自己注册）：`agentPreset` 改为**调用时**解析，
   // 不再在装配期查 preset 表 —— 热重载时 preset 尚未 register 的窗口不会再把工具打挂。
   for (const definition of createDelegationTools(deps)) ctx.tools.register(definition)
+  // 批量执行（2026-11-10）：把"一批命令"变成一个调用，这一步省的是步数（上下文成本）。
+  ctx.tools.register(createRunBatchTool(deps))
 
   // 可选显式降级（规划 [6.4]，默认关闭）：读图子代理失败时给出"不要卡住"的替代指引。
   const degradeToText = typeof config.degradeToText?.get === 'function' ? config.degradeToText.get() : config.degradeToText
@@ -1342,7 +1397,7 @@ export function apply(ctx, config) {
       name: 'mm-models:division',
       order: 210,
       // 读图路由按当前策略生成（block 开关改了要重启才生效，与它"限制在 agent 创建时"的语义一致）。
-      text: buildDivisionSection(liveConfig?.blockMainAgentNativeVision === true, switches.isEnabled('ocr_image')),
+      text: buildDivisionSection(liveConfig?.blockMainAgentNativeVision === true, switches.isEnabled('ocr_image'), switches.isEnabled('run_batch')),
     })
   }
 
@@ -1411,5 +1466,19 @@ export function apply(ctx, config) {
     }
   }
 
-  logger?.info?.('[mm-models] 已注册 ask_glm / ask_qwen / ocr_image / qwen_draw / seedance_video / video_gen / minimax_video / media_task / media_report（两个读图员互斥；三个出片工具互斥；ocr_image 与读图员互补）')
+  // 启动自检 ④（只告警）：激进模式的前提是否成立。
+  if (liveConfig?.blockNativeShell === true) {
+    if (liveConfig?.enableRunBatch === false) {
+      logger?.warn?.(
+        '[mm-models] blockNativeShell=true 但 enableRunBatch=false：主代理将**无法执行任何命令**（shell 与 run_batch 都关了）。请二选一。',
+      )
+    } else {
+      logger?.warn?.(
+        '[mm-models] blockNativeShell=true（激进模式）：主代理的 pwsh / bash / ops_bash 已被屏蔽，命令只能经 run_batch 执行；' +
+          '子代理不受影响。需要交互式单步调试时请在配置卡关闭。',
+      )
+    }
+  }
+
+  logger?.info?.('[mm-models] 已注册 ask_glm / ask_qwen / ocr_image / qwen_draw / seedance_video / video_gen / minimax_video / media_task / media_report / run_batch（两个读图员互斥；三个出片工具互斥；ocr_image 与读图员互补）')
 }

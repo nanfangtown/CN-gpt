@@ -1,0 +1,247 @@
+/**
+ * run_batch 验收（2026-11-10）。
+ *
+ * 边界：**不联网、不花钱**；只在本机临时目录里跑 node 脚本。
+ * 覆盖：串行顺序 / 退出码保留 / stop_on_error / 超时杀进程树 / 大输出截断+落盘 /
+ *       cwd 解析 / 空数组拒绝 / 超上限点名拒绝 / 开关关闭时拒付。
+ *
+ * 运行：node --import ./tests/register.mjs ./tests/run-batch.test.mjs
+ */
+import assert from 'node:assert/strict'
+import { mkdtemp, readdir, readFile, writeFile, mkdir } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { createRunBatchTool } from '../tools/run-batch.mjs'
+import { CODES } from '../core/errors.mjs'
+
+const stats = { passed: 0, failed: 0 }
+async function test(name, fn) {
+  try {
+    await fn()
+    stats.passed += 1
+    console.log('  ✓ ' + name)
+  } catch (error) {
+    stats.failed += 1
+    console.log('  ✗ ' + name)
+    console.log('    ' + String(error?.stack ?? error).split('\n').slice(0, 5).join('\n    '))
+  }
+}
+
+/** 本机 node 绝对路径（命令里不依赖 PATH）。 */
+const NODE = process.execPath
+
+/**
+ * 写一个临时脚本，返回"在 PowerShell / bash 里都能直接跑"的命令串。
+ * 走脚本文件而不是 `node -e`，避免测试自己陷进引号转义。
+ * @param {string} dir - 目录。
+ * @param {string} name - 文件名。
+ * @param {string} code - 脚本内容。
+ * @returns {Promise<string>} 可直接交给 run_batch 的命令。
+ */
+async function scriptCommand(dir, name, code) {
+  const file = join(dir, name + '.mjs')
+  await writeFile(file, code, 'utf8')
+  return process.platform === 'win32'
+    ? '& "' + NODE + '" "' + file + '"'
+    : '"' + NODE + '" "' + file + '"'
+}
+
+async function makeCase(configOverrides = {}) {
+  const tmp = await mkdtemp(join(tmpdir(), 'mm-run-batch-'))
+  await mkdir(join(tmp, 'gen'), { recursive: true })
+  const config = {
+    enableRunBatch: true,
+    batchMaxCommands: 20,
+    batchCommandTimeoutMs: 10000,
+    outDir: 'gen',
+    ...configOverrides,
+  }
+  const tool = createRunBatchTool({ config, logger: { debug() {} } })
+  const exec = { agent: { session: { header: { cwd: tmp } } }, signal: undefined }
+  return { tmp, tool, exec }
+}
+
+/** 断言抛出的 MediaError 带指定 code。 */
+async function expectCode(promise, code) {
+  try {
+    await promise
+  } catch (error) {
+    assert.equal(error?.code, code, '期望错误码 ' + code + '，实际 ' + error?.code + '：' + error?.message)
+    return
+  }
+  assert.fail('应该抛错（' + code + '），但调用成功了')
+}
+
+console.log('[run_batch 验收]')
+
+await test('单条成功：退出码 0、计数正确、日志落盘', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const cmd = await scriptCommand(tmp, 'ok', 'console.log("hello-run-batch")')
+  const value = await tool.execute({ commands: [cmd] }, exec)
+  assert.equal(value.total, 1)
+  assert.equal(value.passed, 1)
+  assert.equal(value.failed, 0)
+  assert.equal(value.results[0].exitCode, 0)
+  assert.ok(value.logDir.length > 0, '必须返回日志目录')
+  const dir = join(tmp, 'gen', 'batch')
+  const days = await readdir(dir)
+  assert.equal(days.length, 1, '应生成一个批次目录')
+  const files = (await readdir(join(dir, days[0]))).filter((name) => name.endsWith('.log'))
+  assert.equal(files.length, 1, '每条命令一个日志文件')
+  const log = await readFile(join(dir, days[0], files[0]), 'utf8')
+  assert.ok(log.includes('hello-run-batch'), '日志里要有完整输出：' + log.slice(0, 200))
+  // 2026-11-10：成功命令也要回输出尾巴 —— 否则"通过数/失败数"这类结论只能再去读日志。
+  assert.ok(String(value.results[0].tail ?? '').includes('hello-run-batch'), '成功命令必须带 tail：' + value.results[0].tail)
+  assert.equal(value.results[0].tailComplete, true, '短输出必须标记为完整')
+  const rendered = tool.output.render({}, value)[0].text
+  assert.ok(rendered.includes('hello-run-batch'), '渲染表里要能直接看到尾巴：' + rendered)
+  assert.ok(rendered.includes('完整输出'), '短输出的尾巴要标注“完整”，省掉二次取证：' + rendered)
+})
+
+await test('多条命令按顺序串行执行', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const a = await scriptCommand(tmp, 'a', 'console.log("A")')
+  const b = await scriptCommand(tmp, 'b', 'console.log("B")')
+  const value = await tool.execute({ commands: [a, b] }, exec)
+  assert.equal(value.total, 2)
+  assert.deepEqual(value.results.map((item) => item.index), [1, 2])
+  assert.ok(value.results[0].logPath.length > 0 && value.results[1].logPath.length > 0)
+})
+
+await test('失败码被保留（不吞成 1）', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const cmd = await scriptCommand(tmp, 'fail3', 'process.exit(3)')
+  const value = await tool.execute({ commands: [cmd] }, exec)
+  assert.equal(value.failed, 1)
+  assert.equal(value.results[0].exitCode, 3, '退出码必须原样保留')
+})
+
+await test('stop_on_error=true 时遇错即停', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const bad = await scriptCommand(tmp, 'bad', 'process.exit(1)')
+  const good = await scriptCommand(tmp, 'good', 'console.log("never")')
+  const value = await tool.execute({ commands: [bad, good], stop_on_error: true }, exec)
+  assert.equal(value.total, 1, '第一条失败后不应再跑第二条')
+  assert.equal(value.failed, 1)
+})
+
+await test('超时：杀掉进程树并标记 timedOut', async () => {
+  const { tmp, tool, exec } = await makeCase({ batchCommandTimeoutMs: 5000 })
+  const cmd = await scriptCommand(tmp, 'slow', 'setTimeout(() => {}, 30000)')
+  const started = Date.now()
+  const value = await tool.execute({ commands: [cmd], timeout_ms: 1000 }, exec)
+  assert.ok(Date.now() - started < 15000, '不应等到脚本自然结束')
+  assert.equal(value.timedOut, 1)
+  assert.equal(value.results[0].timedOut, true)
+  assert.notEqual(value.results[0].exitCode, 0)
+})
+
+await test('大输出：回给模型的是摘要，完整内容在日志里', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const cmd = await scriptCommand(tmp, 'big', 'console.log("x".repeat(20000)); process.exit(2)')
+  const value = await tool.execute({ commands: [cmd] }, exec)
+  assert.equal(value.failed, 1)
+  const detail = value.results[0].detail ?? ''
+  assert.ok(detail.length <= 600, '失败摘要必须截断（实际 ' + detail.length + ' 字符）')
+  const rendered = tool.output.render({}, value)[0].text
+  assert.ok(rendered.length < 3000, '渲染结果不能把 2 万字符灌回上下文：' + rendered.length)
+})
+
+await test('cwd 生效：命令在会话目录里跑', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const cmd = await scriptCommand(tmp, 'pwd', 'console.log(process.cwd())')
+  await tool.execute({ commands: [cmd] }, exec)
+  const days = await readdir(join(tmp, 'gen', 'batch'))
+  const files = await readdir(join(tmp, 'gen', 'batch', days[0]))
+  const log = await readFile(join(tmp, 'gen', 'batch', days[0], files[0]), 'utf8')
+  assert.ok(log.toLowerCase().includes(tmp.toLowerCase().slice(0, 8)), '输出里应包含会话目录：' + log.slice(0, 200))
+})
+
+await test('不把密钥类环境变量带进子进程（与原生 shell 一致）', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  process.env.MM_UNIT_TEST_API_KEY = 'should-not-leak'
+  try {
+    const cmd = await scriptCommand(tmp, 'env', 'console.log(process.env.MM_UNIT_TEST_API_KEY ?? "ABSENT")')
+    await tool.execute({ commands: [cmd] }, exec)
+  } finally {
+    delete process.env.MM_UNIT_TEST_API_KEY
+  }
+  const days = await readdir(join(tmp, 'gen', 'batch'))
+  const files = await readdir(join(tmp, 'gen', 'batch', days[0]))
+  const log = await readFile(join(tmp, 'gen', 'batch', days[0], files.find((name) => name.endsWith('.log'))), 'utf8')
+  assert.ok(log.includes('ABSENT'), '密钥类环境变量必须被剔除：' + log.slice(0, 200))
+  assert.ok(!log.includes('should-not-leak'), '不得把密钥值写进日志：' + log.slice(0, 200))
+})
+
+await test('并行：3 条各 600ms 的命令总耗时明显短于串行，且顺序保持', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const a = await scriptCommand(tmp, 'p1', 'setTimeout(() => {}, 600)')
+  const b = await scriptCommand(tmp, 'p2', 'setTimeout(() => {}, 600)')
+  const c = await scriptCommand(tmp, 'p3', 'setTimeout(() => {}, 600)')
+  const started = Date.now()
+  const value = await tool.execute({ commands: [a, b, c], parallel: true }, exec)
+  const wall = Date.now() - started
+  assert.equal(value.parallel, true)
+  assert.equal(value.passed, 3)
+  assert.ok(wall < 1600, '并行应明显快于 1800ms 串行（实际 ' + wall + ' ms）')
+  assert.deepEqual(value.results.map((item) => item.command), [a, b, c], '结果顺序必须与输入一致')
+  assert.deepEqual(value.results.map((item) => item.index), [1, 2, 3])
+})
+
+await test('parallel 与 stop_on_error 互斥 → BAD_REQUEST', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const cmd = await scriptCommand(tmp, 'x', 'console.log(1)')
+  await expectCode(tool.execute({ commands: [cmd], parallel: true, stop_on_error: true }, exec), CODES.BAD_REQUEST)
+})
+
+await test('script 模式：读 package.json，按 && 拆条执行', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const a = await scriptCommand(tmp, 's1', 'console.log("A")')
+  const b = await scriptCommand(tmp, 's2', 'console.log("B")')
+  await writeFile(join(tmp, 'package.json'), JSON.stringify({ name: 'x', scripts: { test: a + ' && ' + b, unit: a } }), 'utf8')
+  const value = await tool.execute({ script: 'test' }, exec)
+  assert.equal(value.script, 'test')
+  assert.equal(value.total, 2, '应拆成两条命令')
+  assert.equal(value.passed, 2)
+  assert.ok(tool.output.render({}, value)[0].text.includes('脚本：test'))
+})
+
+await test('script 模式：npm run 引用会递归展开', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const a = await scriptCommand(tmp, 'n1', 'console.log("N")')
+  await writeFile(join(tmp, 'package.json'), JSON.stringify({ name: 'x', scripts: { unit: a, chain: 'npm run unit' } }), 'utf8')
+  const value = await tool.execute({ script: 'chain' }, exec)
+  assert.equal(value.total, 1)
+  assert.equal(value.passed, 1)
+  assert.ok(value.results[0].command.includes('n1'), '应展开成 unit 的命令：' + value.results[0].command)
+})
+
+await test('script 模式：脚本不存在 / 与 commands 同时给 → BAD_REQUEST', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  await writeFile(join(tmp, 'package.json'), JSON.stringify({ name: 'x', scripts: { test: 'echo hi' } }), 'utf8')
+  await expectCode(tool.execute({ script: 'nope' }, exec), CODES.BAD_REQUEST)
+  await expectCode(tool.execute({ script: 'test', commands: ['echo hi'] }, exec), CODES.BAD_REQUEST)
+  await expectCode(tool.execute({}, exec), CODES.BAD_REQUEST)
+})
+
+await test('空数组 / 全空白命令 → BAD_REQUEST', async () => {
+  const { tool, exec } = await makeCase()
+  await expectCode(tool.execute({ commands: [] }, exec), CODES.BAD_REQUEST)
+  await expectCode(tool.execute({ commands: ['   ', ''] }, exec), CODES.BAD_REQUEST)
+})
+
+await test('超过 batchMaxCommands 点名拒绝，不静默截断', async () => {
+  const { tmp, tool, exec } = await makeCase({ batchMaxCommands: 2 })
+  const a = await scriptCommand(tmp, 'a', 'console.log(1)')
+  await expectCode(tool.execute({ commands: [a, a, a] }, exec), CODES.BAD_REQUEST)
+})
+
+await test('enableRunBatch=false 时拒绝执行并指路', async () => {
+  const { tmp, tool, exec } = await makeCase({ enableRunBatch: false })
+  const cmd = await scriptCommand(tmp, 'x', 'console.log(1)')
+  await expectCode(tool.execute({ commands: [cmd] }, exec), CODES.POLICY_REJECTED)
+})
+
+console.log('[run_batch] 通过 ' + stats.passed + '，失败 ' + stats.failed)
+if (stats.failed > 0) process.exit(1)
