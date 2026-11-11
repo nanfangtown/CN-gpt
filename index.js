@@ -459,6 +459,12 @@ export const Config = z.object({
   batchMaxCommands: z.number().step(1).min(1).max(50).default(20).volatile().description('run_batch 单次命令数上限（默认 20）。超过直接拒绝并点名，不静默截断。'),
   batchCommandTimeoutMs: z.number().step(1000).min(5000).max(1800000).default(120000).volatile().description('run_batch 单条命令超时（毫秒，默认 120 s）。超时会杀掉整棵进程树并标记 TIMEOUT，不会静默当成失败。'),
   batchParallelLimit: z.number().step(1).min(1).max(8).default(4).volatile().description('run_batch(parallel=true) 的并发上限（默认 4，最大 8）。只对彼此独立的命令有意义；与 stop_on_error 互斥。'),
+  // 执行模式（2026-11-11 加）：isolated = 每条命令一个干净进程（现状）；shared = 一批共用一个 shell。
+  // 动机：Windows 上每条命令都要付 ~0.43s 的 powershell.exe 冷启动，34 条就是 14.6s；
+  // 手写循环只付一次。shared 把这笔开销降到"每批一次"。
+  // 代价与缓解：cd / $env 会泄漏 → 每条之后还原（实测 PowerShell 子作用域不隔离这两者）；
+  // 命令里 exit 会带走整个 shell → 后续标 SKIPPED（绝不假绿）；超时按整批预算。
+  batchShellMode: z.string().default('isolated').volatile().description('run_batch 执行模式：isolated（默认，每条命令一个干净进程）| shared（同一批共用一个 shell，省掉 ~0.35s/条的进程冷启动；cd/$env 会被还原，但命令里的 exit 会终止整批、后续标 SKIPPED；不支持 parallel）。'),
   // ---- 激进模式（2026-11-10 加，默认关）----
   //
   // 打开后主代理的工具表里**不再有** pwsh / bash / ops_bash，命令**只能**经 run_batch 执行。

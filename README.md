@@ -138,6 +138,32 @@ minimax_video(prompt="镜头缓慢推进，雨滴打在窗上", duration=6, reso
 
 配置：`enableRunBatch`（默认开）、`batchMaxCommands`、`batchCommandTimeoutMs`。
 
+### 执行模式：`isolated`（默认）与 `shared`（快约 3.8×，2026-11-11 加）
+
+| 模式 | 怎么跑 | 代价 | 适用 |
+|---|---|---|---|
+| `isolated`（默认） | 每条命令一个干净进程 | 每条付 ~0.35s 的 shell 冷启动 | 探索型、可能卡死、需要命令级隔离 |
+| `shared` | 一批命令共用一个 shell | 命令之间共享 shell 状态（见下） | 机械型、成批短命令（跑测试、批量检查） |
+
+**实测（本机，34 条短命令分两批）**：`14,638 ms → 3,866 ms`（**3.8×**），
+退出码与输出逐条一致（0 / 3 / 5、不存在的命令全部对齐）。
+
+`shared` 的实现要点与风险缓解（都有回归）：
+
+- **归属不靠分隔符**：每条命令的 stdout / stderr / 退出码 / 耗时写进**独立文件**。
+  用 stdout 分隔符的老办法会在"输出里恰好包含分隔符"时把归属搞错——那是会**假绿**的错误；
+- **cwd / `$env:` 逐条还原**：PowerShell 的 `& { }` 子作用域**实测不隔离**这两者
+  （`Set-Location` 会漏、`$env:X` 是进程级），所以每条之前保存、之后还原；
+- **`exit` 会终止整批**：命令里写 `exit` 会带走共享 shell → **后续命令标 `SKIPPED`**，绝不假绿
+  （POSIX 上每条跑在子 shell 里，`exit` 只结束自己）；
+- **超时按整批预算**：`timeout_ms × 条数`；到点杀进程树，当前标 `TIMEOUT`、其余 `SKIPPED`；
+- **不支持 `parallel`**：共享 shell 本身就是串行，要并行请用 `isolated`；
+- **残留风险（如实写）**：`global:` 变量、后台作业的输出仍可能影响后续命令；
+  `stop_on_error` 之外的提前结束一律标 `SKIPPED`，不会当成通过。
+
+配置：`batchShellMode: isolated | shared`（默认 `isolated`，改完下一次调用生效）。
+另外：**对话越长，这点执行时间占比越小**——`run_batch` 真正的杠杆始终是"少几步"，不是"每步多快"。
+
 ### 实测：到底省多少 token、多少（2026-11-11，一次真实会话）
 
 口径：会话日志里每条 `assistant/message` 的 `usage`（input / cacheRead / cacheWrite / output）逐条累加；

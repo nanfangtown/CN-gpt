@@ -2,6 +2,20 @@
 
 ## [未发布]
 
+### Added
+
+- **`run_batch` 共享进程模式（`batchShellMode: 'shared'`，2026-11-11，默认关）**：
+  一批命令在同一个 shell 里跑，省掉每条一次的进程冷启动。实测（本机，34 条短命令分两批）
+  **14,638 ms → 3,866 ms（3.8×）**，退出码与输出逐条一致。
+  - 归属靠**独立文件**（stdout/stderr/退出码/耗时），不用 stdout 分隔符 —— 分隔符被输出命中会假绿；
+  - `cwd` 与 `$env:` **逐条还原**（PowerShell 的 `& { }` 子作用域实测不隔离这两者）；
+  - 命令里的 `exit` 会带走共享 shell → 后续标 `SKIPPED`；超时按整批预算 →
+    当前标 `TIMEOUT`、其余 `SKIPPED`；不支持 `parallel`；
+  - POSIX 用 `( eval ... )` 子 shell，`cd`/`env`/`exit` 天然隔离；
+  - 新增 6 条回归：退出码（0/3/5/不存在命令）、归属性（伪造分隔符不串条）、
+    `cd`+`$env` 还原、`stop_on_error` 标 SKIPPED、`exit` 终止整批、超时 + `parallel` 拒绝。
+  - 默认仍是 `isolated`：共享 shell 换来的是执行时间，不是步数；对话越长它越不重要。
+
 ### Changed
 
 - **激进模式改成"摘工具"而不是"调用时拒"（2026-11-11）**：`blockNativeShell=true` 时，

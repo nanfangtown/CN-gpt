@@ -270,5 +270,103 @@ await test('enableRunBatch=false 时拒绝执行并指路', async () => {
   await expectCode(tool.execute({ commands: [cmd] }, exec), CODES.POLICY_REJECTED)
 })
 
+// ---------------------------------------------------------------- 共享进程模式（2026-11-11）
+// 动机：每条命令 spawn 一个 powershell.exe ≈ 0.43s，34 条就是 14.6s；手写循环只付一次。
+// 下面钉住"省时间但不牺牲正确性"的六条：退出码、归属、状态还原、stop_on_error、exit、超时。
+
+const sharedCase = async (overrides = {}) => makeCase({ batchShellMode: 'shared', ...overrides })
+
+await test('shared：退出码逐条保真（0 / 3 / 5 / 不存在的命令）', async () => {
+  const { tmp, tool, exec } = await sharedCase()
+  const ok = await scriptCommand(tmp, 's-ok', 'console.log("shared-ok")')
+  const c3 = await scriptCommand(tmp, 's-3', 'process.exit(3)')
+  const c5 = await scriptCommand(tmp, 's-5', 'process.exit(5)')
+  const missing = 'dsh-definitely-not-a-command-xyz'
+  const value = await tool.execute({ commands: [ok, c3, c5, missing] }, exec)
+
+  assert.equal(value.shellMode, 'shared')
+  assert.equal(value.total, 4)
+  assert.equal(value.passed, 1, '只有第 1 条是通过')
+  assert.equal(value.skipped, 0, '没有命令被杀掉')
+  assert.equal(value.results[0].exitCode, 0)
+  assert.equal(value.results[1].exitCode, 3, '退出码 3 不能被压平：' + JSON.stringify(value.results[1]))
+  assert.equal(value.results[2].exitCode, 5, '退出码 5 不能被压平：' + JSON.stringify(value.results[2]))
+  // 不存在的命令：Windows 的 PowerShell 里 $LASTEXITCODE 仍是 0，靠 $? 记 1；POSIX 是 127。
+  assert.equal(value.results[3].exitCode, process.platform === 'win32' ? 1 : 127, '不存在的命令必须非零：' + JSON.stringify(value.results[3]))
+  const rendered = tool.output.render({}, value)[0].text
+  assert.ok(rendered.includes('共享 shell'), '渲染要标明共享模式：' + rendered)
+})
+
+await test('shared：输出按命令归属，不靠 stdout 分隔符（伪造也不串条）', async () => {
+  const { tmp, tool, exec } = await sharedCase()
+  const a = await scriptCommand(tmp, 's-a', 'console.log("::SHARED::1::")')
+  const b = await scriptCommand(tmp, 's-b', 'console.log("second-shared-line")')
+  const c = await scriptCommand(tmp, 's-c', 'console.error("third-shared-error"); process.exit(2)')
+  const value = await tool.execute({ commands: [a, b, c] }, exec)
+
+  assert.ok(String(value.results[0].tail).includes('::SHARED::1::'), '第一条输出归第一条：' + value.results[0].tail)
+  assert.ok(String(value.results[1].tail).includes('second-shared-line'), '第二条输出归第二条：' + value.results[1].tail)
+  assert.ok(!String(value.results[1].tail).includes('::SHARED::'), '第一条的输出不能串到第二条：' + value.results[1].tail)
+  assert.equal(value.results[2].exitCode, 2)
+  assert.ok(String(value.results[2].detail ?? '').includes('third-shared-error'), '失败摘要要来自自己的 stderr：' + value.results[2].detail)
+})
+
+await test('shared：cd 与 $env 不会泄漏到下一条（逐条还原）', async () => {
+  const { tmp, tool, exec } = await sharedCase()
+  const leak = process.platform === 'win32'
+    ? "Set-Location C:\\Windows; $env:DSH_SHARED_LEAK = 'yes'; Write-Output 'leaked'"
+    : 'cd /tmp; export DSH_SHARED_LEAK=yes; echo leaked'
+  const check = process.platform === 'win32'
+    ? "Write-Output ((Get-Location).Path); Write-Output ('LEAK=' + [string]$env:DSH_SHARED_LEAK)"
+    : 'pwd; echo "LEAK=${DSH_SHARED_LEAK}"'
+  const value = await tool.execute({ commands: [leak, check] }, exec)
+
+  const tail = String(value.results[1].tail ?? '')
+  const normal = (text) => text.replaceAll('/', '\\').toLowerCase()
+  assert.ok(normal(tail).includes(normal(tmp)), '下一条必须在原工作目录（cd 被还原）：' + tail)
+  assert.ok(!normal(tail).includes('windows'), '不能停留在 C:\\Windows：' + tail)
+  assert.ok(tail.includes('LEAK=') && !tail.includes('LEAK=yes'), '$env 必须被还原：' + tail)
+})
+
+await test('shared：stop_on_error 停在正确的位置，后续标 SKIPPED', async () => {
+  const { tmp, tool, exec } = await sharedCase()
+  const ok = await scriptCommand(tmp, 's-ok2', 'console.log("ok")')
+  const bad = await scriptCommand(tmp, 's-bad', 'process.exit(7)')
+  const after = await scriptCommand(tmp, 's-after', 'console.log("should-not-run")')
+  const value = await tool.execute({ commands: [ok, bad, after], stop_on_error: true }, exec)
+
+  assert.equal(value.results[0].exitCode, 0)
+  assert.equal(value.results[1].exitCode, 7)
+  assert.equal(value.results[2].skipped, true, '遇错即停后，后续命令必须标 SKIPPED（不是 PASS）')
+  assert.equal(value.results[2].exitCode, null)
+  const rendered = tool.output.render({}, value)[0].text
+  assert.ok(rendered.includes('SKIPPED'), '渲染里要出现 SKIPPED：' + rendered)
+})
+
+await test('shared：命令里的 exit 会终止整批（后续 SKIPPED，绝不假绿）', async () => {
+  const { tmp, tool, exec } = await sharedCase()
+  const after = await scriptCommand(tmp, 's-after2', 'console.log("after")')
+  const value = await tool.execute({ commands: ['exit 9', after] }, exec)
+
+  assert.equal(value.results[0].exitCode, 9, '共享 shell 的退出码要如实上报：' + JSON.stringify(value.results[0]))
+  if (process.platform === 'win32') {
+    assert.equal(value.results[1].skipped, true, 'Windows 上 exit 带走了共享 shell，后续必须标 SKIPPED')
+    assert.equal(value.results[1].exitCode, null)
+  } else {
+    // POSIX 用子 shell 跑每条命令，exit 只结束自己 —— 后续照跑（这是更理想的语义）
+    assert.equal(value.results[1].exitCode, 0, 'POSIX 子 shell 隔离 exit：' + JSON.stringify(value.results[1]))
+  }
+})
+
+await test('shared：整批超时 → 当前标 TIMEOUT、后续 SKIPPED；且不支持 parallel', async () => {
+  const { tool, exec } = await sharedCase()
+  const sleep = process.platform === 'win32' ? 'Start-Sleep -Seconds 10' : 'sleep 10'
+  const value = await tool.execute({ commands: [sleep, 'node -v'], timeout_ms: 1000 }, exec)
+  assert.equal(value.results[0].timedOut, true, '卡住的命令要标 TIMEOUT：' + JSON.stringify(value.results[0]))
+  assert.equal(value.results[1].skipped, true, '超时后剩余命令标 SKIPPED：' + JSON.stringify(value.results[1]))
+
+  await expectCode(tool.execute({ commands: ['node -v'], parallel: true }, exec), CODES.BAD_REQUEST)
+})
+
 console.log('[run_batch] 通过 ' + stats.passed + '，失败 ' + stats.failed)
 if (stats.failed > 0) process.exit(1)
