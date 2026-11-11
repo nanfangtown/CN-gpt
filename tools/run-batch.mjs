@@ -366,7 +366,7 @@ function cleanStderr(text) {
  * @param {{ commands: string[], cwd: string, timeoutMs: number, stopOnError: boolean, logRoot: string, signal?: AbortSignal, logger?: object }} input - 参数。
  * @returns {Promise<object[]>} 与逐条模式同形的结果记录（外加 skipped 标记）。
  */
-async function runSharedBatch({ commands, cwd, timeoutMs, stopOnError, logRoot, signal, logger }) {
+export async function runSharedBatch({ commands, cwd, timeoutMs, stopOnError, logRoot, signal, logger }) {
   const dir = join(logRoot, 'shared')
   await mkdir(dir, { recursive: true })
   for (let i = 0; i < commands.length; i += 1) {
@@ -655,6 +655,20 @@ async function mapLimit(items, limit, worker) {
 }
 
 /**
+ * 批次里有没有**shell 级** `exit`（会带走共享 shell 的那种）。
+ *
+ * 只认"命令段开头是 exit"：`exit 9`、`cd x; exit`、`a && exit` 都算；
+ * `node -e "process.exit(9)"`、`cmd /c exit 4` 不算——那是子进程自己退出。
+ * 判错的代价不对称：漏判 = 共享 shell 被杀（后续 SKIPPED，仍不假绿）；
+ * 误判 = 白走一次 isolated（慢一点，结果不变）。
+ * @param {string[]} commands - 命令列表。
+ * @returns {boolean} 命中返回 true。
+ */
+export function hasShellExit(commands) {
+  return commands.some((command) => /(?:^|[;&|\n])\s*exit(?=\s|;|$)/i.test(command))
+}
+
+/**
  * 注册 run_batch。
  * @param {object} deps - config（liveConfig）/ logger。
  */
@@ -666,7 +680,9 @@ export function createRunBatchTool(deps) {
     name: 'run_batch',
     description:
       '批量执行：一次跑多条命令（测试/构建/批量检查），可并行，也可直接跑 package.json 脚本名。'
-      + '返回退出码、耗时与输出尾巴，完整日志落盘。结论以 tail 为准，不要为凑数字改测试。',
+      + '顺序相关的命令一次全传，别一条一次调用。'
+      + '默认共用一个 shell；含 shell 级 exit 时自动改走独立进程。'
+      + '返回退出码与输出尾巴，完整日志落盘。结论以 tail 为准。',
     parameters: {
       commands: {
         type: 'array',
@@ -675,7 +691,7 @@ export function createRunBatchTool(deps) {
       },
       script: {
         type: 'string',
-        description: 'package.json 里的脚本名（如 "test"）：按 && 拆条，npm run 引用会展开。与 commands 二选一。',
+        description: 'package.json 脚本名（如 "test"）；与 commands 二选一。',
       },
       parallel: { type: 'boolean', description: '并行执行（默认串行）；与 stop_on_error 互斥。' },
       cwd: { type: 'string', description: '工作目录；默认当前会话目录' },
@@ -694,6 +710,7 @@ export function createRunBatchTool(deps) {
           timedOut: { type: 'integer' },
           skipped: { type: 'integer' },
           shellMode: { type: 'string' },
+          shellModeFallback: { type: 'boolean' },
           durationMs: { type: 'integer', required: true },
           logDir: { type: 'string', required: true },
           script: { type: 'string' },
@@ -725,7 +742,8 @@ export function createRunBatchTool(deps) {
         const shared = value.shellMode === 'shared'
         const lines = [
           '批量执行：' + value.total + ' 条命令（' + (value.parallel === true ? '并行' : '串行')
-            + (shared ? ' · 共享 shell' : '') + '）｜通过 ' + value.passed + ' ｜失败 ' + value.failed
+            + (shared ? ' · 共享 shell' : '')
+            + (value.shellModeFallback === true ? ' · 含 exit，已改走独立进程' : '') + '）｜通过 ' + value.passed + ' ｜失败 ' + value.failed
             + (value.skipped > 0 ? ' ｜未执行 ' + value.skipped : '')
             + (value.timedOut > 0 ? ' ｜超时 ' + value.timedOut : '')
             + ' ｜总耗时 ' + (value.durationMs / 1000).toFixed(1) + ' s',
@@ -776,14 +794,6 @@ export function createRunBatchTool(deps) {
         throw new MediaError(CODES.BAD_REQUEST, 'parallel 与 stop_on_error 不能同时用：并行模式下已经起跑的命令停不下来。')
       }
       const parallelLimit = Math.max(1, Math.min(8, Number(valueOf('batchParallelLimit', 4)) || 4))
-      // 共享进程模式（2026-11-11 加，默认 isolated）：一批命令在同一个 shell 里跑，
-      // 省掉每条一次的进程冷启动（实测 0.43s/条）。代价是命令之间共享 shell 状态，
-      // 其中 cd / $env 会被还原、exit 会带走整批（后续标 SKIPPED），细节见上面的模板注释。
-      const shellMode = String(valueOf('batchShellMode', 'isolated'))
-      const shared = shellMode === 'shared'
-      if (shared && parallel) {
-        throw new MediaError(CODES.BAD_REQUEST, 'shared 模式不支持 parallel：共享 shell 本身就是串行的。要并行请用默认的 isolated 模式。')
-      }
 
       /** 脚本模式（2026-11-10）：直接跑 package.json 里的脚本名，不必手抄命令。 */
       let commands
@@ -878,6 +888,19 @@ export function createRunBatchTool(deps) {
         }
       }
 
+      // 执行模式（2026-11-11 第二轮）：默认 shared —— 一批命令共用一个 shell，省掉
+      // 每条一次的进程冷启动（实测 ~0.35–0.43s/条）。cd / $env 逐条还原（见 runSharedBatch）。
+      // shell 级 `exit` 会带走共享 shell：**检测到就自动改走 isolated**，而不是让模型自己拆批
+      // （实测 5 个会话里 3 个把 exit 单独拆出去跑，prompt 直接翻倍）。
+      // 判错方向是安全的——误判只是白慢一次，结果等价。
+      const configuredShell = String(valueOf('batchShellMode', 'shared'))
+      const shellExitDetected = configuredShell === 'shared' && hasShellExit(commands)
+      const shellMode = shellExitDetected ? 'isolated' : configuredShell
+      const shared = shellMode === 'shared'
+      if (shared && parallel) {
+        throw new MediaError(CODES.BAD_REQUEST, 'shared 模式不支持 parallel：共享 shell 本身就是串行的。要并行请用 isolated（batchShellMode: isolated）。')
+      }
+
       const started = Date.now()
       let results
       if (shared) {
@@ -913,6 +936,7 @@ export function createRunBatchTool(deps) {
         timedOut: results.filter((item) => item.timedOut === true).length,
         skipped,
         shellMode,
+        shellModeFallback: shellExitDetected,
         durationMs: Date.now() - started,
         logDir: displayPath(logRoot, cwd),
         ...(scriptName === undefined ? {} : { script: scriptName }),

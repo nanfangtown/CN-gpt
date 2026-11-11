@@ -4,7 +4,7 @@
 
 ### Added
 
-- **`run_batch` 共享进程模式（`batchShellMode: 'shared'`，2026-11-11，默认关）**：
+- **`run_batch` 共享进程模式（`batchShellMode: 'shared'`，2026-11-11 加）**：
   一批命令在同一个 shell 里跑，省掉每条一次的进程冷启动。实测（本机，34 条短命令分两批）
   **14,638 ms → 3,866 ms（3.8×）**，退出码与输出逐条一致。
   - 归属靠**独立文件**（stdout/stderr/退出码/耗时），不用 stdout 分隔符 —— 分隔符被输出命中会假绿；
@@ -16,7 +16,19 @@
     共享模式的 stderr 与逐条模式一致 —— 否则 tail/detail 里会剩下 `+ $global:LASTEXITCODE = 0; …`；
   - 新增 6 条回归：退出码（0/3/5/不存在命令）、归属性（伪造分隔符不串条）、
     `cd`+`$env` 还原、`stop_on_error` 标 SKIPPED、`exit` 终止整批、超时 + `parallel` 拒绝。
-  - 默认仍是 `isolated`：共享 shell 换来的是执行时间，不是步数；对话越长它越不重要。
+  - （默认值当天稍后改为 `shared`，见下一条。）
+
+- **`batchShellMode` 默认改 `shared` + `exit` 自动回退（2026-11-11，A/B 之后）**：
+  5 轮 A/B（同一道 20 条命令，裸 DSH vs 插件，谷价）中位数：步数 28 → 4、墙钟 102.2 s → 22.8 s、
+  ¥0.1006 → ¥0.0268、prompt 735,403 → 65,753；裸臂干净正确 0/5，插件 5/5。
+  同组内"拆批 vs 不拆"的对照：20 条一次传 28,727 prompt，1+18+1 拆开 65,753 —— **拆批让成本翻倍**。
+  - 工具检测到 shell 级 `exit`（命令段开头：`exit 9`、`cd x; exit`）就**自动改走 `isolated`**，
+    不再要求模型自己把 `exit` 拆出去（实测 5 个会话里 3 个这么拆）；子进程的 `exit`
+    （`node -e "process.exit(9)"`、`cmd /c exit 4`）不算，`hasShellExit` 有单测等价覆盖；
+  - 结果新增 `shellModeFallback`，渲染里标"含 exit，已改走独立进程"，不静默；
+  - 回归：默认值 = shared、`node -v; exit 9` 自动回退且后续照跑、`process.exit(6)` 不触发回退；
+    `runSharedBatch` 改为导出，直接钉住"回退失效时后续标 SKIPPED"这最后一道语义；
+  - 工具描述同步压缩（schema 体积仍有 1100 B 预算），"不要为凑数字改测试"压成"结论以 tail 为准"。
 
 ### Changed
 

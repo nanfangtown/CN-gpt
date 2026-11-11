@@ -515,10 +515,10 @@
         batchMaxCommands: 20
         batchCommandTimeoutMs: 120000
         batchParallelLimit: 4
-        # 执行模式：isolated（默认，每条命令一个干净进程）| shared（一批共用一个 shell，
-        # 省掉每条 ~0.35s 的 powershell.exe 冷启动；cd/$env 会被还原，exit 会终止整批并把
-        # 后续标 SKIPPED；不支持 parallel）。机器上没装 npm 时，shared 对大批短命令收益明显。
-        batchShellMode: isolated
+        # 执行模式：shared（默认，一批共用一个 shell，省掉每条 ~0.35s 的 powershell.exe 冷启动；
+        # cd/$env 逐条还原；命令里出现 shell 级 exit 会自动改走 isolated，不会带走整批）|
+        # isolated（每条命令一个干净进程，慢一些）。两种模式都不支持 parallel。
+        batchShellMode: shared
         # 激进模式（默认关）：屏蔽主 agent 的 pwsh / bash / ops_bash，命令只能经 run_batch 执行。
         # shell 是执行基底，打开会失去交互式单步执行能力；子代理不受影响。改完需完整重启。
         blockNativeShell: false

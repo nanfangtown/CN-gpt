@@ -12,7 +12,7 @@ import { mkdtemp, readdir, readFile, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createRunBatchTool } from '../tools/run-batch.mjs'
+import { createRunBatchTool, runSharedBatch } from '../tools/run-batch.mjs'
 import { CODES } from '../core/errors.mjs'
 
 const stats = { passed: 0, failed: 0 }
@@ -55,6 +55,9 @@ async function makeCase(configOverrides = {}) {
     batchMaxCommands: 20,
     batchCommandTimeoutMs: 10000,
     outDir: 'gen',
+    // 生产默认是 shared（2026-11-11 第二轮）。这里显式钉成 isolated，让"不关心模式"的用例
+    // 继续测每条一个干净进程的语义；shared 的行为由 sharedCase 覆盖，默认值另有专门用例。
+    batchShellMode: 'isolated',
     ...configOverrides,
   }
   const tool = createRunBatchTool({ config, logger: { debug() {} } })
@@ -343,18 +346,24 @@ await test('shared：stop_on_error 停在正确的位置，后续标 SKIPPED', a
   assert.ok(rendered.includes('SKIPPED'), '渲染里要出现 SKIPPED：' + rendered)
 })
 
-await test('shared：命令里的 exit 会终止整批（后续 SKIPPED，绝不假绿）', async () => {
-  const { tmp, tool, exec } = await sharedCase()
-  const after = await scriptCommand(tmp, 's-after2', 'console.log("after")')
-  const value = await tool.execute({ commands: ['exit 9', after] }, exec)
+await test('shared 原始语义（直接调 runSharedBatch，绕过自动回退）：exit 带走整批、后续 SKIPPED', async () => {
+  // 2026-11-11 第二轮：execute() 检测到 shell 级 exit 会自动改走 isolated，
+  // 所以这条契约只能直接对 runSharedBatch 断言——它是回退失效时的最后一道"不假绿"。
+  const tmp = await mkdtemp(join(tmpdir(), 'mm-shared-exit-'))
+  const logRoot = join(tmp, 'logs')
+  await mkdir(logRoot, { recursive: true })
+  const results = await runSharedBatch({
+    commands: ['exit 9', 'node -v'], cwd: tmp, timeoutMs: 10000, stopOnError: false,
+    logRoot, signal: undefined, logger: { debug() {} },
+  })
 
-  assert.equal(value.results[0].exitCode, 9, '共享 shell 的退出码要如实上报：' + JSON.stringify(value.results[0]))
+  assert.equal(results[0].exitCode, 9, '共享 shell 的退出码要如实上报：' + JSON.stringify(results[0]))
   if (process.platform === 'win32') {
-    assert.equal(value.results[1].skipped, true, 'Windows 上 exit 带走了共享 shell，后续必须标 SKIPPED')
-    assert.equal(value.results[1].exitCode, null)
+    assert.equal(results[1].skipped, true, 'Windows 上 exit 带走了共享 shell，后续必须标 SKIPPED')
+    assert.equal(results[1].exitCode, null)
   } else {
     // POSIX 用子 shell 跑每条命令，exit 只结束自己 —— 后续照跑（这是更理想的语义）
-    assert.equal(value.results[1].exitCode, 0, 'POSIX 子 shell 隔离 exit：' + JSON.stringify(value.results[1]))
+    assert.equal(results[1].exitCode, 0, 'POSIX 子 shell 隔离 exit：' + JSON.stringify(results[1]))
   }
 })
 
@@ -366,6 +375,43 @@ await test('shared：整批超时 → 当前标 TIMEOUT、后续 SKIPPED；且�
   assert.equal(value.results[1].skipped, true, '超时后剩余命令标 SKIPPED：' + JSON.stringify(value.results[1]))
 
   await expectCode(tool.execute({ commands: ['node -v'], parallel: true }, exec), CODES.BAD_REQUEST)
+})
+
+// ------------------------------------------------ 默认共享 + exit 自动回退（2026-11-11 第二轮）
+// 动机：实测 5 个插件会话里有 3 个把 `exit` 拆出去单独跑（1+18+1 / 19+1 / 5+15），
+// prompt 直接翻倍。与其靠提示词求模型别拆，不如工具自己兜住：检测到 shell 级 exit
+// 就改走 isolated——结果等价，只是慢一点。
+
+await test('默认（不配 batchShellMode）走 shared', async () => {
+  const { tool, exec } = await makeCase({ batchShellMode: undefined })
+  const value = await tool.execute({ commands: ['node -v'] }, exec)
+  assert.equal(value.shellMode, 'shared', '默认必须是 shared：' + JSON.stringify(value.shellMode))
+  assert.equal(value.shellModeFallback, false)
+  assert.equal(value.results[0].exitCode, 0)
+})
+
+await test('shared 下出现 shell 级 exit → 自动改走 isolated，后续照跑', async () => {
+  const { tmp, tool, exec } = await sharedCase()
+  const after = await scriptCommand(tmp, 's-after3', 'console.log("still-here")')
+  const value = await tool.execute({ commands: ['node -v; exit 9', after] }, exec)
+
+  assert.equal(value.shellMode, 'isolated', '检测到 exit 必须改走独立进程：' + JSON.stringify(value.shellMode))
+  assert.equal(value.shellModeFallback, true)
+  assert.equal(value.results[0].exitCode, 9, 'exit 9 的退出码要如实上报：' + JSON.stringify(value.results[0]))
+  assert.equal(value.results[1].skipped, undefined, '后续命令不能被 exit 带走：' + JSON.stringify(value.results[1]))
+  assert.equal(value.results[1].exitCode, 0)
+  assert.ok(String(value.results[1].tail).includes('still-here'))
+  const rendered = tool.output.render({}, value)[0].text
+  assert.ok(rendered.includes('改走独立进程'), '渲染要说明发生了什么：' + rendered)
+})
+
+await test('子进程的 exit 不算 shell 级 exit（仍走 shared）', async () => {
+  const { tool, exec } = await sharedCase()
+  const value = await tool.execute({ commands: ['node -e "process.exit(6)"', 'node -v'] }, exec)
+  assert.equal(value.shellMode, 'shared', 'process.exit 不该触发回退：' + JSON.stringify(value.shellMode))
+  assert.equal(value.shellModeFallback, false)
+  assert.equal(value.results[0].exitCode, 6)
+  assert.equal(value.results[1].exitCode, 0)
 })
 
 console.log('[run_batch] 通过 ' + stats.passed + '，失败 ' + stats.failed)
