@@ -70,6 +70,11 @@ dsh plugin --profile desktop add ".\CN-gpt"
 
 配置卡入口：侧栏「插件」→ 已安装 → `dsh-mm-models`（显示名 **CN-gpt**）→ 组合包详情 → 配置卡。
 
+> **要用「机械重活走 MiniMax 积分」这条成本路线**（`subagent_script` 的默认路线）：
+> 大前提是**本机安装并登录过 MiniMax Code**（Mavis）。插件读它的 OAuth 凭据，
+> 登录一次之后不必保持打开 —— 细节见下文「成本路线：重型机械活走 MiniMax 积分」。
+> 不装也能用，只是脚本子代理会按父会话路线跑，省不到这份钱。
+
 ## 四把 key
 
 | Key | 给谁用 | 推荐放法 |
@@ -170,6 +175,32 @@ minimax_video(prompt="镜头缓慢推进，雨滴打在窗上", duration=6, reso
 所以它的定位是**节流阀 + 结论压缩器**，不是认知增强器：它不改变模型能力，只改变"步数"和"看到什么"。
 想让长任务表现更好，按这场会话的数据排序是：**缩短上下文（先管 `read`）> 结论优先于原文 >
 窄工具面 / 窄委派 > 批处理**。
+
+## 成本路线：重型机械活走 MiniMax 积分（前提：安装并登录 MiniMax Code）
+
+省 DeepSeek token 有两条**互不相干**的路：
+
+1. **`run_batch`**：把一批命令压成一步，省的是主会话的「步数 × 上下文」——**零额外安装**。
+2. **`subagent_script` → MiniMax 积分路线**：把机械型 / 多步 / 大输出的活交给另一条模型路线
+   （`scriptProvider` / `scriptModel`，出厂 `minimax / MiniMax-M3.1-Flash`），这部分模型调用的
+   花费记在 **MiniMax 订阅积分**上，不进 DeepSeek 账单。
+
+**第 2 条的大前提：本机安装并登录过 MiniMax Code（Mavis）。** 插件不存你的 MiniMax 密码，
+它读 MiniMax Code 的 OAuth 存储（`auth/prod/<region>/mcode-public/auth.json`）里的 accessToken，
+并在过期前自行刷新 —— refresh_token 是单次使用的，插件按 MiniMax Code 自己的跨进程锁串行续期，
+所以**登录一次之后不必保持 MiniMax Code 打开**；只有 token 族被吊销时才需要重新登录。
+
+- **怎么确认在走这条路**：`subagent_script` 的返回会写 `模型路线：minimax / MiniMax-M3.1-Flash`；
+  预检不过（provider 不在会话清单 / 模型不在白名单）会明确写
+  `⚠ 未注入模型路线（…）；本次按父会话路线执行`，不再静默回落（2026-11-11 起）。
+- **账本口径**：积分套餐不按 token 计价，`media_report(cost)` 对这条路记 ¥0（没有单价）。
+  省下的是 DeepSeek 的 token 账单，代价是 MiniMax 的积分 / 额度。
+- **本会话实测**（2026-11-11，同一场会话）：3 次脚本子代理、**21 步 / 37 万 prompt / 1.5 万 output**，
+  会话日志里 `source.provider` 全是 `minimax / MiniMax-M3.1-Flash`；同样步数在主会话跑，
+  DeepSeek 侧约 **¥0.20**。这与上面 `run_batch` 的 ≈¥0.4 是**两笔账，不要相加**。
+
+> 一句话：**`run_batch` 省"重复发送"，MiniMax 路线省"这些活的模型调用本身"。**
+> 前者零安装；后者装 MiniMax Code 并登录一次即可，之后不必保持打开。
 
 ## 激进模式：屏蔽原生 shell（`blockNativeShell`，默认关）
 

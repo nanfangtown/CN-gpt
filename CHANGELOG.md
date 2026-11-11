@@ -31,6 +31,15 @@
     定位：**节流阀 + 结论压缩器，不是认知增强器**；提升长任务表现的优先级是
     缩短上下文（先管 `read`）> 结论优先于原文 > 窄工具面 / 窄委派 > 批处理。
 - `npm test` 的说明同步更新为 14 个文件，并补上 `npm run test:delegation`。
+- README 安装段新增前置提示与 **「成本路线：重型机械活走 MiniMax 积分」** 一节：
+  - 讲清两条互不相干的省钱路径 —— `run_batch`（省主会话"步数 × 上下文"，零安装）
+    与 `subagent_script → MiniMax 积分路线`（机械活的花费记在订阅积分上，不进 DeepSeek 账单）；
+  - 声明**大前提**：本机安装并登录过 MiniMax Code（Mavis）。凭据取自它的 OAuth 存储
+    （`auth/prod/<region>/mcode-public/auth.json`），插件自行续期、按 MiniMax Code 的跨进程锁串行，
+    所以登录一次后不必保持打开；token 族被吊销才需重登；
+  - 实测：本场会话 3 次脚本子代理、21 步 / 37 万 prompt / 1.5 万 output，
+    会话日志 `source.provider` 全是 `minimax / MiniMax-M3.1-Flash`，DeepSeek 等价 ≈ ¥0.20；
+    与 `run_batch` 的 ≈ ¥0.4 是两笔账，明确写了"不要相加"。
 
 ## [0.3.0] - 2026-11-10
 
