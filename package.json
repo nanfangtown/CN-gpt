@@ -76,8 +76,9 @@
     "@deepseek-ai/schemastery": "^3.18.0"
   },
   "scripts": {
-    "test": "node --import ./tests/register.mjs ./tests/run.mjs && node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs && node tests/client-card.test.mjs && node tests/_card-mutex.test.mjs && node tests/turn-gate.test.mjs && node --import ./tests/register.mjs ./tests/reader-batch.test.mjs && node --import ./tests/register.mjs ./tests/verify-functionality.mjs && node --import ./tests/register.mjs ./tests/video-gen.test.mjs && node --import ./tests/register.mjs ./tests/ocr-image.test.mjs && node --import ./tests/register.mjs ./tests/run-batch.test.mjs && node tests/minimax-video.test.mjs && node --import ./tests/register.mjs ./tests/minimax-video-tool.test.mjs",
+    "test": "node --import ./tests/register.mjs ./tests/run.mjs && node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs && node tests/client-card.test.mjs && node tests/_card-mutex.test.mjs && node tests/turn-gate.test.mjs && node --import ./tests/register.mjs ./tests/reader-batch.test.mjs && node --import ./tests/register.mjs ./tests/verify-functionality.mjs && node --import ./tests/register.mjs ./tests/video-gen.test.mjs && node --import ./tests/register.mjs ./tests/ocr-image.test.mjs && node --import ./tests/register.mjs ./tests/run-batch.test.mjs && node --import ./tests/register.mjs ./tests/delegation-route.test.mjs && node tests/minimax-video.test.mjs && node --import ./tests/register.mjs ./tests/minimax-video-tool.test.mjs",
     "test:batch": "node --import ./tests/register.mjs ./tests/run-batch.test.mjs",
+    "test:delegation": "node --import ./tests/register.mjs ./tests/delegation-route.test.mjs",
     "test:video": "node --import ./tests/register.mjs ./tests/video-gen.test.mjs",
     "test:minimax": "node tests/minimax-video.test.mjs && node --import ./tests/register.mjs ./tests/minimax-video-tool.test.mjs",
     "test:safety": "node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs",

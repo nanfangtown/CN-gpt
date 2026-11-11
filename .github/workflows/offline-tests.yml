@@ -71,6 +71,10 @@ jobs:
           DSH_REQUIRE_REAL_SCHEMASTERY: '1'
         run: node --import ./tests/register.mjs ./tests/safety-invariants.test.mjs
 
+      # 窄委派的模型路线可见性：预检失败必须 warn + 在结果里写明原因（不静默回落）
+      - name: Delegation route visibility
+        run: node --import ./tests/register.mjs ./tests/delegation-route.test.mjs
+
       # 功能验证：削减字节没有动到 schema 的对外契约
       - name: Functional verification
         env:
