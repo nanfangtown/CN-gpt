@@ -165,10 +165,10 @@ function makeSyncHarness() {
   }
   return {
     /** 造 agent 并装上记录用的 restrict（在 apply() 之前调用）。 */
-    install(fake) {
+    install(fake, agentOptions = {}) {
       const applied = []
       const agent = {
-        options: { provider: 'deepseek-account', model: 'deepseek-flash' },
+        options: { provider: 'deepseek-account', model: 'deepseek-flash', ...agentOptions },
         ctx: {
           ...fake.ctx,
           effect: (callback) => callback(),
@@ -1944,6 +1944,39 @@ async function main() {
     )
     const off = setup(mock, await makeTmp(), { overrides: {} })
     assert.equal(guardOf(off.fake, GUARD_NATIVE_SHELL)({ name: 'pwsh', args: {}, agent: mainAgent }), undefined, '默认关时必须放行')
+  })
+
+  await test('激进模式把 shell 从工具表里摘掉：主代理 deny、子代理豁免、关掉即撤销', async () => {
+    // 2026-11-11：只在 guard 层拒是不够的 —— A/B 实测里模型先把 12 条命令写成一整段
+    // PowerShell 包装脚本、再被拒，白付一次往返 + 6.8k output token。现在改成**摘工具**。
+    const tmp = await makeTmp()
+    const harness = makeSyncHarness()
+    const config = makeConfig(mock, tmp, { blockNativeShell: true })
+    const fake = createFakeCtx({ credentials: { DASHSCOPE_API_KEY: 'k', ARK_API_KEY: 'k' }, llmProviders: ['glm'] })
+    const main = harness.install(fake)
+    const sub = harness.install(fake, { subagentDepth: 1 })
+    apply(fake.ctx, config)
+    const created = fake.listeners.find((entry) => entry.event === 'agent/created').callback
+    created({ agent: main.agent })
+    created({ agent: sub.agent })
+
+    const shellOf = (list) => (list ?? []).filter((name) => ['pwsh', 'bash', 'ops_bash'].includes(name)).sort()
+    assert.deepEqual(
+      shellOf(main.applied.at(-1)),
+      ['bash', 'ops_bash', 'pwsh'],
+      '主代理的 shell 必须从工具表摘掉：' + JSON.stringify(main.applied.at(-1)),
+    )
+    assert.deepEqual(
+      shellOf(sub.applied.at(-1)),
+      [],
+      '子代理必须保留 shell（blockNativeShell 只管主代理，否则 subagent_script 会被弄哑）',
+    )
+
+    // 关掉开关 → 下一个对账 tick 必须把 shell 还回工具表
+    const tick = harness.tick()
+    config.blockNativeShell = false
+    tick()
+    assert.deepEqual(shellOf(main.applied.at(-1)), [], '关掉后必须立刻撤销：' + JSON.stringify(main.applied.at(-1)))
   })
 
   await test('性能：开关签名是纯函数式的稳定串，逐个开关都会改变它', async () => {

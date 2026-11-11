@@ -461,10 +461,10 @@ export const Config = z.object({
   batchParallelLimit: z.number().step(1).min(1).max(8).default(4).volatile().description('run_batch(parallel=true) 的并发上限（默认 4，最大 8）。只对彼此独立的命令有意义；与 stop_on_error 互斥。'),
   // ---- 激进模式（2026-11-10 加，默认关）----
   //
-  // 打开后主代理不能调 pwsh / bash / ops_bash，命令**只能**经 run_batch 执行。
+  // 打开后主代理的工具表里**不再有** pwsh / bash / ops_bash，命令**只能**经 run_batch 执行。
   // 目的是把"逐条跑"逼成"批量跑"；代价是失去交互式单步执行能力（探针、调试）。
   // 它是执行基底，所以默认关；要开必须是有意识的决定。
-  blockNativeShell: z.boolean().default(false).volatile().description('激进模式（默认关）：屏蔽主 agent 的 pwsh / bash / ops_bash，命令只能经 run_batch 执行——把"逐条跑"逼成"批量跑"。⚠ shell 是执行基底：打开后主代理失去交互式单步执行能力；子代理不受影响（subagent_script 仍可用）。改完需完整重启。'),
+  blockNativeShell: z.boolean().default(false).volatile().description('激进模式（默认关）：主 agent 的 pwsh / bash / ops_bash 会**从工具表里摘掉**（调用时另有兜底拒绝），命令只能经 run_batch 执行——把"逐条跑"逼成"批量跑"。⚠ shell 是执行基底：打开后主代理失去交互式单步执行能力；子代理不受影响（subagent_script 仍可用）。保存后约 1 秒内对既有会话生效。'),
 
   // ---- 生成物是否附回模型上下文（2026-10-13 加，默认关）----
   // 背景：qwen_draw 默认产 2048×2048 / 数 MB 的 PNG。把它作为图片内容块塞回上下文会带来两个问题：
@@ -557,6 +557,15 @@ export function apply(ctx, config) {
   // 任何异常都不能拦住一次本来合法的读图。
   const READER_TOOLS = ['ask_glm', 'ask_qwen']
   const NATIVE_VISION_TOOL = 'read_image'
+  /**
+   * 原生 shell 工具名（激进模式要摘掉的那几个）。
+   *
+   * ⚠ 2026-11-11 实测：只在调用时拒是不够的 —— 模型会先把一批命令写成一整段
+   * PowerShell 包装脚本、再被 guard 拒，白付一次往返 + 6.8k output token。
+   * 现在这个列表同时喂给两处：`desiredRestriction`（**从工具表里摘掉**）
+   * 与 shell guard（兜底：掩码可能因重新装配丢失）。
+   */
+  const SHELL_TOOLS = ['pwsh', 'bash', 'ops_bash']
   /** 指路文案里的插件显示名（与 package.json meta.title / locale 保持一致）。 */
   const PLUGIN_LABEL = 'CN-gpt'
 
@@ -696,6 +705,8 @@ export function apply(ctx, config) {
   // 判据用 `agent.options.subagentDepth`（主 agent 的 options 只有 provider/model）；
   // 不能用 agent.parent，也不能用工具可见性 —— 两者都实测失败，详见 isSubagent 的注释。
   const nativeVisionBlocked = () => liveConfig?.blockMainAgentNativeVision === true
+  /** 激进模式：把主 agent 的原生 shell 从工具表里摘掉（子代理不受影响）。 */
+  const shellBlocked = () => liveConfig?.blockNativeShell === true
   /**
    * 屏蔽"通用子代理"的原生读图（见 Config 里 blockSubagentNativeVision 的说明）。
    * 与 `nativeVisionBlocked` 同族：都读实时配置，所以改开关下一个 tick 就对账。
@@ -826,6 +837,13 @@ export function apply(ctx, config) {
     } else if (nativeVisionBlocked()) {
       deny.push(NATIVE_VISION_TOOL)
     }
+    // 激进模式：**把原生 shell 从工具表里摘掉**，而不是只在调用时拒绝（2026-11-11）。
+    // 只在 guard 层拒的实测代价：模型先写一大段 PowerShell 包装脚本、再被拒 ——
+    // 一次往返 + 6.8k output token 白付（A/B 实测），而且它先想到的就是"批量"。
+    // 子代理**永远豁免**：blockNativeShell 的语义只是"主代理不许逐条跑"。
+    if (!isSubagent(agent) && shellBlocked()) {
+      for (const name of SHELL_TOOLS) if (!deny.includes(name)) deny.push(name)
+    }
     return deny.length > 0 ? { deny } : undefined
   }
 
@@ -888,6 +906,7 @@ export function apply(ctx, config) {
     // （签名没变 → 整轮跳过 → 掩码停在旧状态，直到下一次别的原因让它重算）。
     const signature =
       switches.signature() + '|' + (nativeVisionBlocked() ? '1' : '0') + (subagentVisionBlocked() ? '1' : '0')
+      + '|' + (shellBlocked() ? '1' : '0')
     if (!force && signature === lastSyncSignature) return
     lastSyncSignature = signature
     for (const agent of [...restrictions.keys()]) syncAgent(agent)
@@ -1145,7 +1164,10 @@ export function apply(ctx, config) {
   // 为什么默认关：shell 是执行基底，不像 read_image 那样是叶子能力。误开会直接让主代理
   // 失去一切交互式单步执行能力（探针、调试、看输出再决定下一步）。子代理**不受影响**，
   // 否则 subagent_script 也会被一起弄哑。
-  const SHELL_TOOLS = ['pwsh', 'bash', 'ops_bash']
+  //
+  // ⚠ 2026-11-11：真正的屏蔽在 `desiredRestriction`（从工具表里摘掉），
+  // 这条 guard 只是**兜底** —— 掩码在重新装配后可能丢失（本项目实测过），
+  // 那时至少调用还会被拒，且文案指路 run_batch。
   ctx.tools.guard((exec) => {
     if (liveConfig?.blockNativeShell !== true) return undefined
     if (typeof exec?.name !== 'string' || !SHELL_TOOLS.includes(exec.name)) return undefined

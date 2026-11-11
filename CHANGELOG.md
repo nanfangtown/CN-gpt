@@ -2,6 +2,16 @@
 
 ## [未发布]
 
+### Changed
+
+- **激进模式改成"摘工具"而不是"调用时拒"（2026-11-11）**：`blockNativeShell=true` 时，
+  主代理的工具表里**不再出现** `pwsh` / `bash` / `ops_bash`（与读图屏蔽同一条 `restrict` 路径，
+  保存后约 1 秒对既有会话生效）；调用层的 guard 保留作兜底（掩码在重新装配后可能丢失）。
+  起因是 A/B 实测：模型先把 12 条命令写成一整段 PowerShell 包装脚本、再被拒，
+  白付**一次往返 + 6.8k output token**——而写批量脚本正是它想做的事。
+  子代理仍然豁免（`subagent_script` 不受影响）。新增回归：主代理 deny 含三个 shell、
+  子代理 deny 不含、关掉开关后一个 tick 内撤销。
+
 ### Fixed
 
 - **窄委派的模型路线不再静默回落（2026-11-11）**：`subagent_script` 的 `agentOptions`
