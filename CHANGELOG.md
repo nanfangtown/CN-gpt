@@ -19,7 +19,8 @@
   而 shell 掩码把三个名字一起写了进去 —— 结果连 `read_image`、出片工具的掩码都没贴上，
   外部表现就是"重启后 46 个工具全在"。现在：
   - shell 掩码按平台给保守名单（Windows 只写 `pwsh`，POSIX 只写 `bash`）；
-  - `syncAgent` 学会宿主点名拒绝的名字（从报错的 `unknown global tools "a", "b"` 里抠），
+  - `syncAgent` 学会宿主点名拒绝的名字（从报错的 `unknown global tool(s) "a", "b"` 里抠，
+    **单复数两种措辞都认**——只认复数会漏掉"只有一个未知名字"这种最常见的情况），
     剔掉后重试，并在进程内记住，之后构造 deny 时直接跳过；
   - 掩码对账新增 `applied` / `no-restrict-api` / `error` 三种结果，在
     `media_report(health, verbose)` 里可见（这次就是靠它一眼定位的）。

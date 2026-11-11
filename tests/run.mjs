@@ -184,7 +184,10 @@ function makeSyncHarness() {
               if (known !== undefined) {
                 const unknown = (filter.deny ?? []).filter((name) => !known.has(name))
                 if (unknown.length > 0) {
-                  throw new Error('tools.restrict() names unknown global tools ' +
+                  // 与真宿主一致：**一个**未知名字时用单数 tool，多个时用复数 tools
+                  //（2026-11-11 第二轮事故：只按复数匹配会漏掉单数那条，于是永远学不会）。
+                  const noun = unknown.length === 1 ? 'tool' : 'tools'
+                  throw new Error('tools.restrict() names unknown global ' + noun + ' ' +
                     unknown.map((name) => '"' + name + '"').join(', ') +
                     '; known global tools: ' + [...known].join(', '))
                 }
@@ -2001,28 +2004,39 @@ async function main() {
   await test('宿主不认识的名字不许拖垮整条掩码：剔除并记住（2026-11-11 事故回归）', async () => {
     // 事故形态：deny 里写了 `ops_bash`（Windows 上没有这个全局工具）→ 宿主 restrict 整次抛错
     // → 连 read_image 的掩码都没贴上，外部表现为"46 个工具全在"。这里用会校验名字的假宿主复现。
-    const tmp = await makeTmp()
-    const harness = makeSyncHarness()
-    const config = makeConfig(mock, tmp, { blockNativeShell: true, blockMainAgentNativeVision: true, healthProbe: false })
-    const fake = createFakeCtx({ credentials: { DASHSCOPE_API_KEY: 'k', ARK_API_KEY: 'k' }, llmProviders: ['glm'] })
+    // 单数（只有 ops_bash 一个未知）与复数（多个未知）两条报错措辞都要能学会。
     const knownTools = [
       'pwsh', 'read_image', 'ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video',
       'qwen_draw', 'ocr_image', 'media_task', 'media_report', 'run_batch',
+      'bash', // 两台平台都写上，保证"未知"只剩 ops_bash → 走单数分支
     ]
-    const { agent, applied } = harness.install(fake, {}, { knownTools })
-    apply(fake.ctx, config)
-    fake.listeners.find((entry) => entry.event === 'agent/created').callback({ agent })
+    const runCase = async (known) => {
+      const tmp = await makeTmp()
+      const harness = makeSyncHarness()
+      const config = makeConfig(mock, tmp, { blockNativeShell: true, blockMainAgentNativeVision: true, healthProbe: false })
+      const fake = createFakeCtx({ credentials: { DASHSCOPE_API_KEY: 'k', ARK_API_KEY: 'k' }, llmProviders: ['glm'] })
+      const { agent, applied } = harness.install(fake, {}, { knownTools: known })
+      apply(fake.ctx, config)
+      fake.listeners.find((entry) => entry.event === 'agent/created').callback({ agent })
+      return { harness, applied }
+    }
 
-    const deny = applied.at(-1) ?? []
+    // ① 单数：只有 ops_bash 未知
+    const single = await runCase(knownTools)
+    const deny = single.applied.at(-1) ?? []
     assert.ok(deny.includes('pwsh'), 'pwsh 必须被摘掉：' + JSON.stringify(deny))
     assert.ok(deny.includes('read_image'), 'read_image 掩码不能被未知名字连累：' + JSON.stringify(deny))
     assert.ok(!deny.includes('ops_bash'), '被宿主拒绝的名字必须剔除：' + JSON.stringify(deny))
-    assert.ok(!deny.includes('bash'), '平台不支持的名字不该写进去：' + JSON.stringify(deny))
+    const before = single.applied.length
+    single.harness.tick()()
+    assert.equal(single.applied.length, before, '被拒名字必须被记住，不能每次重试：' + JSON.stringify(single.applied))
 
-    // 记住被拒名单后，下一次对账不该再加回去（否则每次都白失败一轮）
-    const before = applied.length
-    harness.tick()()
-    assert.equal(applied.length, before, '被拒名字必须被记住，不能每次重试：' + JSON.stringify(applied))
+    // ② 复数：ops_bash + seedance_video 都未知
+    const plural = await runCase(knownTools.filter((name) => name !== 'seedance_video'))
+    const deny2 = plural.applied.at(-1) ?? []
+    assert.ok(deny2.includes('pwsh') && deny2.includes('read_image'), '其它掩码必须照常生效：' + JSON.stringify(deny2))
+    assert.ok(!deny2.includes('ops_bash') && !deny2.includes('seedance_video'), '复数形态也要全部剔除：' + JSON.stringify(deny2))
+    plural.harness.tick()()
   })
 
   await test('重启后既有 agent 在 pre-step 被收养：补掩码（含 shell），报表可见', async () => {

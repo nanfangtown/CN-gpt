@@ -578,11 +578,14 @@ export function apply(ctx, config) {
    * 之后构造 deny 时直接跳过它们 —— 既不会让整次 restrict 失败，也不用写死平台差异。
    */
   const rejectedToolNames = new Set()
-  /** 从报错里抠出"unknown global tools"点名的工具名。 */
+  /** 从报错里抠出"unknown global tool(s)"点名的工具名（单复数都要认）。 */
   const unknownToolsOf = (error) => {
     const text = String(error?.message ?? error)
-    if (!/unknown global tools/i.test(text)) return []
-    const head = text.split(/;|\bknown global tools\b/i)[0]
+    // ⚠ 实测两种措辞：多个时是 `names unknown global tools "a", "b"`，
+    //   单个时是 `names unknown global tool "ops_bash"` —— 只匹配复数会漏掉后者，
+    //   表现就是"学到了但没剔掉、每次都失败"（2026-11-11 第二轮事故）。
+    if (!/unknown global tool/i.test(text)) return []
+    const head = text.split(/;|\bknown global tools?\b/i)[0]
     return [...head.matchAll(/"([^"]+)"/g)].map((match) => match[1])
   }
   /** 指路文案里的插件显示名（与 package.json meta.title / locale 保持一致）。 */
