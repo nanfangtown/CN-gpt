@@ -2022,9 +2022,10 @@ async function main() {
     }
 
     // ① 单数：只有 ops_bash 未知
+    const shellName = process.platform === 'win32' ? 'pwsh' : 'bash'
     const single = await runCase(knownTools)
     const deny = single.applied.at(-1) ?? []
-    assert.ok(deny.includes('pwsh'), 'pwsh 必须被摘掉：' + JSON.stringify(deny))
+    assert.ok(deny.includes(shellName), shellName + ' 必须被摘掉：' + JSON.stringify(deny))
     assert.ok(deny.includes('read_image'), 'read_image 掩码不能被未知名字连累：' + JSON.stringify(deny))
     assert.ok(!deny.includes('ops_bash'), '被宿主拒绝的名字必须剔除：' + JSON.stringify(deny))
     const before = single.applied.length
@@ -2034,7 +2035,7 @@ async function main() {
     // ② 复数：ops_bash + seedance_video 都未知
     const plural = await runCase(knownTools.filter((name) => name !== 'seedance_video'))
     const deny2 = plural.applied.at(-1) ?? []
-    assert.ok(deny2.includes('pwsh') && deny2.includes('read_image'), '其它掩码必须照常生效：' + JSON.stringify(deny2))
+    assert.ok(deny2.includes(shellName) && deny2.includes('read_image'), '其它掩码必须照常生效：' + JSON.stringify(deny2))
     assert.ok(!deny2.includes('ops_bash') && !deny2.includes('seedance_video'), '复数形态也要全部剔除：' + JSON.stringify(deny2))
     plural.harness.tick()()
   })
@@ -2057,7 +2058,10 @@ async function main() {
     await preStep.callback({ agent }, () => ({}))
 
     const deny = applied.at(-1) ?? []
-    assert.ok(deny.includes('pwsh'), '收养后必须把 shell 摘掉：' + JSON.stringify(deny))
+    assert.ok(
+      deny.includes(process.platform === 'win32' ? 'pwsh' : 'bash'),
+      '收养后必须把 shell 摘掉：' + JSON.stringify(deny),
+    )
     assert.ok(deny.includes('read_image'), '收养后必须把 read_image 摘掉：' + JSON.stringify(deny))
 
     const report = fake.tools.find((tool) => tool.name === 'media_report')
