@@ -60,13 +60,28 @@ function childEnvOf(source) {
  * 命令用 base64 传入，彻底避开引号转义；退出码走独立文件，不污染 stdout。
  * 只含 ASCII，PowerShell 5.1 读取无编码问题。
  */
+/**
+ * Windows 包装脚本：把真实退出码写到文件里再退出 0。
+ *
+ * 为什么必须这样：`powershell.exe -Command "& node x.mjs"` 在子进程失败时
+ * **只会返回 1**（实测 3 → 1），丢掉真实退出码；而 run_batch 的契约是"退出码原样保留"。
+ * 命令用 base64 传入，彻底避开引号转义；退出码走独立文件，不污染 stdout。
+ *
+ * ⚠ 这个模板**必须只含 ASCII**：脚本以 UTF-8 无 BOM 写盘，而 Windows PowerShell 5.1
+ * 按系统 ANSI 码页读取未标 BOM 的 .ps1 —— 夹一句中文注释就会变乱码、整段解析失败
+ * （2026-11-11 实测：测试里 4 个退出码用例全变 0）。要写说明，写在 JS 注释里。
+ */
 const WINDOWS_WRAPPER = `param([string]$B64,[string]$Out)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $cmd = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($B64))
 $global:LASTEXITCODE = 0
+$Error.Clear()
 Invoke-Expression $cmd
 $ok = $?
-$code = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($ok) { 0 } else { 1 }
+$lastError = $Error[0]
+$missing = ($null -ne $lastError) -and ($lastError.Exception -is [System.Management.Automation.CommandNotFoundException])
+# Native non-zero code wins; then statement failure; then command-not-found; else 0.
+$code = if ($LASTEXITCODE -ne 0) { $LASTEXITCODE } elseif (-not $ok) { 1 } elseif ($missing) { 1 } else { 0 }
 Set-Content -LiteralPath $Out -Value $code -Encoding Ascii
 `
 
@@ -188,7 +203,8 @@ function runOne({ command, cwd, timeoutMs, signal, wrapper, exitFile }) {
         durationMs: Date.now() - started, error: String(error?.message ?? error),
       })
     })
-    child.on('close', (code) => {
+    /** 从退出码文件取最终码（Windows 包装脚本写的），再收尾。 */
+    const finalizeFromFile = (code) => {
       // Windows：真实退出码在包装脚本写的文件里（`powershell -Command` 会把 3 压成 1）。
       let finalCode = code
       if (exitFile !== undefined) {
@@ -205,6 +221,26 @@ function runOne({ command, cwd, timeoutMs, signal, wrapper, exitFile }) {
         }
       }
       finish(finalCode)
+    }
+
+    child.on('close', (code) => {
+      finalizeFromFile(code)
+    })
+
+    // 2026-11-11 实测事故：命令里带 `cmd /c start "" xxx.html` 时，被拉起的 GUI 进程
+    // 继承了 stdout/stderr 管道；子进程（powershell）已经退出，但管道不关，
+    // 'close' 永远不触发 —— 整次工具调用挂死，最终被宿主判成 "outcome unknown"。
+    // 进程退出（'exit'）才代表命令跑完：给 400ms 排空剩余输出，然后强制收尾。
+    child.on('exit', (code) => {
+      if (settled) return
+      const drain = setTimeout(() => {
+        if (settled) return
+        try { child.stdout?.destroy() } catch { /* 已关闭 */ }
+        try { child.stderr?.destroy() } catch { /* 已关闭 */ }
+        finalizeFromFile(code)
+      }, 400)
+      if (typeof drain.unref === 'function') drain.unref()
+      child.once('close', () => clearTimeout(drain))
     })
   })
 }

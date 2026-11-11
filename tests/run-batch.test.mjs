@@ -225,6 +225,33 @@ await test('script 模式：脚本不存在 / 与 commands 同时给 → BAD_REQ
   await expectCode(tool.execute({}, exec), CODES.BAD_REQUEST)
 })
 
+await test('不存在的命令 → 非零退出码（不能假绿）', async () => {
+  // 2026-11-11 实测：`npm test`（本机没有 npm）曾返回 exit 0，因为 PowerShell 的
+  // $LASTEXITCODE 在"命令不存在"时仍是 0。这个用例钉住"语句失败必须报失败"。
+  const { tmp, tool, exec } = await makeCase()
+  const value = await tool.execute({ commands: ['dsh-definitely-not-a-command-xyz'] }, exec)
+  assert.equal(value.failed, 1, '不存在的命令必须算失败')
+  assert.notEqual(value.results[0].exitCode, 0, '退出码不能是 0：' + value.results[0].exitCode)
+})
+
+await test('孙进程占着输出管道时，命令仍按时返回（GUI / 分离进程）', async () => {
+  // 2026-11-11 事故：`cmd /c start "" x.html` 拉起的 GUI 进程继承了 stdout/stderr，
+  // 子进程（powershell）退出后管道不关，'close' 永不触发 → 工具调用挂死（宿主判 outcome unknown）。
+  const { tmp, tool, exec } = await makeCase()
+  const cmd = await scriptCommand(tmp, 'leak', [
+    "import { spawn } from 'node:child_process'",
+    "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], { detached: true, stdio: 'inherit' })",
+    'child.unref()',
+    "console.log('parent-done')",
+  ].join('\n'))
+  const started = Date.now()
+  const value = await tool.execute({ commands: [cmd], timeout_ms: 5000 }, exec)
+  const wall = Date.now() - started
+  assert.ok(wall < 2500, '不能等孙进程 3 秒：实际 ' + wall + 'ms')
+  assert.equal(value.passed, 1)
+  assert.ok(String(value.results[0].tail ?? '').includes('parent-done'), '退出前输出要保留：' + value.results[0].tail)
+})
+
 await test('空数组 / 全空白命令 → BAD_REQUEST', async () => {
   const { tool, exec } = await makeCase()
   await expectCode(tool.execute({ commands: [] }, exec), CODES.BAD_REQUEST)
