@@ -14,6 +14,17 @@
 
 ### Fixed
 
+- **`restrict` 遇到宿主不认识的工具名会整条掩码报废（2026-11-11 事故）**：宿主会校验 deny 里
+  每个名字是不是"已知全局工具"，有一个对不上就**整次抛错**。Windows 上没有 `bash` / `ops_bash`，
+  而 shell 掩码把三个名字一起写了进去 —— 结果连 `read_image`、出片工具的掩码都没贴上，
+  外部表现就是"重启后 46 个工具全在"。现在：
+  - shell 掩码按平台给保守名单（Windows 只写 `pwsh`，POSIX 只写 `bash`）；
+  - `syncAgent` 学会宿主点名拒绝的名字（从报错的 `unknown global tools "a", "b"` 里抠），
+    剔掉后重试，并在进程内记住，之后构造 deny 时直接跳过；
+  - 掩码对账新增 `applied` / `no-restrict-api` / `error` 三种结果，在
+    `media_report(health, verbose)` 里可见（这次就是靠它一眼定位的）。
+  回归：假宿主按真宿主的规则校验名字，断言被拒名字被剔除、`pwsh` 与 `read_image` 的掩码仍生效。
+
 - **重启后掩码丢失：补"收养既有会话"+ 把这件事变成可观测（2026-11-11）**：
   `restrictions` 只由 `agent/created` 填充，重启/重新装配后已存在的 agent 不会重新触发它，
   掩码就永久丢了。实测同一会话：重启前 **41 个工具**（`read_image`/出片工具已摘），

@@ -566,6 +566,25 @@ export function apply(ctx, config) {
    * 与 shell guard（兜底：掩码可能因重新装配丢失）。
    */
   const SHELL_TOOLS = ['pwsh', 'bash', 'ops_bash']
+  /**
+   * 宿主**不认识**的工具名（由报错学习，进程内缓存）。
+   *
+   * 2026-11-11 实测事故：`tools.restrict({deny})` 会校验每个名字是不是"已知全局工具"，
+   * 有一个对不上就**整次抛错** —— 于是 deny 里多写一个 `bash`（Windows 上根本没有）
+   * 让整条掩码链报废：`read_image`、出片工具、shell 全都没被摘掉，
+   * 而表面上只剩"掩码 0/1"这种模糊指标。
+   *
+   * 现在的做法：先按平台给保守名单，再把宿主点名拒绝的名字剔掉并记住，
+   * 之后构造 deny 时直接跳过它们 —— 既不会让整次 restrict 失败，也不用写死平台差异。
+   */
+  const rejectedToolNames = new Set()
+  /** 从报错里抠出"unknown global tools"点名的工具名。 */
+  const unknownToolsOf = (error) => {
+    const text = String(error?.message ?? error)
+    if (!/unknown global tools/i.test(text)) return []
+    const head = text.split(/;|\bknown global tools\b/i)[0]
+    return [...head.matchAll(/"([^"]+)"/g)].map((match) => match[1])
+  }
   /** 指路文案里的插件显示名（与 package.json meta.title / locale 保持一致）。 */
   const PLUGIN_LABEL = 'CN-gpt'
 
@@ -841,10 +860,21 @@ export function apply(ctx, config) {
     // 只在 guard 层拒的实测代价：模型先写一大段 PowerShell 包装脚本、再被拒 ——
     // 一次往返 + 6.8k output token 白付（A/B 实测），而且它先想到的就是"批量"。
     // 子代理**永远豁免**：blockNativeShell 的语义只是"主代理不许逐条跑"。
+    //
+    // ⚠ 平台差异必须在这里处理：Windows 只注册了 `pwsh`，`bash` / `ops_bash` 对这个宿主是
+    //   **未知全局工具名**，而 restrict 见到未知名字会整次抛错（2026-11-11 实测事故：
+    //   三个名字一起写进去 → 连 read_image 的掩码都贴不上）。所以先按平台给保守名单，
+    //   剩下的交给 syncAgent 的"遇到拒绝就剔除并记住"兜底。
     if (!isSubagent(agent) && shellBlocked()) {
-      for (const name of SHELL_TOOLS) if (!deny.includes(name)) deny.push(name)
+      for (const name of SHELL_TOOLS) {
+        if (name === 'pwsh' && process.platform !== 'win32') continue
+        if (name === 'bash' && process.platform === 'win32') continue
+        if (!deny.includes(name)) deny.push(name)
+      }
     }
-    return deny.length > 0 ? { deny } : undefined
+    // 宿主明确拒绝过的名字别再写进去（否则每次都会整次失败）。
+    const usable = deny.filter((name) => !rejectedToolNames.has(name))
+    return usable.length > 0 ? { deny: usable } : undefined
   }
 
   const sameList = (left, right) => {
@@ -902,18 +932,40 @@ export function apply(ctx, config) {
       logger?.warn?.('[mm-models] agent 上没有 tools.restrict，掩码未生效（行为层仍由 guard 兜底）')
       return
     }
-    try {
-      let disposeRestriction
-      const dispose = agent.ctx.effect(() => {
-        disposeRestriction = agent.ctx.tools.restrict(desired)
-        return () => disposeRestriction()
-      })
-      restrictions.set(agent, { restriction: { ...desired }, dispose })
-      recordMask(agent, desired, 'applied')
-    } catch (error) {
-      recordMask(agent, desired, 'error', error)
-      logger?.warn?.('[mm-models] 无法为会话隐藏工具（' + JSON.stringify(desired) + '）：' + String(error?.message ?? error))
+    // 逐次剔除宿主不认识的名字后重试：最多 3 轮（每轮至少剔掉一个，正常一轮就成）。
+    // ⚠ 只有原本就带 deny 的掩码才补 deny 字段：读图员的掩码是 `{allow:[read_image]}`，
+    //   给它塞一个空的 deny 会让"读图员不该走 deny 路径"的契约变味。
+    let attempt = desired.deny === undefined ? { ...desired } : { ...desired, deny: [...desired.deny] }
+    for (let round = 0; round < 3; round += 1) {
+      try {
+        let disposeRestriction
+        const dispose = agent.ctx.effect(() => {
+          disposeRestriction = agent.ctx.tools.restrict(attempt)
+          return () => disposeRestriction()
+        })
+        restrictions.set(agent, { restriction: { ...attempt }, dispose })
+        recordMask(agent, attempt, 'applied')
+        return
+      } catch (error) {
+        const unknown = unknownToolsOf(error)
+        const fresh = unknown.filter((name) => !rejectedToolNames.has(name))
+        if (fresh.length === 0) {
+          recordMask(agent, attempt, 'error', error)
+          logger?.warn?.('[mm-models] 无法为会话隐藏工具（' + JSON.stringify(attempt) + '）：' + String(error?.message ?? error))
+          return
+        }
+        for (const name of fresh) rejectedToolNames.add(name)
+        attempt = { ...attempt, deny: attempt.deny.filter((name) => !rejectedToolNames.has(name)) }
+        logger?.warn?.('[mm-models] 宿主不认识这些工具名，已从掩码里剔除：' + fresh.join(', '))
+        if (attempt.deny.length === 0) {
+          restrictions.delete(agent)
+          recordMask(agent, attempt, 'cleared')
+          return
+        }
+      }
     }
+    recordMask(agent, attempt, 'error', new Error('restrict 重试次数用尽'))
+    logger?.warn?.('[mm-models] 掩码重试次数用尽（行为层仍由 guard 兜底）')
   }
 
   /**

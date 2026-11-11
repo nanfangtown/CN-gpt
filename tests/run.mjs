@@ -164,17 +164,32 @@ function makeSyncHarness() {
     return { unref() {} }
   }
   return {
-    /** 造 agent 并装上记录用的 restrict（在 apply() 之前调用）。 */
-    install(fake, agentOptions = {}) {
+    /**
+     * 造 agent 并装上记录用的 restrict（在 apply() 之前调用）。
+     * @param {object} fake - createFakeCtx 的返回值。
+     * @param {object} [agentOptions] - 额外塞进 agent.options 的字段（如 subagentDepth）。
+     * @param {{ knownTools?: string[] }} [options] - 给了 knownTools 就**模仿宿主校验**：
+     *   deny 里出现未知名字时整次抛错（2026-11-11 的真实事故形态）。
+     */
+    install(fake, agentOptions = {}, options = {}) {
       const applied = []
+      const known = options.knownTools === undefined ? undefined : new Set(options.knownTools)
       const agent = {
         options: { provider: 'deepseek-account', model: 'deepseek-flash', ...agentOptions },
         ctx: {
           ...fake.ctx,
           effect: (callback) => callback(),
           tools: {
-            restrict: ({ deny }) => {
-              applied.push([...deny])
+            restrict: (filter) => {
+              if (known !== undefined) {
+                const unknown = (filter.deny ?? []).filter((name) => !known.has(name))
+                if (unknown.length > 0) {
+                  throw new Error('tools.restrict() names unknown global tools ' +
+                    unknown.map((name) => '"' + name + '"').join(', ') +
+                    '; known global tools: ' + [...known].join(', '))
+                }
+              }
+              applied.push([...(filter.deny ?? [])])
               return () => {}
             },
           },
@@ -1961,10 +1976,14 @@ async function main() {
     created({ agent: sub.agent })
 
     const shellOf = (list) => (list ?? []).filter((name) => ['pwsh', 'bash', 'ops_bash'].includes(name)).sort()
-    assert.deepEqual(
-      shellOf(main.applied.at(-1)),
-      ['bash', 'ops_bash', 'pwsh'],
-      '主代理的 shell 必须从工具表摘掉：' + JSON.stringify(main.applied.at(-1)),
+    const mainDeny = main.applied.at(-1) ?? []
+    assert.ok(
+      mainDeny.includes(process.platform === 'win32' ? 'pwsh' : 'bash'),
+      '主代理的 shell 必须被摘掉：' + JSON.stringify(mainDeny),
+    )
+    assert.ok(
+      !mainDeny.includes(process.platform === 'win32' ? 'bash' : 'pwsh'),
+      '平台不支持的 shell 名不该写进去（写进去会让整次 restrict 抛错）：' + JSON.stringify(mainDeny),
     )
     assert.deepEqual(
       shellOf(sub.applied.at(-1)),
@@ -1977,6 +1996,33 @@ async function main() {
     config.blockNativeShell = false
     tick()
     assert.deepEqual(shellOf(main.applied.at(-1)), [], '关掉后必须立刻撤销：' + JSON.stringify(main.applied.at(-1)))
+  })
+
+  await test('宿主不认识的名字不许拖垮整条掩码：剔除并记住（2026-11-11 事故回归）', async () => {
+    // 事故形态：deny 里写了 `ops_bash`（Windows 上没有这个全局工具）→ 宿主 restrict 整次抛错
+    // → 连 read_image 的掩码都没贴上，外部表现为"46 个工具全在"。这里用会校验名字的假宿主复现。
+    const tmp = await makeTmp()
+    const harness = makeSyncHarness()
+    const config = makeConfig(mock, tmp, { blockNativeShell: true, blockMainAgentNativeVision: true, healthProbe: false })
+    const fake = createFakeCtx({ credentials: { DASHSCOPE_API_KEY: 'k', ARK_API_KEY: 'k' }, llmProviders: ['glm'] })
+    const knownTools = [
+      'pwsh', 'read_image', 'ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video',
+      'qwen_draw', 'ocr_image', 'media_task', 'media_report', 'run_batch',
+    ]
+    const { agent, applied } = harness.install(fake, {}, { knownTools })
+    apply(fake.ctx, config)
+    fake.listeners.find((entry) => entry.event === 'agent/created').callback({ agent })
+
+    const deny = applied.at(-1) ?? []
+    assert.ok(deny.includes('pwsh'), 'pwsh 必须被摘掉：' + JSON.stringify(deny))
+    assert.ok(deny.includes('read_image'), 'read_image 掩码不能被未知名字连累：' + JSON.stringify(deny))
+    assert.ok(!deny.includes('ops_bash'), '被宿主拒绝的名字必须剔除：' + JSON.stringify(deny))
+    assert.ok(!deny.includes('bash'), '平台不支持的名字不该写进去：' + JSON.stringify(deny))
+
+    // 记住被拒名单后，下一次对账不该再加回去（否则每次都白失败一轮）
+    const before = applied.length
+    harness.tick()()
+    assert.equal(applied.length, before, '被拒名字必须被记住，不能每次重试：' + JSON.stringify(applied))
   })
 
   await test('重启后既有 agent 在 pre-step 被收养：补掩码（含 shell），报表可见', async () => {
