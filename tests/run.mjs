@@ -1373,8 +1373,8 @@ async function main() {
     // 红线：紧凑模式只删样板/明细，**告警一个都不能省**
     assert.ok(health.includes('原生读图：'), '紧凑模式仍要报屏蔽状态：' + health)
     assert.ok(health.includes('单价表'), '紧凑模式仍要报单价表：' + health)
-    assert.ok(!health.includes('掩码只在 agent 创建时贴'), '掩码注意事项应移入 verbose')
-    assert.ok(healthVerbose.includes('掩码只在 agent 创建时贴'), 'verbose 要给出完整说明')
+    assert.ok(!health.includes('掩码在 agent 创建时贴'), '掩码注意事项应移入 verbose')
+    assert.ok(healthVerbose.includes('掩码在 agent 创建时贴'), 'verbose 要给出完整说明')
     // 图例最多出现一次（原来"账本"和"任务注册表"各带一句图例，同一次报告里重复两遍）
     assert.ok(health.split('storage = 宿主服务').length - 1 <= 1, '后端图例不能在同一份报告里重复：' + health)
     assert.ok(health.includes('账本/注册表后端：'), '两个后端应压在同一行：' + health)
@@ -1977,6 +1977,35 @@ async function main() {
     config.blockNativeShell = false
     tick()
     assert.deepEqual(shellOf(main.applied.at(-1)), [], '关掉后必须立刻撤销：' + JSON.stringify(main.applied.at(-1)))
+  })
+
+  await test('重启后既有 agent 在 pre-step 被收养：补掩码（含 shell），报表可见', async () => {
+    // 2026-11-11 实测：重启后新开对话仍是 46 个工具、pwsh 在表里 —— 因为该 agent 在插件装配前
+    // 就存在，`agent/created` 没被接到。这里钉住"下一步补收养"这条路。
+    const tmp = await makeTmp()
+    const harness = makeSyncHarness()
+    const config = makeConfig(mock, tmp, {
+      blockNativeShell: true, blockMainAgentNativeVision: true, healthProbe: false,
+    })
+    const fake = createFakeCtx({ credentials: { DASHSCOPE_API_KEY: 'k', ARK_API_KEY: 'k' }, llmProviders: ['glm'] })
+    const { agent, applied } = harness.install(fake)
+    apply(fake.ctx, config)
+
+    // 关键：**不**触发 agent/created（模拟"装配前就存在"的 agent），直接走 pre-step。
+    const preStep = fake.listeners.find((entry) => entry.event === 'agent/pre-step')
+    assert.ok(preStep !== undefined, '插件应注册 agent/pre-step（收养兜底）')
+    await preStep.callback({ agent }, () => ({}))
+
+    const deny = applied.at(-1) ?? []
+    assert.ok(deny.includes('pwsh'), '收养后必须把 shell 摘掉：' + JSON.stringify(deny))
+    assert.ok(deny.includes('read_image'), '收养后必须把 read_image 摘掉：' + JSON.stringify(deny))
+
+    const report = fake.tools.find((tool) => tool.name === 'media_report')
+    const { exec } = newExec(tmp)
+    const verbose = (await report.execute({ action: 'health', verbose: true }, exec)).report
+    assert.ok(/掩码 1\/1/.test(verbose), '掩码计数必须反映已贴（这个指标以前恒为 0）：' + verbose.slice(-400))
+    assert.ok(verbose.includes('掩码对账'), 'verbose 应给出掩码对账明细：' + verbose.slice(-300))
+    harness.tick()
   })
 
   await test('性能：开关签名是纯函数式的稳定串，逐个开关都会改变它', async () => {

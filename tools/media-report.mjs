@@ -208,7 +208,19 @@ export function createMediaReportTool(deps) {
           if (verbose) {
             // ⚠ 这行在 verbose 下**必须无条件下发**（它解释的是"掩码为什么可能不在"，
             // 与当前有没有判定记录无关；曾因放在 decisions 判空里而在测试环境消失）。
-            backendLine += '\n\n（verbose）掩码只在 agent 创建时贴，重新装配后会丢 —— 行为层由 guard 兜底。'
+            backendLine +=
+              '\n\n（verbose）掩码在 agent 创建时贴；装配前就存在的会话会在下一次 pre-step 被"收养"并补上 —— 行为层另有 guard 兜底。'
+            if (Array.isArray(vision.maskAudit) && vision.maskAudit.length > 0) {
+              backendLine += '\n掩码对账（最近 ' + vision.maskAudit.length + ' 次）：\n' +
+                vision.maskAudit
+                  .map((row) =>
+                    '· ' + (row.kind === 'subagent' ? '子代理' : '主代理') +
+                    ' deny=' + String(row.deny ?? 0) +
+                    ' restrict=' + (row.hasRestrict === true ? '有' : '无') +
+                    ' → ' + String(row.outcome) +
+                    (row.error === undefined ? '' : '：' + String(row.error)))
+                  .join('\n')
+            }
             if (Array.isArray(vision.decisions) && vision.decisions.length > 0) {
               backendLine +=
                 '\n最近的原生读图判定：\n' +

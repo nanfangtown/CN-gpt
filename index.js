@@ -857,6 +857,26 @@ export function apply(ctx, config) {
     return sameList(left.allow, right.allow) && sameList(left.deny, right.deny)
   }
 
+  /**
+   * 掩码对账的最近几次结果（诊断用）。
+   *
+   * 为什么要有它：掩码"贴没贴上"在外部只表现为"工具表里还有没有那个工具"，
+   * 而插件日志在 DSH 里不落盘。2026-11-11 排查"重启后掩码没生效"时，
+   * 只能靠 subagent 与主代理的工具表对比来反推，太费劲。现在把每次 syncAgent 的
+   * 结果（有没有 restrict API / 成功还是抛错）记下来，放进 media_report(health)。
+   */
+  const maskAudit = []
+  const recordMask = (agent, desired, outcome, error) => {
+    maskAudit.push({
+      kind: isSubagent(agent) ? 'subagent' : 'main',
+      deny: Array.isArray(desired?.deny) ? desired.deny.length : 0,
+      hasRestrict: typeof agent?.ctx?.tools?.restrict === 'function',
+      outcome,
+      ...(error === undefined ? {} : { error: String(error?.message ?? error).slice(0, 120) }),
+    })
+    if (maskAudit.length > 8) maskAudit.shift()
+  }
+
   /** 按实时配置给一个 agent 贴/撤掩码；没有变化就不动（避免无谓的掩码链增长）。 */
   const syncAgent = (agent) => {
     const current = restrictions.get(agent)
@@ -873,9 +893,15 @@ export function apply(ctx, config) {
     }
     if (desired === undefined) {
       restrictions.delete(agent)
+      recordMask(agent, desired, 'cleared')
       return
     }
-    if (agent?.ctx?.tools?.restrict === undefined) return
+    if (agent?.ctx?.tools?.restrict === undefined) {
+      // ⚠ 以前这里是静默 return —— 于是"掩码从没贴上"和"贴上后被撤销"在外部长得一样。
+      recordMask(agent, desired, 'no-restrict-api')
+      logger?.warn?.('[mm-models] agent 上没有 tools.restrict，掩码未生效（行为层仍由 guard 兜底）')
+      return
+    }
     try {
       let disposeRestriction
       const dispose = agent.ctx.effect(() => {
@@ -883,7 +909,9 @@ export function apply(ctx, config) {
         return () => disposeRestriction()
       })
       restrictions.set(agent, { restriction: { ...desired }, dispose })
+      recordMask(agent, desired, 'applied')
     } catch (error) {
+      recordMask(agent, desired, 'error', error)
       logger?.warn?.('[mm-models] 无法为会话隐藏工具（' + JSON.stringify(desired) + '）：' + String(error?.message ?? error))
     }
   }
@@ -1198,6 +1226,36 @@ export function apply(ctx, config) {
     const link = sessionLinkOf(payload.agent)
     if (link.id !== undefined && link.parent !== undefined) sessionParents.set(link.id, link.parent)
   })
+  /**
+   * 兜底"收养"：重新装配/重启之后，**早已存在**的 agent 不会再触发 `agent/created`，
+   * 掩码就永久丢了（这正是上面"第三条守卫"记录的现场）。以前只靠 guard 兜行为层，
+   * 但 2026-11-11 实测表明 schema 层丢掉的代价很具体：模型仍能看到 pwsh，先写一大段
+   * 注定被拒的 PowerShell 包装脚本（6.8k output token 白付）。
+   *
+   * 现在在每一步开始前补一次：凡是不在 `restrictions` 表里的 agent，就地登记并同步掩码。
+   * 子代理也走同一条路（它们的 desiredRestriction 有自己的规则），幂等。
+   */
+  ctx.on('agent/pre-step', (payload, next) => {
+    const agent = payload?.agent
+    if (agent !== undefined && agent !== null) {
+      try {
+        if (!restrictions.has(agent)) {
+          restrictions.set(agent, { restriction: undefined, dispose: undefined })
+          logger?.info?.('[mm-models] 收养既有会话（agent/created 未覆盖）')
+        }
+        // 两种都要补：① 没登记过的（重启前就存在）；② 登记了但**掩码从没贴上**
+        // （创建时宿主还没就绪 → 以前在 `restrict === undefined` 分支静默 return，
+        //  之后每秒对账也会一直撞同一堵墙）。下一步开始前重试一次。
+        // 只在该 agent"本来就需要掩码"时重试，避免无掩码的 agent 每步 add/delete 抖动。
+        if (restrictions.get(agent)?.restriction === undefined && desiredRestriction(agent) !== undefined) {
+          syncAgent(agent)
+        }
+      } catch (error) {
+        logger?.warn?.('[mm-models] 收养/补掩码失败（已忽略）：' + String(error?.message ?? error))
+      }
+    }
+    return next()
+  })
   ctx.on('agent/disposed', (payload) => {
     const current = restrictions.get(payload?.agent)
     if (current?.dispose !== undefined) {
@@ -1343,7 +1401,11 @@ export function apply(ctx, config) {
     // 掩码的覆盖情况：重新装配后既有 agent 不会重回这张表，所以它会 "0/N" ——
     // 那正是"schema 层丢了、行为层靠 guard 兜"的状态，必须能被看到（2026-10-16 实测）。
     knownAgents: restrictions.size,
-    maskedAgents: [...restrictions.values()].filter((entry) => Array.isArray(entry.deny) && entry.deny.length > 0).length,
+    // ⚠ 2026-11-11 修：以前读的是 `entry.deny`，而表里存的是 `{ restriction, dispose }`，
+    // 于是这个指标**恒为 0**。它本来就是为了让"掩码丢失"可见而加的，结果自己看不见。
+    maskedAgents: [...restrictions.values()]
+      .filter((entry) => Array.isArray(entry?.restriction?.deny) && entry.restriction.deny.length > 0).length,
+    maskAudit: [...maskAudit],
     decisions: [...visionDecisions],
     // 读图回合闸门现状（2026-11-01）：开关、超时、还有几个读图员在跑。
     // 与其它判定一样必须能在对话里查到 —— 闸门卡住时要能一眼看出"是在等谁"。

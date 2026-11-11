@@ -14,6 +14,17 @@
 
 ### Fixed
 
+- **重启后掩码丢失：补"收养既有会话"+ 把这件事变成可观测（2026-11-11）**：
+  `restrictions` 只由 `agent/created` 填充，重启/重新装配后已存在的 agent 不会重新触发它，
+  掩码就永久丢了。实测同一会话：重启前 **41 个工具**（`read_image`/出片工具已摘），
+  重启后 **46 个**（全回来了），而新开会话也一样 —— 因为主 agent 在插件装配前就存在。
+  现在：`agent/pre-step` 兜底——没登记过的就地"收养"，登记了但掩码从没贴上的重试一次
+  （只在该 agent 本就需要掩码时重试，避免每步抖动）；
+  `maskedAgents` 指标修正（以前读 `entry.deny`，实际存的是 `entry.restriction.deny`，所以**恒为 0**）；
+  `media_report(health, verbose)` 新增最近 8 次掩码对账（主/子代理、deny 数、有没有 restrict API、结果），
+  再遇到"掩码没生效"不必靠对比子代理工具表反推。
+  回归：`run.mjs` 新增"不触发 agent/created 的 agent 在 pre-step 被收养并补上 shell + read_image"。
+
 - **窄委派的模型路线不再静默回落（2026-11-11）**：`subagent_script` 的 `agentOptions`
   预检（`llm.resolveCallConfig`）失败时，以前只是悄悄按父路线派出 —— 工具返回永远同一句
   "已派出脚本子代理"、日志里也没有痕迹，于是"以为在花订阅额度、实际在花主路线 token"
