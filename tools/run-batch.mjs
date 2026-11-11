@@ -332,6 +332,36 @@ function stripBom(text) {
 }
 
 /**
+ * 还原被 PowerShell 包过一层的**原生 stderr**。
+ *
+ * 共享模式下 `2> file` 走的是 PowerShell 的错误流：原生命令的 stderr 会被包成
+ * "node : <原始行> / At line: / CategoryInfo : NotSpecified ... NativeCommandError"。
+ * 逐条模式用管道拿的是裸字节，所以这里必须把那层壳剥掉，否则 tail / detail 里全是
+ * 位置信息和命令原文（2026-11-11 实测：stderr 尾巴变成 `+ $global:LASTEXITCODE = 0; ...`）。
+ * @param {string} text - 原始 stderr 文本。
+ * @returns {string} 尽量接近原生的 stderr。
+ */
+function cleanStderr(text) {
+  // 只认"原生 stderr 被 PowerShell 包了一层"这一种情况（其标志是 NativeCommandError）。
+  // ⚠ 不要额外要求 CategoryInfo：PS 5.1 对原生命令只给 `At line:`、`+ 命令原文` 与
+  //   `FullyQualifiedErrorId : NativeCommandError` 这几行，没有 CategoryInfo ——
+  //   加了那个条件就永远匹配不上（2026-11-11 实测：尾巴里剩下 `+ $global:LASTEXITCODE = 0; ...`）。
+  if (text === '' || !/NativeCommandError/.test(text)) return text
+  const kept = []
+  for (const line of text.split(/\r?\n/)) {
+    // 位置信息行：英文 `At line:` / 中文（本机 PS 5.1 是中文界面）`所在位置 行:`。
+    if (/^\s*(At (line|char):|所在位置)/i.test(line)) break
+    // `+ CategoryInfo …` / `+ FullyQualifiedErrorId …` / `+ ~~~~`（位置指示符）都丢掉。
+    if (/^\s*\+/.test(line)) continue
+    if (line.trim() === '') continue
+    // 原生命令的第一行是 `<命令名> : <原始内容>`，把前缀剥掉。
+    kept.push(line.replace(/^[^:]{1,80} : /, ''))
+  }
+  const joined = kept.join('\n').trim()
+  return joined === '' ? text : joined + '\n'
+}
+
+/**
  * 共享进程执行一批命令。
  * @param {{ commands: string[], cwd: string, timeoutMs: number, stopOnError: boolean, logRoot: string, signal?: AbortSignal, logger?: object }} input - 参数。
  * @returns {Promise<object[]>} 与逐条模式同形的结果记录（外加 skipped 标记）。
@@ -401,7 +431,7 @@ async function runSharedBatch({ commands, cwd, timeoutMs, stopOnError, logRoot, 
       continue
     }
     const stdout = stripBom(readMaybe(join(dir, 'o' + n + '.txt')) ?? '')
-    const stderr = stripBom(readMaybe(join(dir, 'e' + n + '.txt')) ?? '')
+    const stderr = cleanStderr(stripBom(readMaybe(join(dir, 'e' + n + '.txt')) ?? ''))
     const ms = Number((readMaybe(join(dir, 't' + n + '.txt')) ?? '').trim())
     records[i] = {
       exitCode: Number(codeText.trim()),

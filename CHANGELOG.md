@@ -12,6 +12,8 @@
   - 命令里的 `exit` 会带走共享 shell → 后续标 `SKIPPED`；超时按整批预算 →
     当前标 `TIMEOUT`、其余 `SKIPPED`；不支持 `parallel`；
   - POSIX 用 `( eval ... )` 子 shell，`cd`/`env`/`exit` 天然隔离；
+  - 原生 stderr 的 PowerShell 包装会被剥掉（中文 `所在位置` 与英文 `At line:` 两种位置信息都认），
+    共享模式的 stderr 与逐条模式一致 —— 否则 tail/detail 里会剩下 `+ $global:LASTEXITCODE = 0; …`；
   - 新增 6 条回归：退出码（0/3/5/不存在命令）、归属性（伪造分隔符不串条）、
     `cd`+`$env` 还原、`stop_on_error` 标 SKIPPED、`exit` 终止整批、超时 + `parallel` 拒绝。
   - 默认仍是 `isolated`：共享 shell 换来的是执行时间，不是步数；对话越长它越不重要。
