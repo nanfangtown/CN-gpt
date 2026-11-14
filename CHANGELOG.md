@@ -42,6 +42,18 @@
 
 ### Fixed
 
+- **读图员/窄委派在 DSH 0.2.2-rc.2+ 上一调用就崩 `undefined.id`（2026-11-14）**：
+  rc.2 把 `subagents.startActivation()` 的入参从「嵌套 `request`」改成**扁平 spec**
+  （`SubagentActivationSpec extends Omit<SubagentStartRequest,'label'|'signal'>`，
+  `parent`/`prompt`/`agentPreset`/`agentOptions`/`maxDepth` 都在顶层）。插件仍按旧形状
+  `{ provider, label, request: { parent, … }, signal, delivery }` 调用，rc.3 里第一行就是
+  `spec.parent.id` → `TypeError: Cannot read properties of undefined (reading 'id')`，
+  `ask_glm` / `ask_qwen` / `subagent_code` / `subagent_script` / `subagent_research` 全挂；
+  而插件加载、工具注册、配置校验都正常，体检表看不出来。
+  现在 `tools/reader.mjs` 与 `tools/delegation.mjs` 把 `request` 的字段平铺进 spec，
+  同时保留旧 `request` 键 —— 0.2.1 系列与 0.2.2-rc.2+ 两代运行时都能派出。
+  实测（rc.3）：`ask_glm` 抄出测试图三行字、`subagent_code` 回传 canary，本地 OCR 与健康表不受影响。
+
 - **`restrict` 遇到宿主不认识的工具名会整条掩码报废（2026-11-11 事故）**：宿主会校验 deny 里
   每个名字是不是"已知全局工具"，有一个对不上就**整次抛错**。Windows 上没有 `bash` / `ops_bash`，
   而 shell 掩码把三个名字一起写了进去 —— 结果连 `read_image`、出片工具的掩码都没贴上，

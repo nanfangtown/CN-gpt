@@ -296,7 +296,10 @@ export function createDelegationTools(deps) {
         if (decision.applied === true) request.agentOptions = decision.route
       }
 
+      // 同 tools/reader.mjs：0.2.2-rc.2 起 `startActivation` 收扁平 spec，
+      // `request` 嵌套是旧形状；两代都传，避免升级后再踩一次。
       const activation = await subagents.startActivation({
+        ...request,
         provider: 'spawn',
         label: description,
         request,

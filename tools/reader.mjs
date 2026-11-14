@@ -315,7 +315,14 @@ export function createReaderTools(deps) {
         ...(Number.isFinite(maxDepth) && maxDepth > 0 ? { maxDepth } : {}),
       }
 
+      // DSH 0.2.2-rc.2 起 `startActivation` 改成**扁平入参**（SubagentActivationSpec
+      // extends Omit<SubagentStartRequest,'label'|'signal'>），`parent`/`prompt`/
+      // `agentPreset`/`agentOptions`/`maxDepth` 都在 spec 顶层；旧版是嵌套 `request`。
+      // 只传嵌套 request 时 rc.3 里 `spec.parent` 为 undefined，直接报
+      // "Cannot read properties of undefined (reading 'id')"。
+      // 扁平字段与旧 `request` 同时给出：两代运行时都能派出。
       const activation = await subagents.startActivation({
+        ...request,
         provider: 'spawn',
         label: '读图',
         request,
