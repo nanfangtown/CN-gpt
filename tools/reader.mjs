@@ -100,10 +100,9 @@ const READER_SPECS = Object.freeze([
     modelField: 'readerGlmModel',
     fallbackLabel: 'GLM 视觉',
     description:
-      '读图（{model}）：把本地图片 / 截图 / 图表 / 场景照的路径交给它，返回结构化结论'
-      + '（画面、人物、文字、界面、图表、布局）。**图像识别 / 分析 / 审查一律用它**——'
-      + '不要靠文件名或上下文猜图，也不要用 read 去读二进制图片。派出只读子代理并立刻返回 id，'
-      + '结论稍后送达（几秒到几十秒）。与 ask_qwen 二选一。',
+      '读图（{model}）：图片路径交给它，返回画面/文字/界面/图表的结构化结论；'
+      + '识别、分析一律走它，不要靠文件名猜图，也别用 read 读二进制。派出即返回，结论稍后送达（秒级）。'
+      + '与 ask_qwen 二选一。',
   }),
   Object.freeze({
     tool: 'ask_qwen',
@@ -111,10 +110,8 @@ const READER_SPECS = Object.freeze([
     modelField: 'readerQwenModel',
     fallbackLabel: 'Qwen-VL',
     description:
-      '读图（{model}）：把本地图片 / 截图 / 图表 / 场景照的路径交给它，返回结构化结论'
-      + '（中文界面、密集文字、表格读数较强；画面 / 场景也可）。**图像识别 / 分析 / 审查一律用它**——'
-      + '不要靠文件名或上下文猜图，也不要用 read 去读二进制图片。派出只读子代理并立刻返回 id，'
-      + '结论稍后送达（几秒到几十秒）。与 ask_glm 二选一。',
+      '读图（{model}）：与 ask_glm 同一接口；中文界面、密集文字、表格读数更准。'
+      + '识别、分析走它，不要猜图或 read 二进制。派出即返回，结论稍后送达（秒级）。与 ask_glm 二选一。',
   }),
 ])
 
@@ -164,7 +161,7 @@ export function createReaderTools(deps) {
    * 再补一句"什么时候该分开"。**必须短**——工具 schema 每个请求都要发，单工具预算 1300 B。
    */
   const batchRewrite = (base) => base.replace(
-    '把本地图片 / 截图 / 图表 / 场景照的路径交给它，返回结构化结论',
+    '图片路径交给它，返回画面/文字/界面/图表的结构化结论',
     '一次读一批图：图放 image_paths（数组，≤' + batchMax + ' 张），结论按「图1/图2」分段',
   ) + '不相关、或每张要分别提问，就分开调用。'
 

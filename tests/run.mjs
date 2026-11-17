@@ -420,6 +420,10 @@ async function main() {
     const on = setup(mock, await makeTmp(), { overrides: {} })
     const onText = readSection(on.fake)
     assert.ok(onText.includes('run_batch'), '开关打开时提示词要点名 run_batch：' + onText)
+    // 2026-11-11（L1）：只给"批量"不够——实测 72% 的批次只有 1 条命令。
+    // 提示词必须同时说清"单条别套壳"，否则模型会把一条命令也塞进来。
+    assert.ok(onText.includes('只有 1 条'), '要写清单条时直接用 shell：' + onText)
+    assert.ok(onText.includes('套壳'), '要点名"别套壳"这个具体反模式：' + onText)
 
     const off = setup(mock, await makeTmp(), { overrides: { enableRunBatch: false } })
     const offText = readSection(off.fake)
@@ -551,6 +555,12 @@ async function main() {
     assert.equal(activations[0].request.agentPreset, 'my-research')
     assert.equal(activations[0].request.maxDepth, 2)
     assert.equal(activations[0].request.cwd, 'D:/work')
+  })
+
+  // ---------------------------------------------------------------- mini_shell（2026-11-12 已删除）
+  await test('mini_shell 已移除：13 个工具里不再有它', async () => {
+    const { tools } = setup(mock, await makeTmp())
+    assert.equal(tools.mini_shell, undefined, 'mini_shell 不应再注册')
   })
 
   await test('窄委派：参数为空 / subagents 缺失 / spawn 未注册 → 派出前就报错', async () => {
@@ -2138,7 +2148,9 @@ async function main() {
     // 与 subagent 逐字相同，等于白占字节还认不出身份）。合计上限同步上调到 8.6 KB。
     // 2026-10-30：新增 ocr_image（本地 OCR）。描述压到 ~640 B：卖点只有一句
     // "纯文字截图走它、图像理解走读图员"，其余细节留在 README。
-    const budget = { ask_glm: 1300, ask_qwen: 1300, ocr_image: 700, qwen_draw: 700, seedance_video: 1200, video_gen: 1200, minimax_video: 1200, media_task: 860, media_report: 500, subagent_code: 1050, subagent_research: 1050, subagent_script: 1050, run_batch: 1100 }
+    // 2026-11-17：run_batch 加 env 参数，并把"每条还原 / 20 条上限 / parallel 仅 isolated / 尾巴口径"
+    // 写进 description —— 多花的 ~130 B 换掉的是"cd 不延续导致静默 PASS"那一类失败，值。
+    const budget = { ask_glm: 1300, ask_qwen: 1300, ocr_image: 700, qwen_draw: 700, seedance_video: 1200, video_gen: 1200, minimax_video: 1200, media_task: 860, media_report: 500, subagent_code: 1050, subagent_research: 1050, subagent_script: 1050, run_batch: 1250 }
     let total = 0
     for (const [name, definition] of Object.entries(tools)) {
       const bytes = Buffer.byteLength(JSON.stringify({ name: definition.name, description: definition.description, parameters: definition.parameters }), 'utf8')
@@ -2561,6 +2573,35 @@ async function main() {
       !reportLines.slice(firstRow, lastRow + 1).some((line) => line.trim() === ''),
       '表格行之间不允许出现空行/路由附注：' + reportLines.slice(firstRow, lastRow + 1).join('\\n'),
     )
+  })
+
+  await test('media_report(health)：批量执行统计读 batch/index.jsonl（今日批大小分布）', async () => {
+    // L3（2026-11-11）：判断该不该开激进模式要看批大小分布。这里是它的回归网：
+    // ① 统计行必须出现；② 数字要能对上；③ verbose 才有直方图。
+    const tmp = await makeTmp()
+    const { tools } = setup(mock, tmp, { overrides: {} })
+    const { exec } = newExec(tmp)
+    const dir = join(tmp, 'gen', 'batch')
+    await mkdir(dir, { recursive: true })
+    const now = Date.now()
+    const rows = [
+      { at: now, n: 1, mode: 'shared', parallel: false, passed: 1, failed: 0, skipped: 0, ms: 10 },
+      { at: now, n: 1, mode: 'shared', parallel: false, passed: 1, failed: 0, skipped: 0, ms: 10 },
+      { at: now, n: 13, mode: 'shared', parallel: false, passed: 13, failed: 0, skipped: 0, ms: 100 },
+    ]
+    await writeFile(join(dir, 'index.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n', 'utf8')
+
+    const health = await tools.media_report.execute({ action: 'health', verbose: true }, exec)
+    const tail = health.report.slice(-500)
+    assert.ok(health.report.includes('批量执行（今日）'), '要有一行批量统计：' + tail)
+    assert.ok(health.report.includes('3 次调用 / 15 条命令'), '调用次数与命令数要准：' + tail)
+    assert.ok(health.report.includes('单命令批次 2 次'), '单命令批次要单独算：' + tail)
+    assert.ok(health.report.includes('若逐条跑需 15 步'), '要给出逐条对照：' + tail)
+    assert.ok(health.report.includes('N=13×1'), 'verbose 下要给直方图：' + tail)
+
+    const compact = await tools.media_report.execute({ action: 'health' }, newExec(tmp).exec)
+    assert.ok(compact.report.includes('批量执行（今日）'), '紧凑模式也要有统计行')
+    assert.ok(!compact.report.includes('批大小分布'), '紧凑模式不铺直方图')
   })
 
   await test('media_report(health)：切到 ask_qwen → 报告 qwen-vl 路由，并在冲突时点出被压制的一方', async () => {

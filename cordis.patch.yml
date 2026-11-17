@@ -513,7 +513,19 @@
         # 所以跑测试/构建/批量检查时优先用它；完整日志落 gen/batch/，细节按需 read。
         enableRunBatch: true
         batchMaxCommands: 20
-        batchCommandTimeoutMs: 120000
+        # 2026-11-11：120000 → 60000。整批预算是 timeout × 条数，120s 时 20 条命令可跑到 40 分钟，
+        # 通常先撞宿主超时被砍、还看不出是哪条卡住。60s 够跑单条构建/测试，卡死也能早收。
+        # 长构建请单条调用并显式传 timeout_ms。
+        batchCommandTimeoutMs: 60000
+        # 2026-11-11：遇错即停默认关闭——批量检查要一次看全所有失败。
+        # 要误批早停（命令列错/环境不对时不必等整批跑完）：调用时传 stop_on_error:true，
+        # 或把这里设 true（后续命令标 SKIPPED）。parallel 不继承这个默认。
+        batchStopOnError: false
+        # 2026-11-11：单命令批次的即时提示（L2），**默认关**。
+        # 实测 72% 的调用是 N=1，而"跑一条、看一次"就是主流工作流；
+        # 拿它当"该批没批"的信号是在批评正确动作。想主动收敛单命令时再打开。
+        batchNudgeSingle: false
+        batchNudgeLimit: 3
         batchParallelLimit: 4
         # 执行模式：shared（默认，一批共用一个 shell，省掉每条 ~0.35s 的 powershell.exe 冷启动；
         # cd/$env 逐条还原；命令里出现 shell 级 exit 会自动改走 isolated，不会带走整批）|

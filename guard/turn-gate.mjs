@@ -71,6 +71,9 @@ const AUTO_OCR_HEADER = [
   '证据不支持的结论写"待确认"，不要用想象补全。',
 ].join('\n')
 
+/** 人类可读的等待上限（日志用：`300s` / `400ms`）。 */
+const limitText = (ms) => (ms >= 1000 ? Math.round(ms / 1000) + 's' : Math.round(ms) + 'ms')
+
 /** 默认等待上限（毫秒）。读图员通常 5–40s，90s 足够且不至于把回合钉死。 */
 const DEFAULT_TIMEOUT_MS = 90000
 
@@ -135,15 +138,37 @@ export function createTurnGate(deps) {
     setTimeout(resolve, ms)
   })
 
-  /** 该 agent 名下还没结束的读图任务。 */
+  /**
+   * 该 agent 名下**还值得等**的读图任务。
+   *
+   * `gaveUp` 的记录不算：等满一轮上限仍未回来时，闸门已经放过该步并提示"待确认"，
+   * 继续在下一步重等只会把同一段延迟再付一次（2026-11-16 实测：一次 260 s 的读图
+   * 让 18:29:51、18:31:50 连续两轮各等满 90 s）。结论晚到时由后面的步里补回（见 hasLateResult）。
+   */
   const pendingOf = (agent) => {
     const list = []
     for (const [childId, record] of readers) {
       if (record.parent !== agent) continue
-      if (record.ended === true) continue
+      if (record.ended === true || record.gaveUp === true) continue
       list.push(childId)
     }
     return list
+  }
+
+  /** 等满上限后给该 agent 名下未结束的记录销账（不再重复阻塞，但保留记录等结论）。 */
+  const markGaveUp = (agent) => {
+    for (const record of readers.values()) {
+      if (record.parent !== agent || record.ended === true) continue
+      record.gaveUp = true
+    }
+  }
+
+  /** 已销账、但结论后来才落地的记录：并入下一步，避免它只停在内存里。 */
+  const hasLateResult = (agent) => {
+    for (const record of readers.values()) {
+      if (record.parent === agent && record.ended === true && record.gaveUp === true) return true
+    }
+    return false
   }
 
   /**
@@ -280,6 +305,7 @@ export function createTurnGate(deps) {
       output: '',
       stopReason: undefined,
       consumed: false,
+      gaveUp: false,
     })
     const state = stateOf(agent)
     if (state.turn >= 0) state.evidenceTurn = state.turn
@@ -371,13 +397,21 @@ export function createTurnGate(deps) {
       return { ...base, messages: [...base.messages, note] }
     }
 
-    // 条件二：读图员还在跑 → 本步先不开工
-    if (pendingOf(agent).length === 0) return base
+    // 条件二：读图员还在跑 → 本步先不开工。
+    // 已经等满过一次上限的（gaveUp）不再重等；若它的结论后来落地，就在这里补回本步。
+    if (pendingOf(agent).length === 0) {
+      if (!hasLateResult(agent)) return base
+      const late = await collectResults(agent)
+      if (late.length === 0) return base
+      logger?.info?.('[mm-models] turn-gate：超时之后补回读图结论（turn=' + state.turn + '）')
+      return { ...base, messages: [...base.messages, ...late] }
+    }
     const pending = pendingOf(agent).length
     const outcome = await waitFor(agent, payload?.signal)
     const notes = await collectResults(agent)
     if (outcome === 'timeout') {
-      logger?.warn?.('[mm-models] turn-gate：等待读图员超时（' + timeoutMs() + 'ms，pending=' + pending + '），已放行本步')
+      markGaveUp(agent)
+      logger?.warn?.('[mm-models] turn-gate：等待读图员超时（' + limitText(timeoutMs()) + '，pending=' + pending + '），已放行本步且下一步不再重等')
       notes.push(await makeNotice(TIMEOUT_TEXT, '读图等待超时'))
     } else if (outcome === 'settled') {
       logger?.info?.('[mm-models] turn-gate：读图结论已在作答前取回（turn=' + state.turn + '）')
@@ -403,7 +437,8 @@ export function createTurnGate(deps) {
       if (pendingOf(agent).length > 0) {
         const outcome = await waitFor(agent, payload?.signal)
         if (outcome === 'timeout') {
-          logger?.warn?.('[mm-models] turn-gate：收尾等待读图员超时（' + timeoutMs() + 'ms），已放行')
+          markGaveUp(agent)
+          logger?.warn?.('[mm-models] turn-gate：收尾等待读图员超时（' + limitText(timeoutMs()) + '），已放行')
         }
       }
 
@@ -521,7 +556,8 @@ export function createTurnGate(deps) {
     snapshot: () => ({
       enabled: enabled(),
       timeoutMs: timeoutMs(),
-      pending: [...readers.values()].filter((record) => record.ended !== true).length,
+      // "在等"只统计仍会阻塞下一步的记录：超时销账后的记录不再计。
+      pending: [...readers.values()].filter((record) => record.ended !== true && record.gaveUp !== true).length,
       known: readers.size,
       // 最近一轮自动 OCR：tried=找到几张图、ok=成功注入几张。
       // 2026-11-01 加：粘贴图的路径只存在于 image 块里，扫文本会静默失败——

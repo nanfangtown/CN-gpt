@@ -78,6 +78,9 @@ async function expectCode(promise, code) {
 
 console.log('[run_batch 验收]')
 
+/** 批次根目录下的**子目录**名（2026-11-11 起同目录还躺着 index.jsonl，不能再假设只有目录）。 */
+const batchDirs = async (root) => (await readdir(root, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name)
+
 await test('单条成功：退出码 0、计数正确、日志落盘', async () => {
   const { tmp, tool, exec } = await makeCase()
   const cmd = await scriptCommand(tmp, 'ok', 'console.log("hello-run-batch")')
@@ -88,7 +91,7 @@ await test('单条成功：退出码 0、计数正确、日志落盘', async () 
   assert.equal(value.results[0].exitCode, 0)
   assert.ok(value.logDir.length > 0, '必须返回日志目录')
   const dir = join(tmp, 'gen', 'batch')
-  const days = await readdir(dir)
+  const days = await batchDirs(dir)
   assert.equal(days.length, 1, '应生成一个批次目录')
   const files = (await readdir(join(dir, days[0]))).filter((name) => name.endsWith('.log'))
   assert.equal(files.length, 1, '每条命令一个日志文件')
@@ -100,6 +103,42 @@ await test('单条成功：退出码 0、计数正确、日志落盘', async () 
   const rendered = tool.output.render({}, value)[0].text
   assert.ok(rendered.includes('hello-run-batch'), '渲染表里要能直接看到尾巴：' + rendered)
   assert.ok(rendered.includes('完整输出'), '短输出的尾巴要标注“完整”，省掉二次取证：' + rendered)
+})
+
+await test('多行短输出：只抽两行时不得标「完整输出」', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const cmd = await scriptCommand(
+    tmp,
+    'five-lines',
+    'for (const s of ["alpha", "bravo", "charlie", "delta", "echo"]) console.log(s)',
+  )
+  const value = await tool.execute({ commands: [cmd] }, exec)
+  const r = value.results[0]
+  assert.equal(r.exitCode, 0)
+  // 尾巴仍然只抽最后两行——这是设计（控制上下文），不改成全文。
+  assert.ok(String(r.tail).endsWith('echo'), '尾巴应含最后一行：' + r.tail)
+  // 2026-11-11 回归：5 行共 35 字符，曾被按"体积 ≤260"标成完整，实测误导模型只看到 2 个条目。
+  assert.equal(r.tailComplete, false, '只展示 2/5 行时不得声称完整：' + JSON.stringify(r.tail))
+  const rendered = tool.output.render({}, value)[0].text
+  assert.ok(!rendered.includes('完整输出'), '渲染不得出现「完整输出」：' + rendered)
+  // 原文不丢：日志里 5 行齐全（无损重排的前提）
+  const batchDir = join(tmp, 'gen', 'batch')
+  const days = await batchDirs(batchDir)
+  const logs = (await readdir(join(batchDir, days[0]))).filter((name) => name.endsWith('.log'))
+  const log = await readFile(join(batchDir, days[0], logs[0]), 'utf8')
+  for (const line of ['alpha', 'bravo', 'charlie', 'delta', 'echo']) {
+    assert.ok(log.includes(line), '日志必须保留 ' + line + '：' + log.slice(0, 300))
+  }
+})
+
+await test('两行输出：全部展示时仍标「完整输出」', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const cmd = await scriptCommand(tmp, 'two-lines', 'console.log("first-line"); console.log("second-line")')
+  const value = await tool.execute({ commands: [cmd] }, exec)
+  const r = value.results[0]
+  assert.equal(r.tailComplete, true, '两行全部展示应标完整：' + JSON.stringify(r.tail))
+  const rendered = tool.output.render({}, value)[0].text
+  assert.ok(rendered.includes('完整输出'), '两行全部展示要标注「完整」：' + rendered)
 })
 
 await test('多条命令按顺序串行执行', async () => {
@@ -125,8 +164,36 @@ await test('stop_on_error=true 时遇错即停', async () => {
   const bad = await scriptCommand(tmp, 'bad', 'process.exit(1)')
   const good = await scriptCommand(tmp, 'good', 'console.log("never")')
   const value = await tool.execute({ commands: [bad, good], stop_on_error: true }, exec)
-  assert.equal(value.total, 1, '第一条失败后不应再跑第二条')
-  assert.equal(value.failed, 1)
+  assert.equal(value.total, 2, '第二条要留在结果里（标 SKIPPED），不能凭空消失')
+  assert.equal(value.failed, 1, '未执行的不算失败')
+  assert.equal(value.results[1].skipped, true)
+})
+
+await test('默认（不传 stop_on_error）跑完全部：一条失败不影响后面的', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const bad = await scriptCommand(tmp, 'bad-default', 'process.exit(1)')
+  const good = await scriptCommand(tmp, 'good-default', 'console.log("ran-anyway")')
+  const value = await tool.execute({ commands: [bad, good] }, exec)
+  assert.equal(value.results[0].exitCode, 1)
+  assert.equal(value.results[1]?.exitCode, 0, '出厂 batchStopOnError=false，第二条必须照跑：' + JSON.stringify(value.results[1]))
+})
+
+await test('batchStopOnError=true 时才早停，后续标 SKIPPED', async () => {
+  const { tmp, tool, exec } = await makeCase({ batchStopOnError: true })
+  const bad = await scriptCommand(tmp, 'bad-early', 'process.exit(1)')
+  const good = await scriptCommand(tmp, 'good-early', 'console.log("never")')
+  const value = await tool.execute({ commands: [bad, good] }, exec)
+  assert.equal(value.results[0].exitCode, 1)
+  assert.equal(value.results[1]?.skipped, true, '配置打开早停后，第二条必须标 SKIPPED：' + JSON.stringify(value.results[1]))
+})
+
+await test('parallel 不继承 batchStopOnError=true（否则并行无法发起）', async () => {
+  const { tmp, tool, exec } = await makeCase({ batchStopOnError: true })
+  const a = await scriptCommand(tmp, 'p-a', 'console.log("pa")')
+  const b = await scriptCommand(tmp, 'p-b', 'console.log("pb")')
+  const value = await tool.execute({ commands: [a, b], parallel: true }, exec)
+  assert.equal(value.parallel, true)
+  assert.equal(value.passed, 2)
 })
 
 await test('超时：杀掉进程树并标记 timedOut', async () => {
@@ -155,7 +222,7 @@ await test('cwd 生效：命令在会话目录里跑', async () => {
   const { tmp, tool, exec } = await makeCase()
   const cmd = await scriptCommand(tmp, 'pwd', 'console.log(process.cwd())')
   await tool.execute({ commands: [cmd] }, exec)
-  const days = await readdir(join(tmp, 'gen', 'batch'))
+  const days = await batchDirs(join(tmp, 'gen', 'batch'))
   const files = await readdir(join(tmp, 'gen', 'batch', days[0]))
   const log = await readFile(join(tmp, 'gen', 'batch', days[0], files[0]), 'utf8')
   assert.ok(log.toLowerCase().includes(tmp.toLowerCase().slice(0, 8)), '输出里应包含会话目录：' + log.slice(0, 200))
@@ -170,7 +237,7 @@ await test('不把密钥类环境变量带进子进程（与原生 shell 一致�
   } finally {
     delete process.env.MM_UNIT_TEST_API_KEY
   }
-  const days = await readdir(join(tmp, 'gen', 'batch'))
+  const days = await batchDirs(join(tmp, 'gen', 'batch'))
   const files = await readdir(join(tmp, 'gen', 'batch', days[0]))
   const log = await readFile(join(tmp, 'gen', 'batch', days[0], files.find((name) => name.endsWith('.log'))), 'utf8')
   assert.ok(log.includes('ABSENT'), '密钥类环境变量必须被剔除：' + log.slice(0, 200))
@@ -182,12 +249,20 @@ await test('并行：3 条各 600ms 的命令总耗时明显短于串行，且�
   const a = await scriptCommand(tmp, 'p1', 'setTimeout(() => {}, 600)')
   const b = await scriptCommand(tmp, 'p2', 'setTimeout(() => {}, 600)')
   const c = await scriptCommand(tmp, 'p3', 'setTimeout(() => {}, 600)')
+  // 2026-11-12：改成**同一次运行内的相对比较**。旧的绝对阈值 1600 ms 在负载高的机器上
+  // 会随机变红（实测 2398 / 3051 ms 两次误报），那是 flaky test 而不是功能回归。
+  // 相对阈值不受机器快慢与并发负载影响。
+  const serialStart = Date.now()
+  const serial = await tool.execute({ commands: [a, b, c] }, exec)
+  const serialWall = Date.now() - serialStart
+  assert.equal(serial.passed, 3, '串行基线必须 3 条都通过')
+
   const started = Date.now()
   const value = await tool.execute({ commands: [a, b, c], parallel: true }, exec)
   const wall = Date.now() - started
   assert.equal(value.parallel, true)
   assert.equal(value.passed, 3)
-  assert.ok(wall < 1600, '并行应明显快于 1800ms 串行（实际 ' + wall + ' ms）')
+  assert.ok(wall < serialWall * 0.85, '并行应明显快于串行（并行 ' + wall + ' ms vs 串行 ' + serialWall + ' ms）')
   assert.deepEqual(value.results.map((item) => item.command), [a, b, c], '结果顺序必须与输入一致')
   assert.deepEqual(value.results.map((item) => item.index), [1, 2, 3])
 })
@@ -285,7 +360,7 @@ await test('shared：退出码逐条保真（0 / 3 / 5 / 不存在的命令）',
   const c3 = await scriptCommand(tmp, 's-3', 'process.exit(3)')
   const c5 = await scriptCommand(tmp, 's-5', 'process.exit(5)')
   const missing = 'dsh-definitely-not-a-command-xyz'
-  const value = await tool.execute({ commands: [ok, c3, c5, missing] }, exec)
+  const value = await tool.execute({ commands: [ok, c3, c5, missing], stop_on_error: false }, exec)
 
   assert.equal(value.shellMode, 'shared')
   assert.equal(value.total, 4)
@@ -331,6 +406,36 @@ await test('shared：cd 与 $env 不会泄漏到下一条（逐条还原）', as
   assert.ok(tail.includes('LEAK=') && !tail.includes('LEAK=yes'), '$env 必须被还原：' + tail)
 })
 
+await test('shared：env 显式注入对每条命令都生效（不依赖上一条的副作用）', async () => {
+  const { tool, exec } = await sharedCase()
+  const show = process.platform === 'win32'
+    ? "Write-Output ('E=' + [string]$env:DSH_BATCH_ENV)"
+    : 'echo "E=${DSH_BATCH_ENV}"'
+  const value = await tool.execute({ commands: [show, show], env: { DSH_BATCH_ENV: 'hello-42' } }, exec)
+
+  assert.equal(value.results[0].exitCode, 0)
+  assert.ok(String(value.results[0].tail ?? '').includes('E=hello-42'), '第一条要看到注入的 env：' + value.results[0].tail)
+  assert.ok(String(value.results[1].tail ?? '').includes('E=hello-42'), '第二条也要看到（逐条注入）：' + value.results[1].tail)
+})
+
+await test('shared：显式 env 不泄漏到下一批，也不留在宿主进程', async () => {
+  const { tool, exec } = await sharedCase()
+  const show = process.platform === 'win32'
+    ? "Write-Output ('L=' + [string]$env:DSH_BATCH_LEAK)"
+    : 'echo "L=${DSH_BATCH_LEAK}"'
+  await tool.execute({ commands: [show], env: { DSH_BATCH_LEAK: 'leak-check' } }, exec)
+  const second = await tool.execute({ commands: [show] }, exec)
+
+  assert.ok(!String(second.results[0].tail ?? '').includes('leak-check'), '下一批不能继承上一批的 env：' + second.results[0].tail)
+  assert.equal(process.env.DSH_BATCH_LEAK, undefined, '注入的 env 不能写回宿主 process.env')
+})
+
+await test('env 非法输入被拒（数组 / 非法键名），不静默丢键', async () => {
+  const { tool, exec } = await sharedCase()
+  await assert.rejects(() => tool.execute({ commands: ['echo x'], env: ['A=1'] }, exec), /env/)
+  await assert.rejects(() => tool.execute({ commands: ['echo x'], env: { 'BAD-KEY': '1' } }, exec), /不合法/)
+})
+
 await test('shared：stop_on_error 停在正确的位置，后续标 SKIPPED', async () => {
   const { tmp, tool, exec } = await sharedCase()
   const ok = await scriptCommand(tmp, 's-ok2', 'console.log("ok")')
@@ -341,7 +446,7 @@ await test('shared：stop_on_error 停在正确的位置，后续标 SKIPPED', a
   assert.equal(value.results[0].exitCode, 0)
   assert.equal(value.results[1].exitCode, 7)
   assert.equal(value.results[2].skipped, true, '遇错即停后，后续命令必须标 SKIPPED（不是 PASS）')
-  assert.equal(value.results[2].exitCode, null)
+  assert.equal(value.results[2].exitCode, undefined, '未执行的条目不带 exitCode（null 会被输出 schema 拒掉）')
   const rendered = tool.output.render({}, value)[0].text
   assert.ok(rendered.includes('SKIPPED'), '渲染里要出现 SKIPPED：' + rendered)
 })
@@ -360,7 +465,7 @@ await test('shared 原始语义（直接调 runSharedBatch，绕过自动回退�
   assert.equal(results[0].exitCode, 9, '共享 shell 的退出码要如实上报：' + JSON.stringify(results[0]))
   if (process.platform === 'win32') {
     assert.equal(results[1].skipped, true, 'Windows 上 exit 带走了共享 shell，后续必须标 SKIPPED')
-    assert.equal(results[1].exitCode, null)
+    assert.equal(results[1].exitCode, undefined, '未执行 = 没有退出码（不能写 null，schema 只收 integer）')
   } else {
     // POSIX 用子 shell 跑每条命令，exit 只结束自己 —— 后续照跑（这是更理想的语义）
     assert.equal(results[1].exitCode, 0, 'POSIX 子 shell 隔离 exit：' + JSON.stringify(results[1]))
@@ -393,7 +498,7 @@ await test('默认（不配 batchShellMode）走 shared', async () => {
 await test('shared 下出现 shell 级 exit → 自动改走 isolated，后续照跑', async () => {
   const { tmp, tool, exec } = await sharedCase()
   const after = await scriptCommand(tmp, 's-after3', 'console.log("still-here")')
-  const value = await tool.execute({ commands: ['node -v; exit 9', after] }, exec)
+  const value = await tool.execute({ commands: ['node -v; exit 9', after], stop_on_error: false }, exec)
 
   assert.equal(value.shellMode, 'isolated', '检测到 exit 必须改走独立进程：' + JSON.stringify(value.shellMode))
   assert.equal(value.shellModeFallback, true)
@@ -407,11 +512,68 @@ await test('shared 下出现 shell 级 exit → 自动改走 isolated，后续�
 
 await test('子进程的 exit 不算 shell 级 exit（仍走 shared）', async () => {
   const { tool, exec } = await sharedCase()
-  const value = await tool.execute({ commands: ['node -e "process.exit(6)"', 'node -v'] }, exec)
+  const value = await tool.execute({ commands: ['node -e "process.exit(6)"', 'node -v'], stop_on_error: false }, exec)
   assert.equal(value.shellMode, 'shared', 'process.exit 不该触发回退：' + JSON.stringify(value.shellMode))
   assert.equal(value.shellModeFallback, false)
   assert.equal(value.results[0].exitCode, 6)
   assert.equal(value.results[1].exitCode, 0)
+})
+
+await test('shared 模式：多行短输出同样不得标「完整输出」', async () => {
+  const { tmp, tool, exec } = await sharedCase()
+  const cmd = await scriptCommand(
+    tmp,
+    'shared-five',
+    'for (const s of ["s1", "s2", "s3", "s4", "s5"]) console.log(s)',
+  )
+  const value = await tool.execute({ commands: [cmd] }, exec)
+  assert.equal(value.shellMode, 'shared')
+  assert.equal(value.results[0].tailComplete, false, '共享模式同样不得误标：' + JSON.stringify(value.results[0].tail))
+  const rendered = tool.output.render({}, value)[0].text
+  assert.ok(!rendered.includes('完整输出'), '共享模式渲染不得出现「完整输出」：' + rendered)
+})
+
+await test('L2：默认关（不提醒）；打开后单命令才提醒，且按会话限频', async () => {
+  // 出厂默认关：实测 72% 的调用是 N=1，而"跑一条、看一次"是主流工作流，
+  // 拿它当"该批没批"的信号会大面积误报。
+  const off = await makeCase()
+  const cmdOff = await scriptCommand(off.tmp, 'nudge-off', 'console.log("off")')
+  const quiet = await off.tool.execute({ commands: [cmdOff] }, off.exec)
+  assert.equal(quiet.nudge, undefined, '出厂默认关，单命令也不该提醒')
+
+  const { tmp, tool, exec } = await makeCase({ batchNudgeSingle: true, batchNudgeLimit: 2 })
+  const cmd = await scriptCommand(tmp, 'nudge-1', 'console.log("one")')
+  const first = await tool.execute({ commands: [cmd] }, exec)
+  assert.ok(typeof first.nudge === 'string' && first.nudge.includes('只有 1 条命令'), '打开后第一次要提醒：' + JSON.stringify(first.nudge))
+  const rendered = tool.output.render({}, first)[0].text
+  assert.ok(rendered.includes('只有 1 条命令'), '渲染里要能看到这条提示：' + rendered)
+  const second = await tool.execute({ commands: [cmd] }, exec)
+  assert.ok(typeof second.nudge === 'string', '限额内第二次仍提醒')
+  const third = await tool.execute({ commands: [cmd] }, exec)
+  assert.equal(third.nudge, undefined, '超过限额后不再提醒（提示会永久留在上下文里）')
+})
+
+await test('L2：打开后 N≥2 也不提醒（只针对单条套壳）', async () => {
+  const { tmp, tool, exec } = await makeCase({ batchNudgeSingle: true })
+  const a = await scriptCommand(tmp, 'nudge-a', 'console.log("a")')
+  const b = await scriptCommand(tmp, 'nudge-b', 'console.log("b")')
+  const multi = await tool.execute({ commands: [a, b] }, exec)
+  assert.equal(multi.nudge, undefined, 'N≥2 不该提醒：' + JSON.stringify(multi.nudge))
+})
+
+await test('L3：批次索引落盘（media_report 靠它统计批大小）', async () => {
+  const { tmp, tool, exec } = await makeCase()
+  const a = await scriptCommand(tmp, 'idx-a', 'console.log(1)')
+  const b = await scriptCommand(tmp, 'idx-b', 'console.log(2)')
+  const c = await scriptCommand(tmp, 'idx-c', 'process.exit(1)')
+  await tool.execute({ commands: [a, b, c] }, exec)
+  const text = await readFile(join(tmp, 'gen', 'batch', 'index.jsonl'), 'utf8')
+  const rows = text.split('\n').filter((line) => line.trim() !== '').map((line) => JSON.parse(line))
+  assert.equal(rows.length, 1, '每次调用一行')
+  assert.equal(rows[0].n, 3, '条数要记全：' + JSON.stringify(rows[0]))
+  assert.equal(rows[0].failed, 1, '失败数要记：' + JSON.stringify(rows[0]))
+  assert.equal(rows[0].mode, 'isolated', '执行模式要记：' + JSON.stringify(rows[0]))
+  assert.ok(Number.isFinite(rows[0].at) && rows[0].at > 0, '时间戳要记：' + JSON.stringify(rows[0]))
 })
 
 console.log('[run_batch] 通过 ' + stats.passed + '，失败 ' + stats.failed)

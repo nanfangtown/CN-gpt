@@ -160,5 +160,28 @@ assert.equal(ocrCalls, 2, 'F: 关掉后不应再跑 OCR')
 assert.match(JSON.stringify(f.messages.at(-1)), /读图闸门/, 'F: 应回到提醒')
 console.log('F ok: autoOcrOnImage=false → 回退提醒')
 
+// --- G：等满上限仍没回来 → 本步放行，下一步不再重等；晚到的结论补回下一步 ---
+liveConfig.autoOcrOnImage = true
+liveConfig.readerGateTimeoutMs = 400
+const agentG = makeAgent('main-g')
+gate.noteReaderStarted(agentG, 'reader-slow')
+const gStartedAt = Date.now()
+const g1 = await fire('agent/pre-step', { agent: agentG, turn: 1, step: 1, signal: new AbortController().signal, messages: [] }, enter())
+const firstWait = Date.now() - gStartedAt
+assert.ok(firstWait >= 350, 'G: 第一步应等满上限（实测 ' + firstWait + 'ms）')
+assert.match(JSON.stringify(g1.messages.at(-1)), /等待读图员超时/, 'G: 应给出超时提示')
+
+const gSecondAt = Date.now()
+const g2 = await fire('agent/pre-step', { agent: agentG, turn: 1, step: 2, signal: new AbortController().signal, messages: [] }, enter())
+const secondWait = Date.now() - gSecondAt
+assert.ok(secondWait < 350, 'G: 超时销账后第二步不得重等（实测 ' + secondWait + 'ms）')
+assert.doesNotMatch(JSON.stringify(g2.messages.at(-1)), /等待读图员超时/, 'G: 不该重复注入超时提示')
+
+await fire('subagent/end', { id: 'reader-slow', stopReason: 'stop', lastAssistantMessage: '晚到的结论：图里是 bilibili 评论区' })
+const g3 = await fire('agent/pre-step', { agent: agentG, turn: 1, step: 3, signal: new AbortController().signal, messages: [] }, enter())
+assert.match(JSON.stringify(g3.messages.at(-1)), /晚到的结论/, 'G: 超时之后落地的结论应在下一步补回')
+liveConfig.readerGateTimeoutMs = 3000
+console.log('G ok: 超时只等一次 → 结论晚到仍会补回（第一步 ' + firstWait + 'ms，第二步 ' + secondWait + 'ms）')
+
 console.log('\nlogs:\n' + logs.join('\n'))
 console.log('\nALL PASS')

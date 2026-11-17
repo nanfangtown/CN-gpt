@@ -129,14 +129,16 @@ minimax_video(prompt="镜头缓慢推进，雨滴打在窗上", duration=6, reso
 逐条跑命令的成本不在执行，而在**步数**：每条命令都是一步，每步都要重发一遍上下文。
 实测一轮 12 个测试文件逐条跑 = 54 步、3M cacheRead；合成一次 `run_batch` 后是 1 步。
 
-- **串行 / 并行**：默认串行（有依赖的命令别并行）；`parallel: true` 时按 `batchParallelLimit`（默认 4）并发，结果顺序仍与输入一致。并行下 `stop_on_error` 不可用（已经起跑的命令停不下来，会直接拒绝）；
-- **脚本入口**：`script: "test"` 直接读 `package.json` 的 `scripts.test`，按 `&&` 拆条执行，`npm run x` 引用递归展开（最多 3 层）。会改变语义的构造（`||`、反引号、`$(...)`、行首 `cd`）整段当一条跑——机器上没装 npm 时这一条尤其有用；
+- **串行 / 并行**：默认串行（有依赖的命令别并行）；`parallel: true` 时按 `batchParallelLimit`（默认 4）并发，结果顺序仍与输入一致。并行下 `stop_on_error` 不可用（已经起跑的命令停不下来，会直接拒绝）；- **脚本入口**：`script: "test"` 直接读 `package.json` 的 `scripts.test`，按 `&&` 拆条执行，`npm run x` 引用递归展开（最多 3 层）。会改变语义的构造（`||`、反引号、`$(...)`、行首 `cd`）整段当一条跑——机器上没装 npm 时这一条尤其有用；
 - **退出码原样保留**：Windows 下用包装脚本把真实退出码写出来（`powershell -Command` 会把 3 压成 1）；
-- **只回摘要**：每条命令都带一行输出尾巴（≤ 200 字符，"通过 13，失败 0"这类结论文本一次就能看到）；输出本身很短时标注「完整输出，无需再读日志」，避免模型为"逐字核对"再读一遍日志；失败另带摘要（≤ 600 字符），完整输出落 `gen/batch/<时间戳>/<序号>-<命令>.log`；
-- **超时杀进程树**：`batchCommandTimeoutMs`（默认 120 s）到点用 `taskkill /T` 连孙进程一起收；
+- **只回摘要**：每条命令都带一行输出尾巴（≤ 200 字符，"通过 13，失败 0"这类结论文本一次就能看到）；**只有全部非空输出行都进了尾巴**时才标注「完整输出，无需再读日志」（2026-11-11 修：原先按输出体积判，5 行短输出被抽成 2 行也标"完整"，实测让模型误以为目录只有 2 个条目、反而多花一步核对），避免模型为"逐字核对"再读一遍日志；失败另带摘要（≤ 600 字符），完整输出落 `gen/batch/<时间戳>/<序号>-<命令>.log`；
+- **误批早停（默认关）**：`batchStopOnError` 默认 false——一条失败不影响后面的，一批能一次看全所有失败。设 true 之后一条失败即停、后续标 `SKIPPED`（命令列错、路径/环境不对时不必等整批跑完）；调用时也可以传 `stop_on_error: true` 单次开启。并行不继承这个默认（已经起跑的命令停不下来）；
+- **单命令提示（L2，默认关）**：`batchNudgeSingle` 默认 false。打开后，一批只有 1 条命令时会在结果末尾附一行提示（`batchNudgeLimit` 每会话默认 3 次）。**默认关的理由**：实测 72% 的调用是 N=1，而"跑一条、看一次"本身就是主流工作流——拿它当"该批没批"的信号，多数时候是在批评正确动作；
+- **批次索引（L3）**：每次调用往 `gen/batch/index.jsonl` 追加一行（条数 / 模式 / 通过失败 / 耗时），`media_report(health)` 里有「批量执行（今日）」一行，`verbose` 下再给批大小直方图。判断该不该开激进模式、提示词有没有效，看这个而不是感觉；
+- **超时杀进程树**：`batchCommandTimeoutMs`（默认 60 s）到点用 `taskkill /T` 连孙进程一起收；
 - **上限点名拒绝**：`batchMaxCommands`（默认 20）超过就报错，不静默截断。
 
-配置：`enableRunBatch`（默认开）、`batchMaxCommands`、`batchCommandTimeoutMs`。
+配置：`enableRunBatch`（默认开）、`batchMaxCommands`、`batchCommandTimeoutMs`（默认 60000）、`batchStopOnError`（默认 false）、`batchNudgeSingle` / `batchNudgeLimit`、`batchShellMode`、`batchParallelLimit`。
 
 ### 执行模式：`shared`（默认，快约 3.8×）与 `isolated`（2026-11-11）
 

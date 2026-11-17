@@ -6,9 +6,12 @@
  * 管理类能力合成一个工具，控制每请求固定 schema 成本。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { CODES, MediaError } from '../core/errors.mjs'
 import { KEY_SPECS, keySpec } from '../core/keys.mjs'
 import { renderCostReport, renderHealthReport } from '../core/cost.mjs'
+import { resolveOutDir } from '../core/deliver.mjs'
 
 const PROBE_ADAPTERS = Object.freeze({
   dashscope: 'dashscope-image',
@@ -35,8 +38,53 @@ export function createMediaReportTool(deps) {
     )
   }
 
-  async function probeOf(keyId, force = false) {
-    if (config.healthProbe === false) return undefined
+  /**
+   * 今日批次分布（读 run_batch 落的 `batch/index.jsonl`）。
+   *
+   * 2026-11-11：判断"该不该开激进模式""提示词有没有效"，要看的是**批大小分布**，
+   * 不是感觉。没有数据时返回空串——缺数据不是告警，不该占版面。
+   * ⚠ `verbose` 必须当参数传进来：这个 helper 定义在 execute 之外，闭包里拿不到它
+   * （初版就踩了 ReferenceError "verbose is not defined"，只有"今天有批次"时才暴露）。
+   * @param {object} exec - 工具执行上下文（用来解析会话目录）。
+   * @param {boolean} verbose - 是否输出直方图明细。
+   * @returns {Promise<string>} 一行摘要（verbose 时多一行直方图）。
+   */
+  async function batchStatsLine(exec, verbose) {
+    let text
+    try {
+      const outDir = typeof config?.outDir === 'string' && config.outDir.trim() !== '' ? config.outDir : 'gen'
+      text = await readFile(join(resolveOutDir({ configValue: outDir, exec }), 'batch', 'index.jsonl'), 'utf8')
+    } catch {
+      return ''
+    }
+    const since = startOfToday(Date.now())
+    const rows = []
+    for (const line of text.split('\n')) {
+      if (line.trim() === '') continue
+      try {
+        const row = JSON.parse(line)
+        if (Number.isFinite(row?.at) && row.at >= since && Number.isFinite(row?.n)) rows.push(row)
+      } catch {
+        // 坏行忽略：索引是辅助数据，不能因为它让整个报告失败
+      }
+    }
+    if (rows.length === 0) return ''
+    const calls = rows.length
+    const cmds = rows.reduce((sum, row) => sum + row.n, 0)
+    const singles = rows.filter((row) => row.n === 1).length
+    let out =
+      '\n\n批量执行（今日）：' + calls + ' 次调用 / ' + cmds + ' 条命令 ｜ 单命令批次 ' + singles +
+      ' 次（' + Math.round((singles / calls) * 100) + '%）' + (cmds > 0 ? ' ｜ 若逐条跑需 ' + cmds + ' 步' : '')
+    if (verbose) {
+      const hist = new Map()
+      for (const row of rows) hist.set(row.n, (hist.get(row.n) ?? 0) + 1)
+      out += '\n批大小分布：' +
+        [...hist.entries()].sort((a, b) => a[0] - b[0]).map(([n, c]) => 'N=' + n + '×' + c).join('、')
+    }
+    return out
+  }
+
+  async function probeOf(keyId, force = false) {    if (config.healthProbe === false) return undefined
     const adapterId = PROBE_ADAPTERS[keyId]
     if (adapterId === undefined) return undefined
     // 开关关闭的链路不做探测（避免无谓的网络请求与误导）。
@@ -236,6 +284,7 @@ export function createMediaReportTool(deps) {
             }
           }
         }
+        backendLine += await batchStatsLine(exec, verbose)
         return { report: report + backendLine }
       }
       throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：action 必须是 cost 或 health')

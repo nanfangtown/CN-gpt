@@ -10,14 +10,14 @@
  *
  * ## 语义（刻意的边界）
  *   - **串行**：命令之间有依赖是常态（build → test），并发留给调用方显式拆分；
- *   - **每条独立进程**：一条失败不影响后面的（除非 stop_on_error）；
+ *   - **每条独立进程**：一条失败不影响后面的（默认跑完全部再汇总；要误批早停，开 batchStopOnError 或传 stop_on_error:true）；
  *   - **完整输出落盘**：回给模型的只有退出码 + 失败摘要，正文在日志文件里，
  *     需要细节时用 read 去读，避免每次调用都把几百行灌进上下文；
  *   - **不改变权限面**：命令字符串与原生 shell 工具同源，没有新增越权路径。
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { readFileSync, rmSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, appendFile, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { CODES, MediaError } from '../core/errors.mjs'
@@ -51,6 +51,65 @@ function childEnvOf(source) {
   }
   return out
 }
+
+/** 显式注入的 env 最多几项（防止一次调用把环境撑爆）。 */
+const MAX_BATCH_ENV_KEYS = 64
+/** 单个 env 值的长度上限（超过基本就是塞文件，应该走临时文件）。 */
+const MAX_BATCH_ENV_VALUE = 4096
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/**
+ * 校验并归一化调用方显式传入的 env。
+ *
+ * C（2026-11-17）：shared 模式会把 `cd` / `$env` 逐条还原，所以跨命令的上下文不能靠
+ * 上一条的副作用，只能靠显式参数。这里把"显式"这条路径收严：键名合法、值转字符串、
+ * 数量与长度有上限，非法输入直接拒（而不是悄悄丢掉某个键，让命令在缺变量时假绿）。
+ * @param {unknown} value - 调用方给的 env 参数。
+ * @returns {Record<string, string>} 可直接交给 spawn 的 env 覆盖项。
+ */
+function normalizeBatchEnv(value) {
+  if (value === undefined || value === null) return {}
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new MediaError(CODES.BAD_REQUEST, 'env 必须是对象：{"KEY":"value"}。')
+  }
+  const entries = Object.entries(value)
+  if (entries.length > MAX_BATCH_ENV_KEYS) {
+    throw new MediaError(CODES.BAD_REQUEST, 'env 共 ' + entries.length + ' 项，超过上限 ' + MAX_BATCH_ENV_KEYS + '。')
+  }
+  const out = {}
+  for (const [key, raw] of entries) {
+    if (!ENV_KEY_RE.test(key)) {
+      throw new MediaError(CODES.BAD_REQUEST, '环境变量名不合法："' + key + '"（限 [A-Za-z_][A-Za-z0-9_]*）。')
+    }
+    if (raw === undefined || raw === null) continue
+    const text = String(raw)
+    if (text.includes('\u0000')) {
+      throw new MediaError(CODES.BAD_REQUEST, '环境变量 "' + key + '" 的值含 NUL 字符。')
+    }
+    if (text.length > MAX_BATCH_ENV_VALUE) {
+      throw new MediaError(CODES.BAD_REQUEST, '环境变量 "' + key + '" 的值超过 ' + MAX_BATCH_ENV_VALUE + ' 字符。')
+    }
+    out[key] = text
+  }
+  return out
+}
+
+/**
+ * 把显式 env 叠加到子进程环境上。
+ *
+ * 顺序要求：必须先过 childEnvOf 的密钥过滤，再叠加调用方显式给的键 —— 调用方点名要的
+ * 变量一律生效（它自己知道在干什么），宿主的密钥仍然不会被动泄漏。
+ * @param {NodeJS.ProcessEnv} base - 已过滤的宿主环境。
+ * @param {Record<string, string>} extra - 归一化后的显式 env。
+ * @returns {NodeJS.ProcessEnv} 实际交给 spawn 的环境。
+ */
+function envWith(base, extra) {
+  if (extra === undefined || extra === null) return base
+  const keys = Object.keys(extra)
+  if (keys.length === 0) return base
+  return { ...base, ...extra }
+}
+
 
 /**
  * Windows 包装脚本：把真实退出码写到文件里再退出 0。
@@ -140,13 +199,13 @@ function killTree(child) {
  * @param {{ command: string, cwd: string, timeoutMs: number, signal?: AbortSignal, wrapper?: string, exitFile?: string }} input - 参数。
  * @returns {Promise<{ exitCode: number|null, stdout: string, stderr: string, timedOut: boolean, aborted: boolean, truncated: boolean, durationMs: number, error?: string }>}
  */
-function runOne({ command, cwd, timeoutMs, signal, wrapper, exitFile }) {
+function runOne({ command, cwd, timeoutMs, signal, wrapper, exitFile, env }) {
   return new Promise((resolvePromise) => {
     const started = Date.now()
     const { file, args } = shellOf(command, { wrapper, exitFile })
     let child
     try {
-      child = spawn(file, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: childEnvOf(process.env) })
+      child = spawn(file, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: envWith(childEnvOf(process.env), env) })
     } catch (error) {
       resolvePromise({
         exitCode: null, stdout: '', stderr: '', timedOut: false, aborted: false, truncated: false,
@@ -366,7 +425,7 @@ function cleanStderr(text) {
  * @param {{ commands: string[], cwd: string, timeoutMs: number, stopOnError: boolean, logRoot: string, signal?: AbortSignal, logger?: object }} input - 参数。
  * @returns {Promise<object[]>} 与逐条模式同形的结果记录（外加 skipped 标记）。
  */
-export async function runSharedBatch({ commands, cwd, timeoutMs, stopOnError, logRoot, signal, logger }) {
+export async function runSharedBatch({ commands, cwd, timeoutMs, stopOnError, logRoot, signal, logger, env }) {
   const dir = join(logRoot, 'shared')
   await mkdir(dir, { recursive: true })
   for (let i = 0; i < commands.length; i += 1) {
@@ -386,7 +445,7 @@ export async function runSharedBatch({ commands, cwd, timeoutMs, stopOnError, lo
   const outcome = await new Promise((resolvePromise) => {
     let child
     try {
-      child = spawn(file, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: childEnvOf(process.env) })
+      child = spawn(file, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: envWith(childEnvOf(process.env), env) })
     } catch (error) {
       resolvePromise({ spawnError: String(error?.message ?? error), exitCode: null, timedOut: false, aborted: false })
       return
@@ -498,16 +557,19 @@ export async function runSharedBatch({ commands, cwd, timeoutMs, stopOnError, lo
     }
     const ok = r.exitCode === 0
     const skipped = r.skipped === true
+    const tailInfo = skipped ? { tail: '', complete: false } : tailOf(r)
     results.push({
       index: i + 1,
       command,
-      exitCode: r.exitCode,
+      // 2026-11-11：未执行的条目不带 exitCode。JSON Schema 里它是 integer，
+      // 写 null 会被宿主的输出校验拒掉（整次工具调用失败），而"没跑过"本来就没有退出码。
+      ...(skipped ? {} : { exitCode: r.exitCode }),
       durationMs: r.durationMs,
       timedOut: r.timedOut === true,
       truncated: false,
       logPath: displayPath(logPath, cwd),
-      tail: skipped ? '' : tailOf(r),
-      tailComplete: !skipped && (r.stdout.length + r.stderr.length) <= 260,
+      tail: tailInfo.tail,
+      tailComplete: !skipped && tailInfo.complete,
       ...(skipped
         ? {
             detail: r.shellExited === true
@@ -531,20 +593,28 @@ export async function runSharedBatch({ commands, cwd, timeoutMs, stopOnError, lo
  * 2026-11-10 实测教训：只回退出码时，模型为了拿"通过 13，失败 0"这种汇总结论，
  * 会再去列目录 + 读 4 个日志（5 步、16K token）。这些结论本来就写在每条命令的末尾，
  * 直接回一行尾巴就能省掉整轮追查。
+ *
+ * 2026-11-11 修：`complete` 不能按"原始输出 ≤ 260 字符"判 —— 那是按体积判，
+ * 而尾巴是按行抽的。5 行短输出（共 35 字符）会被抽成 2 行却标"完整输出"，
+ * 实测让模型误以为目录只有 2 个条目，反而多花一步去核对。
+ * 现在只有"每一行非空输出都进了尾巴、且没被字符上限截断"才算完整。
  * @param {{ stdout: string, stderr: string }} result - 单条命令的结果。
  * @param {number} [max] - 最大字符数。
- * @returns {string} 尾巴文本（可能为空串）。
- */function tailOf(result, max = 200) {
+ * @returns {{ tail: string, complete: boolean }} 尾巴文本与"是否已展示全部非空行"。
+ */
+function tailOf(result, max = 200) {
   const raw = (result.stdout.trim().length > 0 ? result.stdout : result.stderr).trim()
-  if (raw.length === 0) return ''
+  if (raw.length === 0) return { tail: '', complete: true }
   const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0)
-  if (lines.length === 0) return ''
+  if (lines.length === 0) return { tail: '', complete: true }
   // 优先挑"像结论"的行：`node --test` 这类 runner 会把真正有用的 pass/fail 埋在中段，
   // 末尾只剩 duration_ms。没有命中就退回最后两行。
   const interesting = lines.slice(-15).filter((line) => /(通过|失败|PASS|FAIL|pass\s|fail\s|ALL PASS|错误|error|✗|✓)/i.test(line))
   const picked = interesting.length > 0 ? interesting.slice(-2) : lines.slice(-2)
-  const tail = picked.join(' / ')
-  return tail.length > max ? tail.slice(tail.length - max) : tail
+  const joined = picked.join(' / ')
+  const tail = joined.length > max ? joined.slice(joined.length - max) : joined
+  // 行数覆盖 + 字符未截断，两者都满足才叫完整；否则一律不标"完整输出"。
+  return { tail, complete: picked.length >= lines.length && tail === joined }
 }
 
 /**
@@ -675,14 +745,15 @@ export function hasShellExit(commands) {
 export function createRunBatchTool(deps) {
   const { config, logger } = deps
   const valueOf = (key, fallback) => (config?.[key] === undefined || config?.[key] === null ? fallback : config[key])
+  // L2（2026-11-11）：单命令批次的即时提示按 agent 限频，避免每轮唠叨。
+  const singleNudges = new WeakMap()
 
   return defineTool({
     name: 'run_batch',
     description:
-      '批量执行：一次跑多条命令（测试/构建/批量检查），可并行，也可直接跑 package.json 脚本名。'
-      + '顺序相关的命令一次全传，别一条一次调用。'
-      + '默认共用一个 shell；含 shell 级 exit 时自动改走独立进程。'
-      + '返回退出码与输出尾巴，完整日志落盘。结论以 tail 为准。',
+      '批量执行：一次跑多条命令（测试/构建/批量检查）或 package.json 脚本名，最多 20 条。'
+      + '共用 shell 省冷启动，但 cwd/$env 每条还原——跨命令上下文用 cwd/env 参数传。'
+      + 'exit 整批回退，parallel 仅 isolated。返回退出码/耗时/尾巴（≤200 字符，截断看 logDir）。',
     parameters: {
       commands: {
         type: 'array',
@@ -694,9 +765,19 @@ export function createRunBatchTool(deps) {
         description: 'package.json 脚本名（如 "test"）；与 commands 二选一。',
       },
       parallel: { type: 'boolean', description: '并行执行（默认串行）；与 stop_on_error 互斥。' },
-      cwd: { type: 'string', description: '工作目录；默认当前会话目录' },
-      stop_on_error: { type: 'boolean', description: '遇错即停（默认 false：全部跑完再汇总）' },
-      timeout_ms: { type: 'integer', description: '单条命令超时（毫秒）；默认取配置 batchCommandTimeoutMs' },
+      cwd: { type: 'string', description: '工作目录（默认会话目录）' },
+      env: {
+        type: 'object',
+        description:
+          '每条命令都注入的显式环境变量（不继承上一条，不泄漏回宿主）。'
+          + '键名 [A-Za-z_][A-Za-z0-9_]*，≤64 项。',
+        additionalProperties: { type: 'string' },
+      },
+      stop_on_error: {
+        type: 'boolean',
+        description: '遇错即停（默认取 batchStopOnError，出厂 false）',
+      },
+      timeout_ms: { type: 'integer', description: '单条超时（毫秒），默认取配置' },
     },
     output: {
       schema: {
@@ -715,6 +796,7 @@ export function createRunBatchTool(deps) {
           logDir: { type: 'string', required: true },
           script: { type: 'string' },
           parallel: { type: 'boolean' },
+          nudge: { type: 'string' },
           results: {
             type: 'array',
             required: true,
@@ -765,6 +847,9 @@ export function createRunBatchTool(deps) {
             for (const line of item.detail.split('\n')) lines.push('   ' + line)
           }
         }
+        if (typeof value.nudge === 'string' && value.nudge.length > 0) {
+          for (const line of value.nudge.split('\n')) lines.push('   ' + line)
+        }
         lines.push('日志目录：' + value.logDir)
         return [{ type: 'text', text: lines.join('\n') }]
       },
@@ -785,11 +870,18 @@ export function createRunBatchTool(deps) {
       const cwd = typeof args?.cwd === 'string' && args.cwd.trim().length > 0
         ? args.cwd.trim()
         : (sessionCwd(exec) ?? process.cwd())
-      const configuredTimeout = Number(valueOf('batchCommandTimeoutMs', 120000))
+      const configuredTimeout = Number(valueOf('batchCommandTimeoutMs', 60000))
       const requestedTimeout = Number(args?.timeout_ms)
       const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? requestedTimeout : configuredTimeout
-      const stopOnError = args?.stop_on_error === true
       const parallel = args?.parallel === true
+      // 2026-11-11 晚：早停默认关（batchStopOnError 默认 false）。
+      // 批量检查的价值就在"一次看全所有失败"；早停会让一批只剩第一个错误，
+      // 而摘了 shell 的场景没法单条补跑。要误批早停，显式开配置或传 stop_on_error:true。
+      // 并行永远不继承：已经起跑的命令停不下来，此时只能全部跑完。
+      const stopOnErrorExplicit = args?.stop_on_error
+      const stopOnError = stopOnErrorExplicit === undefined
+        ? (!parallel && valueOf('batchStopOnError', false) === true)
+        : stopOnErrorExplicit === true
       if (parallel && stopOnError) {
         throw new MediaError(CODES.BAD_REQUEST, 'parallel 与 stop_on_error 不能同时用：并行模式下已经起跑的命令停不下来。')
       }
@@ -831,7 +923,8 @@ export function createRunBatchTool(deps) {
       }
 
       // stamp() 只到秒：同一秒内两次 run_batch 会撞目录并互相覆盖日志，所以补 6 位哈希。
-      const logRoot = join(resolveOutDir({ configValue: valueOf('outDir', 'gen'), exec }), 'batch', stamp() + '-' + shortHash(String(Date.now()) + Math.random()))
+      const batchBase = join(resolveOutDir({ configValue: valueOf('outDir', 'gen'), exec }), 'batch')
+      const logRoot = join(batchBase, stamp() + '-' + shortHash(String(Date.now()) + Math.random()))
       await mkdir(logRoot, { recursive: true })
       // Windows 包装脚本（每批写一次）：退出码走独立文件，不被 PowerShell 压成 1。
       let wrapper
@@ -841,6 +934,12 @@ export function createRunBatchTool(deps) {
       }
 
       /**
+       * 显式注入的 env（2026-11-17，C）。shared 模式逐条还原 cd/$env，所以跨命令的上下文
+       * 只能显式传：这里归一化一次，两条执行路径（逐条 / 共享）都用它。
+       */
+      const batchEnv = normalizeBatchEnv(args?.env)
+
+      /**
        * 跑一条命令并落日志，返回结果记录与是否被取消。
        * @param {number} index - 序号（从 0 开始）。
        * @param {string} command - 命令原文。
@@ -848,7 +947,7 @@ export function createRunBatchTool(deps) {
        */
       const runItem = async (index, command) => {
         const result = await runOne({
-          command, cwd, timeoutMs, signal: exec?.signal,
+          command, cwd, timeoutMs, signal: exec?.signal, env: batchEnv,
           wrapper,
           exitFile: wrapper === undefined ? undefined : join(logRoot, 'exit-' + (index + 1) + '.txt'),
         })
@@ -868,6 +967,7 @@ export function createRunBatchTool(deps) {
         }
 
         const ok = result.exitCode === 0
+        const tailInfo = tailOf(result)
         return {
           aborted: result.aborted === true,
           record: {
@@ -878,11 +978,12 @@ export function createRunBatchTool(deps) {
             timedOut: result.timedOut === true,
             truncated: result.truncated === true,
             logPath: displayPath(logPath, cwd),
-            tail: tailOf(result),
+            tail: tailInfo.tail,
             // 2026-11-10：输出本来就短时明确说"这就是全文"。
             // 实测模型会为了"逐字核对"去读 4 个日志（多花 4 步）——它不信任被截断的尾巴。
             // 标出 tailComplete 后，短输出的结论就不需要二次取证。
-            tailComplete: result.truncated !== true && (result.stdout.length + result.stderr.length) <= 260,
+            // 2026-11-11：判据从"原始输出体积"改为"非空行是否全部展示"（见 tailOf）。
+            tailComplete: result.truncated !== true && tailInfo.complete,
             ...(ok ? {} : { detail: result.error ?? excerptOf(result) }),
           },
         }
@@ -905,7 +1006,7 @@ export function createRunBatchTool(deps) {
       let results
       if (shared) {
         results = await runSharedBatch({
-          commands, cwd, timeoutMs, stopOnError, logRoot, signal: exec?.signal, logger,
+          commands, cwd, timeoutMs, stopOnError, logRoot, signal: exec?.signal, logger, env: batchEnv,
         })
       } else if (parallel) {
         const settled = await mapLimit(commands, parallelLimit, (command, index) => runItem(index, command))
@@ -922,25 +1023,86 @@ export function createRunBatchTool(deps) {
           if (aborted) {
             throw new MediaError(CODES.ABORTED, 'run_batch 已取消（第 ' + (index + 1) + ' 条命令时中止）。完整日志：' + displayPath(logRoot, cwd))
           }
-          if (record.exitCode !== 0 && stopOnError) break
+          if (record.exitCode !== 0 && stopOnError) {
+            // 2026-11-11：早停必须"数得出来"。以前这里直接 break，结果数组凭空少几条，
+            // 模型只能靠数数发现"还有 4 条没跑"；共享模式早就会标 SKIPPED，这里对齐。
+            for (let rest = index + 1; rest < commands.length; rest += 1) {
+              const name = String(rest + 1).padStart(2, '0') + '-' + slugify(commands[rest].split(/\s+/)[0] ?? 'cmd', 24) + '.log'
+              results.push({
+                index: rest + 1,
+                command: commands[rest],
+                durationMs: 0,
+                timedOut: false,
+                truncated: false,
+                logPath: displayPath(join(logRoot, name), cwd),
+                tail: '',
+                skipped: true,
+                detail: 'stop_on_error：前面有命令失败（第 ' + (index + 1) + ' 条），这条未执行。',
+              })
+            }
+            break
+          }
         }
       }
 
       const passed = results.filter((item) => item.exitCode === 0).length
       const skipped = results.filter((item) => item.skipped === true).length
+      // 未执行的不算失败：通过 + 失败 + 未执行 = 总数，渲染里三个数才对得上。
+      const failed = results.filter((item) => item.skipped !== true && item.exitCode !== 0).length
+      const durationMs = Date.now() - started
+
+      // L3（2026-11-11）：把"这一批几条命令"落一行账。
+      // 动机：判断该不该开激进模式、提示词有没有效，需要的是**批大小分布**而不是感觉；
+      // 见 media_report(health) 的"批量执行"行。
+      try {
+        await appendFile(
+          join(batchBase, 'index.jsonl'),
+          JSON.stringify({
+            at: Date.now(),
+            n: commands.length,
+            mode: shellMode,
+            parallel: parallel === true,
+            passed,
+            failed,
+            skipped,
+            ms: durationMs,
+          }) + '\n',
+          'utf8',
+        )
+      } catch (error) {
+        logger?.debug?.('[mm-models] run_batch 写批次索引失败（已忽略）：' + String(error?.message ?? error))
+      }
+
+      // L2（2026-11-11）：单命令批次的即时提示，**默认关**。
+      // 实测 72% 的调用是 N=1，而"跑一条、看一次"就是主流工作流——
+      // 拿它当"该批没批"的信号，等于批评正确动作。要收敛单命令时再显式打开。
+      let nudge
+      if (commands.length === 1 && valueOf('batchNudgeSingle', false) === true) {
+        const limit = Math.max(0, Number(valueOf('batchNudgeLimit', 3)) || 0)
+        const agent = exec?.agent
+        const used = agent === undefined || agent === null ? 0 : (singleNudges.get(agent) ?? 0)
+        if (limit > 0 && used < limit) {
+          if (agent !== undefined && agent !== null) singleNudges.set(agent, used + 1)
+          nudge =
+            '提示：本批只有 1 条命令（' + (used + 1) + '/' + limit + ' 次提醒）。'
+            + '下几条若能开跑前列全、彼此不依赖，合成一次可省 N−1 步；要看输出再决定的，保持逐条即可。'
+        }
+      }
+
       return {
         cwd,
         total: results.length,
         passed,
-        failed: results.length - passed,
+        failed,
         timedOut: results.filter((item) => item.timedOut === true).length,
         skipped,
         shellMode,
         shellModeFallback: shellExitDetected,
-        durationMs: Date.now() - started,
+        durationMs,
         logDir: displayPath(logRoot, cwd),
         ...(scriptName === undefined ? {} : { script: scriptName }),
         parallel,
+        ...(nudge === undefined ? {} : { nudge }),
         results,
       }
     },

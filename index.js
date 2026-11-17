@@ -44,7 +44,7 @@ import { openImageCache } from './core/cache.mjs'
 import { createCallBudget, createSwitches } from './core/tool-kit.mjs'
 import { READER_ALLOWED_TOOLS, inspectReaderFilters, inspectReaderRoutes, isReaderAgent, mergeReaderRoutes } from './core/reader-guard.mjs'
 
-/** 插件名（与 package.json / cordis.patch.yml 的 id 对应）。 */
+/** 插件名（与 package.json / cordis.patch.yml 的 id 对应；显示名是 package.json 的 meta.title「CN-gpt」）。 */
 export const name = 'mm-models'
 
 /** 需要的宿主服务；任一缺失时插件保持不激活，而不是让 profile 崩溃。 */
@@ -77,14 +77,13 @@ export const inject = ['tools', 'credentials', 'systemPrompt']
 const PROMPT_FIXED = {
   division: '【媒体分工】媒体工具只出素材与结论，交付由主模型负责并负全责；生成可能计费，先确认能力可用。',
   delegate:
-    '【窄委派】子代理每轮背全部工具表（36个≈33KB）：脚本/构建/测试/批量机械改动用 subagent_script，'
-    + '核心编码（设计/重构/根因）用 subagent_code，查资料用 subagent_research。',
+    '【窄委派】批量机械改动用 subagent_script，核心编码（设计/重构/根因）用 subagent_code，查资料用 subagent_research。',
   // 2026-11-10：把"一批命令"变成一个工具调用。成本大头是步数（每步重发上下文），
   // 所以这里只讲三件事：什么算一批（回归/多端/CI）、脚本入口怎么用、什么不要批。
   batch:
-    '【批量执行】改完代码跑回归、多包/多端/多版本验证、CI 复现：能提前列出且彼此不依赖的命令，'
-    + '合成一次 run_batch（独立的可加 parallel=true）；项目自带测试入口用 run_batch(script:"test")，不必手抄命令。'
-    + '⚠ 依赖上一条输出才能决定下一条的（调试/探针/看报错再改）仍用 shell 逐条跑。',
+    '【批量执行】回归、多端/多版本验证、CI 复现：能提前列出且彼此不依赖的命令合成一次 run_batch'
+    + '（独立的可加 parallel=true）；项目自带测试入口用 run_batch(script:"test")。'
+    + '⚠ 只有 1 条、或要依赖上一条输出才能决定下一条的（调试/探针），直接用 shell，别套壳。',
 }
 
 /**
@@ -96,17 +95,18 @@ const PROMPT_FIXED = {
  *
  * @param {boolean} nativeBlocked - 主代理原生读图是否被屏蔽（blockMainAgentNativeVision）。
  * @param {boolean} [ocrEnabled] - ocr_image 是否开着（默认 true，兼容旧调用）。
+ * @param {boolean} [batchEnabled] - run_batch 是否开着（默认 true）。
  * @returns {string} 段落文本。
  */
 function buildDivisionSection(nativeBlocked, ocrEnabled = true, batchEnabled = true) {
   const ocrLine = ocrEnabled
     ? (nativeBlocked
-      ? '【文字图】纯文字截图先用 ocr_image（本地、免费、不出网）；图表、排版、画面、照片走读图员。'
-      : '【文字图】纯文字截图用 ocr_image 更快更保真（本地、免费、不出网）；图表、排版、画面、照片用原生读图或读图员。')
+      ? '【文字图】纯文字截图先用 ocr_image（本地、免费、不出网）；图表、画面、照片走读图员。'
+      : '【文字图】纯文字截图用 ocr_image 更快（本地、免费、不出网）；图表、画面、照片用原生读图或读图员。')
     : undefined
   const routing = nativeBlocked
-    ? '【读图路由】主代理原生读图已屏蔽：图像识别/分析/审查一律走 ask_glm 或 ask_qwen（把图片路径交给它）；两个都关才如实说"没有看图途径"，不要猜图。'
-    : '【读图路由】优先用原生 read_image 做细节审读；原生被屏蔽/不支持，或要批量省钱时走**已开启的** ask_glm / ask_qwen（把图片路径交给它）；两者都不可用就如实说"没有看图途径"，不要猜图。'
+    ? '【读图路由】原生读图已屏蔽：识别/分析/审查走 ask_glm 或 ask_qwen（把图片路径交给它）；都关才如实说"没有看图途径"，不要猜图。'
+    : '【读图路由】优先用原生 read_image；被屏蔽或不支持时走已开启的 ask_glm / ask_qwen；都不可用就如实说"没有看图途径"，不要猜图。'
   return [PROMPT_FIXED.division, routing, ocrLine, batchEnabled ? PROMPT_FIXED.batch : undefined, PROMPT_FIXED.delegate].filter((line) => line !== undefined).join('\n')
 }
 
@@ -457,15 +457,21 @@ export const Config = z.object({
   // 看结果、再决定），省的是重复发送的上下文。完整日志落盘，细节按需 read。
   enableRunBatch: z.boolean().default(true).volatile().description('允许主 agent 使用 run_batch（一次按顺序跑多条命令：测试/构建/批量检查）。关掉后工具被拒，提示词里那行也会消失（提示词在启动时装配，改完需完整重启；工具本体的开关实时生效）。'),
   batchMaxCommands: z.number().step(1).min(1).max(50).default(20).volatile().description('run_batch 单次命令数上限（默认 20）。超过直接拒绝并点名，不静默截断。'),
-  batchCommandTimeoutMs: z.number().step(1000).min(5000).max(1800000).default(120000).volatile().description('run_batch 单条命令超时（毫秒，默认 120 s）。超时会杀掉整棵进程树并标记 TIMEOUT，不会静默当成失败。'),
+  batchCommandTimeoutMs: z.number().step(1000).min(5000).max(1800000).default(60000).volatile().description('run_batch 单条命令超时（毫秒，默认 60 s）。超时会杀掉整棵进程树并标记 TIMEOUT，不会静默当成失败。整批预算是本值 × 条数；长构建请单条调用并显式传 timeout_ms。'),
+  batchStopOnError: z.boolean().default(false).volatile().description('run_batch 遇错即停（默认 false：跑完全部再汇总，批量检查能一次看全所有失败）。设 true 时一条失败即停、后续标 SKIPPED（误批早停）；调用时也可用 stop_on_error 覆盖。parallel 不继承这个默认。'),
   batchParallelLimit: z.number().step(1).min(1).max(8).default(4).volatile().description('run_batch(parallel=true) 的并发上限（默认 4，最大 8）。只对彼此独立的命令有意义；与 stop_on_error 互斥。'),
+  // L2（2026-11-11）：单命令批次的即时提示。**默认关**——实测 72% 的调用是 N=1，
+  // 而"跑一条、看一次"本身就是主流工作流，拿它当信号去催批量是在批评正确动作。
+  // 保留开关，给"想主动收敛单命令"的人用。
+  batchNudgeSingle: z.boolean().default(false).volatile().description('run_batch 只有 1 条命令时，在结果末尾附一行提示（默认关）。实测 N=1 是常态工作流，打开后多数提醒会是噪音；只在你想主动收敛单命令时才开。'),
+  batchNudgeLimit: z.number().step(1).min(0).max(20).default(3).volatile().description('batchNudgeSingle 打开后，每个会话最多提醒几次（默认 3，0 = 关闭）。每次提醒都会永久留在会话上下文里。'),
   // 执行模式（2026-11-11 加，第二轮起默认 shared）：isolated = 每条命令一个干净进程；
   // shared = 一批共用一个 shell。动机：Windows 上每条命令都要付 ~0.43s 的 powershell.exe
   // 冷启动，34 条就是 14.6s；shared 把这笔开销降到"每批一次"。
   // 代价与缓解：cd / $env 会泄漏 → 每条之后还原（实测 PowerShell 子作用域不隔离这两者）；
   // shell 级 exit 会带走整个 shell → 工具检测到就自动改走 isolated（不再要求模型自己拆批）；
   // 超时按整批预算。
-  batchShellMode: z.string().default('shared').volatile().description('run_batch 执行模式：shared（默认，同一批共用一个 shell，省掉 ~0.35s/条的进程冷启动；cd/$env 逐条还原；命令里的 shell 级 exit 会自动改走 isolated，不会带走整批）| isolated（每条命令一个干净进程，慢一些，适合探索/可能卡死的命令）。两种模式都不支持 parallel。'),
+  batchShellMode: z.string().default('shared').volatile().description('run_batch 执行模式：shared（默认，同一批共用一个 shell，省掉 ~0.35s/条的进程冷启动；cd/$env 逐条还原，跨命令的上下文请用 env 参数显式注入；命令里的 shell 级 exit 会自动改走 isolated，不会带走整批。不支持 parallel）| isolated（每条命令一个干净进程，慢一些，适合探索/可能卡死的命令；只有这一档支持 parallel）。'),
   // ---- 激进模式（2026-11-10 加，默认关）----
   //
   // 打开后主代理的工具表里**不再有** pwsh / bash / ops_bash，命令**只能**经 run_batch 执行。
@@ -777,7 +783,14 @@ export function apply(ctx, config) {
   }
   /** 一行读图员路由都认不出来 → 不对子代理下手。 */
   const readerRoutesUnknown = readerRoutes.routes.length === 0
-  const isReader = (agent) => isReaderAgent(agent, readerRoutes)
+  // ⚠ 2026-11-15 事故（两次）：读图员身份的唯一判据曾被写成"只比 provider/model"，
+  //   `isReaderAgent` 的兜底前缀 `glm-4` 会命中主代理上的 `glm-4.7-flash`，于是
+  //     ① 工具掩码把主代理裁成 `allow:[read_image]`（工具表塌缩）；
+  //     ② 读图员契约守卫拒绝主代理的每一次非 read_image 调用（连 read/write/pwsh 都拒）。
+  //   更阴的是它读的是 agent 对象上的 provider/model，不是本次请求的模型 —— 所以
+  //   "把模型切回 deepseek-flash"并不会解除，只有重启 / 新会话 / 禁用插件才行。
+  //   读图员只可能是子代理，因此把 isSubagent 收进定义本身，所有调用点一次性对齐。
+  const isReader = (agent) => isSubagent(agent) && isReaderAgent(agent, readerRoutes)
 
   /**
    * 最近几次"读图屏蔽判定"的快照（新 agent 创建或策略变化时记一条）。
@@ -854,6 +867,7 @@ export function apply(ctx, config) {
   const desiredRestriction = (agent) => {
     // 读图员：只保留看图工具（物理收窄工具面；scope 注入的 ops_bash / subagent 过滤不掉，
     // 那两个仍由下面的运行时 guard 兜底）。
+    // `isReader` 现在已经内含 isSubagent 判据（见上面的定义），这里不再重复。
     if (isReader(agent) && !readerRoutesUnknown) return { allow: [NATIVE_VISION_TOOL] }
     const deny = switches.disabledNames()
     // 原生读图（read_image）的屏蔽分两类：
