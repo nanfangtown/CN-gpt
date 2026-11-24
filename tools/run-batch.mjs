@@ -63,7 +63,8 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
  *
  * C（2026-11-17）：shared 模式会把 `cd` / `$env` 逐条还原，所以跨命令的上下文不能靠
  * 上一条的副作用，只能靠显式参数。这里把"显式"这条路径收严：键名合法、值转字符串、
- * 数量与长度有上限，非法输入直接拒（而不是悄悄丢掉某个键，让命令在缺变量时假绿）。
+ * 数量与长度有上限，非法输入直接拒（不静默丢键，避免命令在缺变量时假绿）；
+ * 唯一例外是值为 null / undefined —— 视为"不设置"，跳过该键。
  * @param {unknown} value - 调用方给的 env 参数。
  * @returns {Record<string, string>} 可直接交给 spawn 的 env 覆盖项。
  */
@@ -110,15 +111,6 @@ function envWith(base, extra) {
   return { ...base, ...extra }
 }
 
-
-/**
- * Windows 包装脚本：把真实退出码写到文件里再退出 0。
- *
- * 为什么必须这样：`powershell.exe -Command "& node x.mjs"` 在子进程失败时
- * **只会返回 1**（实测 3 → 1），丢掉真实退出码；而 run_batch 的契约是"退出码原样保留"。
- * 命令用 base64 传入，彻底避开引号转义；退出码走独立文件，不污染 stdout。
- * 只含 ASCII，PowerShell 5.1 读取无编码问题。
- */
 /**
  * Windows 包装脚本：把真实退出码写到文件里再退出 0。
  *

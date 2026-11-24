@@ -25,6 +25,16 @@
 # 实测（2026-10-12）：glm-4.6v-flash 持续 429（型号拥挤不可用）；
 # glm-4.6v / glm-4.5v / glm-4v-flash 均可用，且"左红右蓝"读图测试全部答对。
 # 这里保留 glm-4.6v（同族、较新）；flash 恢复后改回下面两处 id 即可。
+#
+# 配置分组速查（按关键词搜索定位，行号会随版本变化）：
+#   密钥 / 端点 / 型号 .. dashscopeApiKey · *Base · *Model · seedanceModel
+#   任务与超时 ........ taskTimeoutMs · videoTimeoutMs · httpTimeoutMs · *Poll*
+#   花费闸门 .......... videoCostLimitCNY · requireSpendConfirm · allowUnpricedSpend
+#   单价表 ............ pricing（整体替换语义；缺档位一律 fail-closed）
+#   落盘 / 缓存 ....... outDir · cacheResults · persistTasks
+#   工具开关 .......... enable* / block*（出片三选一、制图二选一见 MUTEX_GROUPS）
+#   读图 / 委派 ....... reader* · codeAgentPreset · scriptProvider · scriptModel
+#   OCR / 批量 / 闸门 . enableOcrImage · batch* · readerGate*
 # ============================================================================
 
 # ---- 行1：智谱 GLM 视觉路由（key 在 设置 → 模型 → GLM 行 填写）----
@@ -262,7 +272,8 @@
         # 智谱 GLM 基址（只用于 media_report(health) 的只读探活；不花钱）
         zhipuBase: https://open.bigmodel.cn/api/paas/v4
         # ---- MiniMax H3-Image 文生图 / 图片编辑（2026-11-21 加）----
-        # 与 minimax_video 共用 MINIMAX_API_KEY / minimaxBase；与 qwen_draw 并行、不互斥。
+        # 与 minimax_video 共用 MINIMAX_API_KEY / minimaxBase；与 qwen_draw **二选一互斥**
+        # （MUTEX_GROUPS 的 images 组：设置卡打开一个会自动关掉另一个，关掉的从工具表消失）。
         # ⚠ 面积档位官方默认是 4K（最贵档）：这里默认 1K 是有意选择，别删。
         # ⚠ 超时默认 600 s：官方要求客户端 ≥600 s，且该接口不支持幂等 ——
         #    本地早失败不等于服务端不计费（会白花钱，而且拿不到图）。
@@ -553,7 +564,8 @@
         # Host 按声明顺序取第一个（seedance > video_gen > minimax），media_report 会标冲突。
         enableMinimaxVideo: false
         # MiniMax H3-Image 制图（文生图 + 图片编辑）：默认关，接通 MINIMAX_API_KEY 后一键打开。
-        # 与 qwen_draw 并行、不互斥；与出片三选一无关。
+        # 与 qwen_draw 二选一互斥（MUTEX_GROUPS 的 images 组，组内 enableQwenDraw 优先）；
+        # 与出片三选一无关。
         enableMinimaxImage: false
         enableMediaTask: true
         enableMediaReport: true

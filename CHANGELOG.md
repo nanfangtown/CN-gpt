@@ -1,5 +1,41 @@
 # Changelog
 
+格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本遵循 [SemVer](https://semver.org/lang/zh-CN/)。
+本项目在 `0.x` 期间允许有行为变更，破坏性变更会写在 `Changed` 里。
+
+## [Unreleased]
+
+### Added
+
+- **通用读图路由 `readerProvider` / `readerModel`（2026-11-23）**：非空时同时覆盖
+  `readerGlm*` / `readerQwen*` 两对专用字段，可指向 `llm-pi-ai` 里任意已配置的视觉模型；
+  模型 id 必须在 provider 的 `models` 白名单里且声明 `input: [text, image]`。
+  两条通用路由也进入 `blockSubagentNativeVision` 的读图员豁免名单，换模型后不会把读图员一起弄瞎。
+  此前只在 `index.js` 与 `cordis.patch.yml` 里有实现和注释，README / CHANGELOG 均未记录。
+
+### Changed
+
+- **变更日志结构整理（2026-11-24）**：删除误插在 0.3.0 与 0.2.2 之间的重复一级标题
+  「# 变更记录」，把格式说明移回文件顶部；0.4.0 段按 Added / Changed / Fixed / Docs 重排，
+  两个 `### Fixed` 合并为一个。**历史条目内容一字未删，分节内条目顺序不变。**
+
+### Fixed
+
+- **出厂配置注释与实现对齐**：`cordis.patch.yml` 两处仍写 `minimax_draw` 与 `qwen_draw`
+  「并行、不互斥」，而 0.4.0 起已在 `MUTEX_GROUPS.images` 里二选一互斥；改为互斥说明。
+- **安全文档更新**：`SECURITY.md` 支持版本从过时的 `0.1.x` 改到 `0.4.x`；外部厂商补齐
+  MiniMax（海螺 / H3-Image），补充 `mm-minimax` 读取 MiniMax Code OAuth 登录态、续期时原子写回
+  该凭据文件的说明；修正「不向本仓库之外上传任何数据」这一与读图 / 出图链路不符的表述。
+- **文档数字与实测对齐**：README 离线套件断言数 约 400 → 313（2026-11-24 本机实测，含 1 项
+  浅克隆跳过）、`test:batch` 18 → 39 项；N=1 占比统一标注为「多场会话 64%–72%」，消除与另一节
+  30/47 的口径冲突；`tests/README.md` 的 `run.mjs` 148 → 154 项。
+- **源码注释整理**：删除 `tools/run-batch.mjs` 中重复的 Windows 包装脚本 JSDoc 块；
+  `normalizeBatchEnv` 注释补上 `null` / `undefined` 视为「不设置」这一唯一例外，与「非法输入
+  直接拒」的契约说明不再自相矛盾。**以上均只改注释与文档，未改任何运行行为。**
+
+### Docs
+
+- README 新增「通用读图路由」小节；`SECURITY.md` 新增 MiniMax Code OAuth 凭据说明。
 ## [0.4.0] - 2026-11-21
 
 ### Added
@@ -18,6 +54,26 @@
     `minimaxImageTimeoutMs` 配置项、`minimax-image` 健康行与 `minimax_draw` 子代理刹车。
   - 新增回归：`tests/minimax-image.test.mjs`（14 项：规格/请求/部分失败/错误归因/档位/探活）与
     `tests/minimax-image-tool.test.mjs`（10 项：闸门/记账/图生图/越界拒绝/缓存）。
+
+### Changed
+
+- **制图改二选一：`qwen_draw` ⇄ `minimax_draw` 互斥（2026-11-21，用户要求"省 prompt"）**：
+  `enableQwenDraw` / `enableMinimaxImage` 进 `MUTEX_GROUPS` 的 `images` 组（Host 与设置卡两处同构）。
+  理由：两者都是"生成图片"这一件事，schema 分别 696 B / 1088 B、**每轮请求都要发**；
+  同时开着既让模型在两条链路上随机挑，又白付另一份固定成本。互斥后关掉的那个进 deny 名单、
+  从新会话的工具表里消失（约 1 秒内对既有会话生效）——用 qwen 时每请求省 1088 B，用 MiniMax 时省 696 B。
+  - 组内顺序 = 手改配置同时开两个时的胜者：`enableQwenDraw` 在前（出厂默认开着的那个优先，
+    老用户不会因为新增 minimax 而丢掉制图能力）。
+  - 互斥冲突在 `media_report(health)` 里可见（`制图模型同时开启了 … 被压制`），紧凑模式也保留。
+  - 新增回归：Host 侧 `run.mjs`（设置层补写 / 冲突仲裁 / deny 名单 / health 可见）+ 设置卡
+    `_card-mutex.test.mjs`（正反向打开、关闭不牵连）+ 签名语义（被压制者翻转不改签名，省掉每秒重贴）。
+- **激进模式改成"摘工具"而不是"调用时拒"（2026-11-11）**：`blockNativeShell=true` 时，
+  主代理的工具表里**不再出现** `pwsh` / `bash` / `ops_bash`（与读图屏蔽同一条 `restrict` 路径，
+  保存后约 1 秒对既有会话生效）；调用层的 guard 保留作兜底（掩码在重新装配后可能丢失）。
+  起因是 A/B 实测：模型先把 12 条命令写成一整段 PowerShell 包装脚本、再被拒，
+  白付**一次往返 + 6.8k output token**——而写批量脚本正是它想做的事。
+  子代理仍然豁免（`subagent_script` 不受影响）。新增回归：主代理 deny 含三个 shell、
+  子代理 deny 不含、关掉开关后一个 tick 内撤销。
 
 ### Fixed
 
@@ -78,28 +134,6 @@
   - 回归：默认值 = shared、`node -v; exit 9` 自动回退且后续照跑、`process.exit(6)` 不触发回退；
     `runSharedBatch` 改为导出，直接钉住"回退失效时后续标 SKIPPED"这最后一道语义；
   - 工具描述同步压缩（schema 体积仍有 1100 B 预算），"不要为凑数字改测试"压成"结论以 tail 为准"。
-
-### Changed
-
-- **制图改二选一：`qwen_draw` ⇄ `minimax_draw` 互斥（2026-11-21，用户要求"省 prompt"）**：
-  `enableQwenDraw` / `enableMinimaxImage` 进 `MUTEX_GROUPS` 的 `images` 组（Host 与设置卡两处同构）。
-  理由：两者都是"生成图片"这一件事，schema 分别 696 B / 1088 B、**每轮请求都要发**；
-  同时开着既让模型在两条链路上随机挑，又白付另一份固定成本。互斥后关掉的那个进 deny 名单、
-  从新会话的工具表里消失（约 1 秒内对既有会话生效）——用 qwen 时每请求省 1088 B，用 MiniMax 时省 696 B。
-  - 组内顺序 = 手改配置同时开两个时的胜者：`enableQwenDraw` 在前（出厂默认开着的那个优先，
-    老用户不会因为新增 minimax 而丢掉制图能力）。
-  - 互斥冲突在 `media_report(health)` 里可见（`制图模型同时开启了 … 被压制`），紧凑模式也保留。
-  - 新增回归：Host 侧 `run.mjs`（设置层补写 / 冲突仲裁 / deny 名单 / health 可见）+ 设置卡
-    `_card-mutex.test.mjs`（正反向打开、关闭不牵连）+ 签名语义（被压制者翻转不改签名，省掉每秒重贴）。
-- **激进模式改成"摘工具"而不是"调用时拒"（2026-11-11）**：`blockNativeShell=true` 时，
-  主代理的工具表里**不再出现** `pwsh` / `bash` / `ops_bash`（与读图屏蔽同一条 `restrict` 路径，
-  保存后约 1 秒对既有会话生效）；调用层的 guard 保留作兜底（掩码在重新装配后可能丢失）。
-  起因是 A/B 实测：模型先把 12 条命令写成一整段 PowerShell 包装脚本、再被拒，
-  白付**一次往返 + 6.8k output token**——而写批量脚本正是它想做的事。
-  子代理仍然豁免（`subagent_script` 不受影响）。新增回归：主代理 deny 含三个 shell、
-  子代理 deny 不含、关掉开关后一个 tick 内撤销。
-
-### Fixed
 
 - **读图员/窄委派在 DSH 0.2.2-rc.2+ 上一调用就崩 `undefined.id`（2026-11-14）**：
   rc.2 把 `subagents.startActivation()` 的入参从「嵌套 `request`」改成**扁平 spec**
@@ -213,11 +247,6 @@
 ### Tests
 
 - `run.mjs` 142 项、`run-batch` 16 项、全套 13 个文件全绿；新增"提示词由 `enableRunBatch` 控制"、"shell 屏蔽与子代理豁免"等回归断言。
-
-# 变更记录
-
-格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本遵循 [SemVer](https://semver.org/lang/zh-CN/)。
-本项目在 `0.x` 期间允许有行为变更，破坏性变更会写在 `Changed` 里。
 
 ## [0.2.2] - 2026-11-01
 

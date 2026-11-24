@@ -134,7 +134,7 @@ minimax_video(prompt="镜头缓慢推进，雨滴打在窗上", duration=6, reso
 - **退出码原样保留**：Windows 下用包装脚本把真实退出码写出来（`powershell -Command` 会把 3 压成 1）；
 - **只回摘要**：每条命令都带一行输出尾巴（≤ 200 字符，"通过 13，失败 0"这类结论文本一次就能看到）；**只有全部非空输出行都进了尾巴**时才标注「完整输出，无需再读日志」（2026-11-11 修：原先按输出体积判，5 行短输出被抽成 2 行也标"完整"，实测让模型误以为目录只有 2 个条目、反而多花一步核对），避免模型为"逐字核对"再读一遍日志；失败另带摘要（≤ 600 字符），完整输出落 `gen/batch/<时间戳>/<序号>-<命令>.log`；
 - **误批早停（默认关）**：`batchStopOnError` 默认 false——一条失败不影响后面的，一批能一次看全所有失败。设 true 之后一条失败即停、后续标 `SKIPPED`（命令列错、路径/环境不对时不必等整批跑完）；调用时也可以传 `stop_on_error: true` 单次开启。并行不继承这个默认（已经起跑的命令停不下来）；
-- **单命令提示（L2，默认关）**：`batchNudgeSingle` 默认 false。打开后，一批只有 1 条命令时会在结果末尾附一行提示（`batchNudgeLimit` 每会话默认 3 次）。**默认关的理由**：实测 72% 的调用是 N=1，而"跑一条、看一次"本身就是主流工作流——拿它当"该批没批"的信号，多数时候是在批评正确动作；
+- **单命令提示（L2，默认关）**：`batchNudgeSingle` 默认 false。打开后，一批只有 1 条命令时会在结果末尾附一行提示（`batchNudgeLimit` 每会话默认 3 次）。**默认关的理由**：多场会话实测 64%–72% 的调用是 N=1，而"跑一条、看一次"本身就是主流工作流——拿它当"该批没批"的信号，多数时候是在批评正确动作；
 - **批次索引（L3）**：每次调用往 `gen/batch/index.jsonl` 追加一行（条数 / 模式 / 通过失败 / 耗时），`media_report(health)` 里有「批量执行（今日）」一行，`verbose` 下再给批大小直方图。判断该不该开激进模式、提示词有没有效，看这个而不是感觉；
 - **超时杀进程树**：`batchCommandTimeoutMs`（默认 60 s）到点用 `taskkill /T` 连孙进程一起收；
 - **上限点名拒绝**：`batchMaxCommands`（默认 20）超过就报错，不静默截断。
@@ -332,6 +332,14 @@ MiniMax 的计费单位是**条**（分辨率 × 时长），与另外两家的"
 
 `blockSubagentNativeVision` 还要求 `readerMaxDepth >= 2`，否则被委派的子代理调不动读图员。改完需要完整重启。
 
+### 通用读图路由（`readerProvider` / `readerModel`，2026-11-23）
+
+这两个字段非空时会**同时覆盖** `readerGlm*` / `readerQwen*` 两对专用路由，可指向
+`llm-pi-ai` 里任意已配置的视觉模型；模型 id 必须在该 provider 的 `models` 白名单里且声明
+`input: [text, image]`，否则 spawn 会报 `has no configured model`。两者留空时完全保持旧行为。
+它们也会进入 `blockSubagentNativeVision` 的读图员豁免名单，所以换模型后不会把读图员一起弄瞎。
+配置卡与 `cordis.patch.yml` 出厂模板里都有这两个键。
+
 ## 纯文字截图：本地 OCR（`ocr_image`）
 
 读图员是"视觉理解"通道，但日常读图的大头其实是**纯文字截图**：报错、日志、代码、表格、
@@ -444,8 +452,8 @@ MiniMax 的计费单位是**条**（分辨率 × 时长），与另外两家的"
 
 ```bash
 npm install          # 只装一个 devDependency（schemastery）
-npm test             # 离线套件：16 个文件 / 约 400 项断言；不需要 DSH、不需要 key、不联网、不花钱
-npm run test:batch   # 只跑 run_batch 的 18 项（串行/并行、退出码、超时、脚本入口、环境隔离）
+npm test             # 离线套件：16 个文件 / 313 项断言（2026-11-24 本机实测，含 1 项浅克隆跳过）；不需要 DSH、不需要 key、不联网、不花钱
+npm run test:batch   # 只跑 run_batch 的 39 项（串行/并行、退出码、超时、脚本入口、环境隔离、shared 模式）
 npm run test:delegation  # 只跑窄委派的模型路线可见性（8 项：预检通过/失败/关闭/写漏/未预检）
 npm run test:docs    # 文档相对链接检查
 ```
