@@ -259,6 +259,16 @@
         # MiniMax（海螺）：国内 .cn / 国际 .io 的 key 不通用；旧域名 api.minimaxi.com 仍可用。
         minimaxBase: https://api.minimax.cn
         minimaxModel: MiniMax-Hailuo-02
+        # 智谱 GLM 基址（只用于 media_report(health) 的只读探活；不花钱）
+        zhipuBase: https://open.bigmodel.cn/api/paas/v4
+        # ---- MiniMax H3-Image 文生图 / 图片编辑（2026-11-21 加）----
+        # 与 minimax_video 共用 MINIMAX_API_KEY / minimaxBase；与 qwen_draw 并行、不互斥。
+        # ⚠ 面积档位官方默认是 4K（最贵档）：这里默认 1K 是有意选择，别删。
+        # ⚠ 超时默认 600 s：官方要求客户端 ≥600 s，且该接口不支持幂等 ——
+        #    本地早失败不等于服务端不计费（会白花钱，而且拿不到图）。
+        minimaxImageModel: MiniMax-H3-Image
+        minimaxImageArea: 1K
+        minimaxImageTimeoutMs: 600000
         # 任务层（这几个"等待上限"是同步阻塞的，按"够用但早失败"定：超时可用 media_task 找回）
         taskTimeoutMs: 180000
         videoTimeoutMs: 900000
@@ -316,6 +326,35 @@
             currency: CNY
             asOf: 2026-10-13
             source: https://help.aliyun.com/zh/model-studio/qwen-image-3-0
+          # ---- MiniMax H3-Image（2026-11-21）：按张计价，档位 = 模式 × 面积 ----
+          # 官方按 token 计价（15/10/25 元每百万），这里是官方「单张费用参考」；
+          # 编辑取「3 张参考图」那一档（最贵），4K 取不打折价 —— 闸门宁高不低。
+          MiniMax-H3-Image:
+            unit: image
+            unitPrice: 0.1531
+            currency: CNY
+            asOf: 2026-11-21
+            tiers:
+              - { mode: text, area: 1K, unitPrice: 0.143 }
+              - { mode: text, area: 2K, unitPrice: 0.1531 }
+              - { mode: text, area: 4K, unitPrice: 0.4522 }
+              - { mode: edit, area: 1K, unitPrice: 0.2346 }
+              - { mode: edit, area: 2K, unitPrice: 0.2746 }
+              - { mode: edit, area: 4K, unitPrice: 0.5211 }
+            source: 'https://platform.minimax.cn/docs/pricing/overview.md#models/image（4K 限时 5 折，这里取不打折价；编辑取 3 张参考图档）'
+          MiniMax-H3-Image-Highspeed:
+            unit: image
+            unitPrice: 0.238
+            currency: CNY
+            asOf: 2026-11-21
+            tiers:
+              - { mode: text, area: 1K, unitPrice: 0.2319 }
+              - { mode: text, area: 2K, unitPrice: 0.238 }
+              - { mode: text, area: 4K, unitPrice: 0.855 }
+              - { mode: edit, area: 1K, unitPrice: 0.3982 }
+              - { mode: edit, area: 2K, unitPrice: 0.4003 }
+              - { mode: edit, area: 4K, unitPrice: 1.0146 }
+            source: 'https://platform.minimax.cn/docs/pricing/overview.md#models/image（4K 限时 5 折，这里取不打折价；编辑取 3 张参考图档）'
           doubao-seedance-2-5-260628:
             unit: second
             unitPrice: 1.519
@@ -464,6 +503,12 @@
         readerQwenModel: qwen3.8-max
         readerAgentPreset: mm-reader
         readerMaxDepth: 2
+        # 读图员思考档位：空 = 沿用模型 / 父 agent 默认。设 off 可去掉读图时的
+        # 思考开销（宿主 dsh-llm-pi-ai 的 AgentOptions 支持 reasoningEffort）。
+        readerReasoningEffort: ''
+        # 通用读图路由：非空时覆盖上面两对专用字段，可指向任意已配置的视觉模型。
+        readerProvider: ''
+        readerModel: ''
         # 窄委派（2026-10-18：同样由插件自己注册，preset 在调用时才解析）。
         # 工具面由 preset-mm-code / preset-mm-research 决定；这里只管 preset 与深度。
         codeAgentPreset: mm-code
@@ -507,6 +552,9 @@
         # 与上面两个出片开关互斥：设置卡打开一个会自动关闭另外两个；手改同时为 true 时
         # Host 按声明顺序取第一个（seedance > video_gen > minimax），media_report 会标冲突。
         enableMinimaxVideo: false
+        # MiniMax H3-Image 制图（文生图 + 图片编辑）：默认关，接通 MINIMAX_API_KEY 后一键打开。
+        # 与 qwen_draw 并行、不互斥；与出片三选一无关。
+        enableMinimaxImage: false
         enableMediaTask: true
         enableMediaReport: true
         # 批量执行（2026-11-10）：多条命令合成一次调用。成本大头是步数（每步重发上下文），

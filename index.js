@@ -25,7 +25,10 @@ import { dashscopeImageAdapter } from './tasks/adapters/dashscope-image.mjs'
 import { arkVideoAdapter } from './tasks/adapters/ark-video.mjs'
 import { dashscopeVideoAdapter } from './tasks/adapters/dashscope-video.mjs'
 import { minimaxVideoAdapter, MINIMAX_DEFAULT_BASE, MINIMAX_DEFAULT_MODEL } from './tasks/adapters/minimax-video.mjs'
+import { minimaxImageAdapter, MINIMAX_IMAGE_DEFAULT_MODEL } from './tasks/adapters/minimax-image.mjs'
+import { zhipuVisionAdapter, ZHIPU_DEFAULT_BASE } from './tasks/adapters/zhipu-vision.mjs'
 import { createQwenDrawTool } from './tools/qwen-draw.mjs'
+import { createMinimaxDrawTool } from './tools/minimax-draw.mjs'
 import { createSeedanceVideoTool } from './tools/seedance-video.mjs'
 import { createVideoGenTool } from './tools/video-gen.mjs'
 import { createMinimaxVideoTool } from './tools/minimax-video.mjs'
@@ -217,7 +220,41 @@ export const Config = z.object({
     .string()
     .default(MINIMAX_DEFAULT_BASE)
     .volatile()
-    .description('MiniMax API 基址：国内 https://api.minimax.cn，国际 https://api.minimax.io（key 必须与区域匹配，混用会报 Invalid API key）。'),
+    .description('MiniMax API 基址：国内 https://api.minimax.cn，国际 https://api.minimax.io（key 必须与区域匹配，混用会报 Invalid API key）。minimax_draw 与 minimax_video 共用这个基址。'),
+  zhipuBase: z
+    .string()
+    .default(ZHIPU_DEFAULT_BASE)
+    .volatile()
+    .description('智谱 GLM 基址，只用于 media_report(health) 的只读探活（GET /models）。应与 设置 → 模型 → GLM 行的 baseURL 一致；探针不花钱、不发对话请求。'),
+  // ---- MiniMax H3-Image（2026-11-21 加）：文生图 / 图片编辑 ----
+  //
+  // 与 qwen_draw 的关系：**制图二选一**（MUTEX_GROUPS 的 images 组）。
+  // 理由见 core/tool-kit.mjs：同一件事、各约 0.7–1.1 KB schema、每轮都要发；
+  // 同时开着既让模型随机挑，又白付另一份固定成本。关掉的那个进 deny 名单，从新会话工具表消失。
+  // 与 minimax_video 共用 MINIMAX_API_KEY 与 minimaxBase。
+  //
+  // ⚠ 三个默认值都是"不让厂商默认拖着走"：
+  //   - 模型默认标准版（极速版同参数、更贵）；
+  //   - area 默认 1K —— 官方 `area` 默认是 **4K**（最贵档），不显式给就等于"不填按最贵下单"；
+  //   - 超时默认 600 s —— 官方要求客户端超时 ≥ 600 s，且接口**不支持幂等**：
+  //     本地早失败不等于服务端不计费，只会白花钱。
+  minimaxImageModel: z
+    .string()
+    .default(MINIMAX_IMAGE_DEFAULT_MODEL)
+    .volatile()
+    .description('minimax_draw 的模型 id：MiniMax-H3-Image（标准版，默认）或 MiniMax-H3-Image-Highspeed（极速版，同参数、更贵）。⚠ 换 id 必须同步存在于单价表，否则闸门 fail-closed。'),
+  minimaxImageArea: z
+    .string()
+    .default('1K')
+    .volatile()
+    .description('minimax_draw 的默认面积档位：1K / 2K / 4K。⚠ 官方默认是 4K（最贵档），这里默认 1K 是有意选择；调用方可用 area 参数覆盖。'),
+  minimaxImageTimeoutMs: z
+    .number()
+    .step(1000)
+    .min(1000)
+    .default(600000)
+    .volatile()
+    .description('minimax_draw 的同步等待上限（毫秒，默认 600000 = 10 分钟，官方建议 ≥600 s）。这条链路不支持幂等：本地超时不取消远端生成、也不退费，所以别调小。'),
   minimaxModel: z
     .string()
     .default(MINIMAX_DEFAULT_MODEL)
@@ -377,6 +414,11 @@ export const Config = z.object({
   readerQwenModel: z.string().default('qwen3.8-max').volatile().description('ask_qwen 使用的模型 id（必须在 providers.qwen-vl.models 白名单里）。'),
   readerAgentPreset: z.string().default('mm-reader').volatile().description('读图员子代理的 agent preset id（persona + 只有 read_image 的工具面）。'),
   readerMaxDepth: z.number().step(1).min(1).max(9).default(2).volatile().description('读图员的绝对委派深度上限，默认 2（= 已委派的子代理也能调它，否则会报 "subagent depth 2 exceeds maxDepth 1"）。'),
+  readerReasoningEffort: z.string().default('').volatile().description('读图员的思考档位（空 = 沿用模型默认；须填目标模型官方支持的档位，如 GLM-5.3-Flash 的 low/high/max、Qwen4-Max 的 low/high/xhigh）。'),
+  // ---- 通用读图路由（2026-11-23）：让配置卡能指向 llm-pi-ai 里任意视觉模型 ----
+  // 非空时同时覆盖 ask_glm / ask_qwen 两条专用路由；留空则完全保持旧行为。
+  readerProvider: z.string().default('').volatile().description('通用读图路由 provider id（空 = 用 readerGlmProvider / readerQwenProvider；非空时覆盖两条读图工具，可填 llm-pi-ai 里任意 provider）。'),
+  readerModel: z.string().default('').volatile().description('通用读图路由 model id（空 = 用 readerGlmModel / readerQwenModel；非空时覆盖两条读图工具，模型必须在该 provider 的 models 白名单且支持 image）。'),
 
   // ---- 窄委派（2026-10-18：工具改由插件自己注册，见 tools/delegation.mjs）----
   //
@@ -394,7 +436,7 @@ export const Config = z.object({
   scriptModel: z.string().default('MiniMax-M3.1-Flash').volatile().description('subagent_script 优先使用的 model id。'),
   scriptReasoningEffort: z.string().default('').volatile().description('subagent_script 的思考档位（空 = 模型默认；MiniMax-M3.1-Flash 支持 default/low/medium/high/xhigh/max）。'),
 
-  enableQwenDraw: z.boolean().default(true).volatile().description('允许主 agent 使用 qwen_draw（Qwen 制图）。'),
+  enableQwenDraw: z.boolean().default(true).volatile().description('允许主 agent 使用 qwen_draw（Qwen 制图）。与 minimax_draw **互斥**：同一时刻只允许一条制图链路开启（关掉的那个从新会话的工具表里消失，省下它那份每请求 schema）。出厂默认开这一条。'),
   blockMainAgentNativeVision: z
     .boolean()
     .default(true)
@@ -447,6 +489,11 @@ export const Config = z.object({
     .default(false)
     .volatile()
     .description('允许主 agent 使用 minimax_video（MiniMax 海螺出片）。默认关闭：需要独立的 MINIMAX_API_KEY（国内 .cn / 国际 .io 不通用）。与 seedance_video / video_gen 互斥：同一时刻只允许一个出片工具开启。'),
+  enableMinimaxImage: z
+    .boolean()
+    .default(false)
+    .volatile()
+    .description('允许主 agent 使用 minimax_draw（MiniMax H3-Image 文生图 / 图片编辑）。默认关闭：需要 MINIMAX_API_KEY。与 qwen_draw **互斥**：同一时刻只允许一条制图链路开启（打开它就会自动关闭 qwen_draw，反之亦然）；与出片三选一无关。'),
   enableMediaTask: z.boolean().default(true).volatile().description('允许主 agent 使用 media_task（异步任务重查/补下载）。'),
   enableMediaReport: z.boolean().default(true).volatile().description('允许主 agent 使用 media_report（成本估算/链路健康）。'),
 
@@ -534,7 +581,7 @@ export function apply(ctx, config) {
       return value !== null && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value
     },
   })
-  const adapters = [dashscopeImageAdapter, arkVideoAdapter, dashscopeVideoAdapter, minimaxVideoAdapter]
+  const adapters = [dashscopeImageAdapter, arkVideoAdapter, dashscopeVideoAdapter, minimaxVideoAdapter, minimaxImageAdapter, zhipuVisionAdapter]
   const manager = createTaskManager({ adapters, config: liveConfig, logger })
   // 注意：必须传 liveConfig（解包过的 Proxy），不能传原始 config。
   // volatile 字段在 config 上是**引用对象**（`{ get() }`），keys.mjs 里用的是
@@ -758,21 +805,27 @@ export function apply(ctx, config) {
    *
    * 认不出任何路由 → 放弃对子代理的原生读图屏蔽（fail-open，绝不把读图员弄瞎）。
    */
-  const configuredReaderRoutes = () => [
-    {
-      id: 'ask_glm',
-      provider: liveConfig.readerGlmProvider,
-      model: liveConfig.readerGlmModel,
-      maxDepth: liveConfig.readerMaxDepth,
-    },
-    {
-      id: 'ask_qwen',
-      provider: liveConfig.readerQwenProvider,
-      model: liveConfig.readerQwenModel,
-      maxDepth: liveConfig.readerMaxDepth,
-    },
-  ].filter((route) => (typeof route.provider === 'string' && route.provider.length > 0)
-    || (typeof route.model === 'string' && route.model.length > 0))
+  const configuredReaderRoutes = () => {
+    // 通用路由必须一起进白名单：否则用户把读图员换到别的模型后，
+    // blockSubagentNativeVision 会认不出它、把读图员一起弄瞎。
+    const globalProvider = typeof liveConfig.readerProvider === 'string' ? liveConfig.readerProvider.trim() : ''
+    const globalModel = typeof liveConfig.readerModel === 'string' ? liveConfig.readerModel.trim() : ''
+    return [
+      {
+        id: 'ask_glm',
+        provider: globalProvider || liveConfig.readerGlmProvider,
+        model: globalModel || liveConfig.readerGlmModel,
+        maxDepth: liveConfig.readerMaxDepth,
+      },
+      {
+        id: 'ask_qwen',
+        provider: globalProvider || liveConfig.readerQwenProvider,
+        model: globalModel || liveConfig.readerQwenModel,
+        maxDepth: liveConfig.readerMaxDepth,
+      },
+    ].filter((route) => (typeof route.provider === 'string' && route.provider.length > 0)
+      || (typeof route.model === 'string' && route.model.length > 0))
+  }
 
   let readerRoutes
   try {
@@ -1240,7 +1293,7 @@ export function apply(ctx, config) {
   // ⚠ 2026-10-17 复查修：新加的 `video_gen` 一开始**漏在这张表外面** ——
   // 打开刹车后子代理仍能出片，而它单次最高 ¥10（4K/1080P），比制图贵一个量级。
   // 新增付费工具时这张表必须同步，否则"刹车"只刹住了便宜的那个。
-  const SPEND_TOOLS = ['qwen_draw', 'seedance_video', 'video_gen', 'minimax_video']
+  const SPEND_TOOLS = ['qwen_draw', 'minimax_draw', 'seedance_video', 'video_gen', 'minimax_video']
   /** 只出片、不出图的那一档（分级刹车：图 ¥0.18/张，片 ¥1.8–10/次）。 */
   const VIDEO_SPEND_TOOLS = ['seedance_video', 'video_gen', 'minimax_video']
   ctx.tools.guard((exec) => {
@@ -1513,6 +1566,8 @@ export function apply(ctx, config) {
     sessionTreeSnapshot,
   }
   ctx.tools.register(createQwenDrawTool(deps))
+  // MiniMax H3-Image（2026-11-21）：文生图 + 图片编辑，与 qwen_draw 二选一、默认关。
+  ctx.tools.register(createMinimaxDrawTool(deps))
   ctx.tools.register(createSeedanceVideoTool(deps))
   ctx.tools.register(createVideoGenTool(deps))
   ctx.tools.register(createMinimaxVideoTool(deps))
@@ -1640,5 +1695,5 @@ export function apply(ctx, config) {
     }
   }
 
-  logger?.info?.('[mm-models] 已注册 ask_glm / ask_qwen / ocr_image / qwen_draw / seedance_video / video_gen / minimax_video / media_task / media_report / run_batch（两个读图员互斥；三个出片工具互斥；ocr_image 与读图员互补）')
+  logger?.info?.('[mm-models] 已注册 ask_glm / ask_qwen / ocr_image / qwen_draw / minimax_draw / seedance_video / video_gen / minimax_video / media_task / media_report / run_batch（读图员二选一；制图二选一；出片三选一；ocr_image 与读图员互补）')
 }

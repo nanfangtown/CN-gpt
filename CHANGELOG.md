@@ -1,8 +1,34 @@
 # Changelog
 
-## [未发布]
+## [0.4.0] - 2026-11-21
 
 ### Added
+
+- **MiniMax H3-Image 制图（`minimax_draw`，2026-11-21）**：文生图 + 图生图（官方"图片编辑"，1–16 张参考图）。
+  - 协议：`POST {minimaxBase}/v1/images/generations` 与 `/v1/images/edits`；**同步**返回，无 task_id；
+    `modeFor()` 恒为 `sync`，所以 `media_task` 会如实回答"没有可重查的远端任务"而不是报 404。
+  - 三条硬约束写进字段常量（`core/fields.mjs` 的 `MINIMAX_IMAGE_FIELDS`）并有回归：
+    ① 部分失败仍是 200（`data[].error`），记账按 `usage.generated_images`，不按请求的 `n`；
+    ② 不支持幂等 → 提交超时用新的 `minimaxImageTimeoutMs`（默认 600 s，官方建议），不用通用 60 s；
+    ③ `size` 与 `area` 互斥，且 `area` 官方默认是 4K（最贵档）→ 工具层显式默认 1K。
+  - 图生图没有 `size` 时按参考图尺寸（夹进官方 655,360–20,000,000 px / ≤3:1），避免服务端默认 4K。
+  - 计价：单价表用官方「单张费用参考」做 `mode × area` 档位；4K 取**不打折**价（宁高不低），
+    缺档位一律 fail-closed；`tools/minimax-draw.mjs` 复用同一道花费闸门、出图缓存与账本。
+  - 工具开关 `enableMinimaxImage`（默认关）、`minimaxImageModel` / `minimaxImageArea` /
+    `minimaxImageTimeoutMs` 配置项、`minimax-image` 健康行与 `minimax_draw` 子代理刹车。
+  - 新增回归：`tests/minimax-image.test.mjs`（14 项：规格/请求/部分失败/错误归因/档位/探活）与
+    `tests/minimax-image-tool.test.mjs`（10 项：闸门/记账/图生图/越界拒绝/缓存）。
+
+### Fixed
+
+- **健康报告：`ask_glm` 不再永远"未探测"（P2）**：新增只读探针 `tasks/adapters/zhipu-vision.mjs`
+  （`GET {zhipuBase}/models`，不花钱、不发对话请求）。200 时还会核对 `readerGlmModel` 是否在清单里 ——
+  不在的话读图员 spawn 必失败，提前点名比等用户真正读图再报错省一轮。
+  新增配置 `zhipuBase`（只用于探活，应与 设置 → 模型 → GLM 行的 baseURL 一致）。
+- **成本报表：未计价不再只是一句括号注（P2）**：合计行给出**未计价的调用次数**；
+  未计价调用过半时单独出一段告警，并说清"会话累计上限同样只按已计价记录校验"；
+  未计价型号列表带上次数，便于判断先补哪个价。算术不变（已计价的金额一分不吞）。
+  现场：读图模型 glm-4.6v / qwen3-vl-plus / qwen3.8-max 长期未计价，而读图是默认主路径。
 
 - **`run_batch` 显式 `env` 注入 + 描述改成真契约（2026-11-17，方案 C）**：
   shared 模式本来就"逐条还原 `cd` / `$env`"，但工具描述只说"默认共用一个 shell"——
@@ -55,6 +81,16 @@
 
 ### Changed
 
+- **制图改二选一：`qwen_draw` ⇄ `minimax_draw` 互斥（2026-11-21，用户要求"省 prompt"）**：
+  `enableQwenDraw` / `enableMinimaxImage` 进 `MUTEX_GROUPS` 的 `images` 组（Host 与设置卡两处同构）。
+  理由：两者都是"生成图片"这一件事，schema 分别 696 B / 1088 B、**每轮请求都要发**；
+  同时开着既让模型在两条链路上随机挑，又白付另一份固定成本。互斥后关掉的那个进 deny 名单、
+  从新会话的工具表里消失（约 1 秒内对既有会话生效）——用 qwen 时每请求省 1088 B，用 MiniMax 时省 696 B。
+  - 组内顺序 = 手改配置同时开两个时的胜者：`enableQwenDraw` 在前（出厂默认开着的那个优先，
+    老用户不会因为新增 minimax 而丢掉制图能力）。
+  - 互斥冲突在 `media_report(health)` 里可见（`制图模型同时开启了 … 被压制`），紧凑模式也保留。
+  - 新增回归：Host 侧 `run.mjs`（设置层补写 / 冲突仲裁 / deny 名单 / health 可见）+ 设置卡
+    `_card-mutex.test.mjs`（正反向打开、关闭不牵连）+ 签名语义（被压制者翻转不改签名，省掉每秒重贴）。
 - **激进模式改成"摘工具"而不是"调用时拒"（2026-11-11）**：`blockNativeShell=true` 时，
   主代理的工具表里**不再出现** `pwsh` / `bash` / `ops_bash`（与读图屏蔽同一条 `restrict` 路径，
   保存后约 1 秒对既有会话生效）；调用层的 guard 保留作兜底（掩码在重新装配后可能丢失）。

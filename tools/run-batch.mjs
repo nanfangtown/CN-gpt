@@ -771,7 +771,7 @@ export function createRunBatchTool(deps) {
         description:
           '每条命令都注入的显式环境变量（不继承上一条，不泄漏回宿主）。'
           + '键名 [A-Za-z_][A-Za-z0-9_]*，≤64 项。',
-        additionalProperties: { type: 'string' },
+        additionalProperties: true,
       },
       stop_on_error: {
         type: 'boolean',

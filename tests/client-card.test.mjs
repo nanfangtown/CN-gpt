@@ -312,15 +312,16 @@ const walk = (node) => {
 }
 walk(tree)
 const switches = flat.filter((node) => node.type === 'button' && node.props?.role === 'switch')
-// 26 个布尔开关：10 个 enable*（2026-10-30 ocr_image；2026-11-10 run_batch）
+// 27 个布尔开关：11 个 enable*（2026-10-30 ocr_image；2026-11-10 run_batch；
+// 2026-11-21 minimax_draw = H3-Image 制图）
 // + blockMainAgentNativeVision + blockSubagentNativeVision
 // + blockSubagentVideoSpend + blockNativeShell（2026-11-10 激进模式）
 // + attachResultImages + cacheResults + persistTasks + requireSpendConfirm + 3 个 misc
 // + 3 个读图闸门开关（2026-11-01：readerGate / readerGateImageHint / readerGateForceEvidence）
 // + autoOcrOnImage（2026-11-01：有图自动跑本地 OCR）
 // + readerBatchMode（2026-11-01：批量读图，强制数组入参）
-assert.equal(switches.length, 26, 'twenty-six boolean switches rendered')
-assert.equal(switches.filter((node) => String(node.props['aria-label']).includes('field.enable')).length, 10, 'ten enable* tool switches (+ ocr_image, + run_batch)')
+assert.equal(switches.length, 27, 'twenty-seven boolean switches rendered')
+assert.equal(switches.filter((node) => String(node.props['aria-label']).includes('field.enable')).length, 11, 'eleven enable* tool switches (+ ocr_image, + run_batch, + minimax_draw)')
 assert.ok(
   switches.some((node) => String(node.props['aria-label']).includes('field.enableAskQwen')),
   'ask_qwen switch rendered next to ask_glm',

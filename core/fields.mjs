@@ -214,6 +214,52 @@ export const MINIMAX_FIELDS = Object.freeze({
 })
 
 /**
+ * MiniMax H3-Image 文生图 / 图片编辑 —— 2026-11-21 按官方文档落地。
+ *
+ * 协议形态（与 `/v1/video_generation` 完全不同，别照抄）：
+ *   POST {base}/v1/images/generations   body: { model, prompt, n, size|area, output_format, response_format }
+ *   POST {base}/v1/images/edits         body: { model, prompt, images:[{ image_url }], ... }
+ *   两者都是**同步**接口：HTTP 200 + data[] 就是结果，没有 task_id、没有轮询。
+ *
+ * ⚠ 三条硬约束（都写进了回归）：
+ *   1. **部分失败仍是 200**：`data` 恒为 n 项，成功项有 `url`，失败项只有 `error`
+ *      （内容安全是 1027）；`usage.generated_images` 是真正成功的张数 ——
+ *      只对成功的计费，所以记账必须用它，不能按请求的 n。
+ *   2. **不支持幂等**：请求发出后即使客户端超时，服务端仍会生成并计费；重试 = 重新下单。
+ *      官方要求客户端超时 ≥ 600 秒。所以这条链路用 `minimaxImageTimeoutMs`（默认 600 s），
+ *      而不是通用的 `httpTimeoutMs`（60 s）—— 早失败在这里不是省钱，是白花钱。
+ *   3. `size`（`宽x高`）与 `aspect_ratio` / `area` **互斥**：同时传直接 400。
+ *      且 `area` 服务端默认是 **4K**（最贵档）：工具层必须显式给默认值，不能靠厂商默认。
+ */
+export const MINIMAX_IMAGE_FIELDS = Object.freeze({
+  /** 文生图。 */
+  generatePath: '/v1/images/generations',
+  /** 图片编辑（1–16 张参考图）。 */
+  editPath: '/v1/images/edits',
+  bodyModel: 'model',
+  bodyPrompt: 'prompt',
+  bodyN: 'n',
+  bodySize: 'size',
+  bodyArea: 'area',
+  bodyAspectRatio: 'aspect_ratio',
+  bodyImages: 'images',
+  bodyImageUrl: 'image_url',
+  bodyOutputFormat: 'output_format',
+  bodyResponseFormat: 'response_format',
+  bodyDisableEnhance: 'disable_prompt_enhanced',
+  /** 响应：data[] 与其中每项/用量。 */
+  dataPaths: ['data'],
+  urlPath: 'url',
+  b64Path: 'b64_json',
+  sizePath: 'size',
+  revisedPromptPath: 'revised_prompt',
+  errorPath: 'error',
+  errorMessagePaths: ['error.message', 'message'],
+  usageCountPaths: ['usage.generated_images'],
+  requestIdPaths: ['request_id'],
+})
+
+/**
  * 把厂商 rawStatus 映射到归一化状态。
  * @param {object} spec - DASHSCOPE_FIELDS / ARK_FIELDS / MINIMAX_FIELDS。
  * @param {unknown} rawStatus - 厂商状态字符串。

@@ -199,6 +199,10 @@ export const TOOL_SWITCHES = Object.freeze([
   // 默认开：装上就能对纯文字截图省掉一次子代理往返。
   Object.freeze({ tool: 'ocr_image', field: 'enableOcrImage', capability: 'ocr_image', label: '本地 OCR 抄字' }),
   Object.freeze({ tool: 'qwen_draw', field: 'enableQwenDraw', capability: 'qwen_draw', label: 'Qwen 制图' }),
+  // MiniMax H3-Image（2026-11-21 加）：文生图 + 图片编辑，按张计费。
+  // 默认关：与 qwen_draw 不同，它需要 MiniMax key 与一个"未在本机实跑确证过"的模型 id，
+  // 装上就开着会让默认工作区多一条付费路径。接通后一键打开。
+  Object.freeze({ tool: 'minimax_draw', field: 'enableMinimaxImage', capability: 'minimax_image', label: 'MiniMax H3 制图' }),
   Object.freeze({ tool: 'seedance_video', field: 'enableSeedanceVideo', capability: 'seedance_video', label: 'Seedance 出片' }),
   Object.freeze({ tool: 'video_gen', field: 'enableVideoGen', capability: 'dashscope_video', label: '百炼出片（可灵/万相）' }),
   Object.freeze({ tool: 'minimax_video', field: 'enableMinimaxVideo', capability: 'minimax_video', label: 'MiniMax 出片' }),
@@ -210,16 +214,27 @@ export const TOOL_SWITCHES = Object.freeze([
 /**
  * 互斥开关组：同一时刻只允许组内一个为真（规划 [2.2]）。
  *
- * 两组语义不同：
+ * 三组语义各自不同：
  *   - readers：读图子代理二选一（GLM / Qwen-VL）。同时挂两个只会让主模型无所适从。
+ *   - images：**制图二选一**（qwen_draw / minimax_draw，2026-11-21 按用户要求加）。
+ *     两个工具都是"生成图片"这一件事，schema 各约 700 B / 1.1 KB，而每轮请求都要发；
+ *     同时开着既让模型在两条链路上随机挑，又白付另一份 schema。互斥后关掉的那个
+ *     会进 deny 名单、从新会话的工具表里消失 —— 省的是**每请求固定成本**。
  *   - video：出片模型三选一（Seedance / 百炼 / MiniMax）。三家协议、密钥、计费都不同，
  *     同时开着会让“用哪个”变成随机，也容易让用户误以为三笔都能跑。
  *
  * 组内顺序 = **手改配置同时开多个时的优先级**（第一个生效，其余被压制）。
  * 设置卡会做“打开一个自动关闭其它”，正常情况下不会走到冲突分支。
+ *
+ * ⚠ 判据：互斥只用于"同一件事、模型分不清、选错有代价"的开关。制图两条链路的
+ *   画质/风格确实不同，但用户在配置层只能要一个 —— 想要另一个时点开它即可
+ *   （代价是切换后 qwen_draw 不再在表里，模型不会误用）。
  */
 export const MUTEX_GROUPS = Object.freeze([
   Object.freeze({ id: 'readers', label: '读图子代理', fields: Object.freeze(['enableAskGlm', 'enableAskQwen']) }),
+  // 顺序 = 手改配置同时开两个时的胜者：qwen_draw 是出厂默认开着的那个，让它优先，
+  // 这样"什么都不改"的老用户不会因为新增 minimax 而丢掉制图能力。
+  Object.freeze({ id: 'images', label: '制图模型', fields: Object.freeze(['enableQwenDraw', 'enableMinimaxImage']) }),
   Object.freeze({
     id: 'video',
     label: '生视频模型',
@@ -228,7 +243,7 @@ export const MUTEX_GROUPS = Object.freeze([
 ])
 
 /** 默认关（未接通或需要用户显式选择）的工具。 */
-const DEFAULT_OFF = new Set(['seedance_video', 'video_gen', 'minimax_video', 'ask_glm', 'ask_qwen'])
+const DEFAULT_OFF = new Set(['seedance_video', 'video_gen', 'minimax_video', 'minimax_draw', 'ask_glm', 'ask_qwen'])
 
 /**
  * 创建开关读取器（config 是 volatile Proxy，每次读取都是当前值）。

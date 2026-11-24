@@ -34,7 +34,7 @@ import { dashscopeImageAdapter } from '../tasks/adapters/dashscope-image.mjs'
 import { arkVideoAdapter } from '../tasks/adapters/ark-video.mjs'
 import { CODES, MediaError, classifyHttpError, fixedMessage, isPreSendError } from '../core/errors.mjs'
 import { cacheKeyOf } from '../core/cache.mjs'
-import { DEFAULT_PRICING, isPriced, pricingOf, pricingWarnings, renderCostReport, zeroPriceOverrides } from '../core/cost.mjs'
+import { DEFAULT_PRICING, isPriced, pricingOf, pricingWarnings, renderCostReport, renderHealthReport, zeroPriceOverrides } from '../core/cost.mjs'
 import { authorizeSpend, estimateSpend } from '../core/spend-guard.mjs'
 import { createCallBudget, createSwitches, normalizeSettingsOps, accountUnretrievedSpend, sessionSpentOrThrow } from '../core/tool-kit.mjs'
 import { READER_FORBIDDEN_TOOLS, inspectReaderFilters, isReaderAgent, mergeReaderRoutes, readerFilterViolation, readerRouteAllowlist } from '../core/reader-guard.mjs'
@@ -352,11 +352,35 @@ async function main() {
     assert.ok(!text.includes('undefined'), '不得出现 undefined 单位：' + text)
   })
 
-  await test('apply() 注册 13 个工具 + 分工说明段落（读图员与窄委派都由插件自己注册）', async () => {
+  await test('成本报表（P2 修复）：未计价不得只当脚注 —— 未计价调用过半时单出告警并给出次数', async () => {
+    // 现场：读图模型（glm-4.6v / qwen3-vl-plus / qwen3.8-max）长期未计价，而读图是默认主路径。
+    // 原来只有"另有 N 个型号未计价"这一句括号注，读者会当成脚注略过（实测一场会话 70% 的调用没进合计）。
+    const at = new Date().toISOString()
+    const records = [
+      { at, sessionId: 's', adapter: 'llm-reader', model: 'glm-4.6v', unitKind: 'ktoken', units: 1200, inputPrice: null, outputPrice: null, currency: 'CNY', amount: null },
+      { at, sessionId: 's', adapter: 'llm-reader', model: 'glm-4.6v', unitKind: 'ktoken', units: 800, inputPrice: null, outputPrice: null, currency: 'CNY', amount: null },
+      { at, sessionId: 's', adapter: 'llm-reader', model: 'qwen3-vl-plus', unitKind: 'ktoken', units: 900, inputPrice: null, outputPrice: null, currency: 'CNY', amount: null },
+      { at, sessionId: 's', adapter: 'dashscope-image', model: 'qwen-image-3.0', unitKind: 'image', units: 1, unitPrice: 0.18, currency: 'CNY', amount: 0.18 },
+    ]
+    const text = renderCostReport({ records, config: { pricing: plain(new Config({}).pricing) }, scope: 'all' })
+    // ① 合计行给出"未计价的调用次数"，不只给型号数
+    assert.ok(/另有 2 个型号未计价（共 3 次调用）/.test(text), '合计行要点出未计价调用次数：' + text)
+    // ② 过半（3/4）时单出一段告警，且解释"会话累计上限也只按已计价记录校验"
+    assert.ok(text.includes('次调用里有 3 次（75%）的型号在单价表里未计价'), '未计价过半必须单出告警：' + text)
+    assert.ok(text.includes('只能当账单'.replace('只', '既不')) || text.includes('既不能当账单'), '告警要说清它不能当账单：' + text)
+    assert.ok(text.includes('会话累计上限'), '告警要解释上限口径：' + text)
+    // ③ 未计价型号列表带次数（便于判断该先补哪个价）
+    assert.ok(/未计价型号：glm-4\.6v（2 次）、qwen3-vl-plus（1 次）/.test(text), '型号列表要带次数：' + text)
+    // ④ 已计价的钱一分都不能被吞
+    assert.ok(text.includes('0.1800 CNY'), '已计价金额必须留在合计里：' + text)
+  })
+
+
+  await test('apply() 注册 14 个工具 + 分工说明段落（读图员与窄委派都由插件自己注册）', async () => {
     const tmp = await makeTmp()
     const { fake, tools } = setup(mock, tmp)
     assert.deepEqual(Object.keys(tools).sort(), [
-      'ask_glm', 'ask_qwen', 'media_report', 'media_task', 'minimax_video', 'ocr_image', 'qwen_draw',
+      'ask_glm', 'ask_qwen', 'media_report', 'media_task', 'minimax_draw', 'minimax_video', 'ocr_image', 'qwen_draw',
       'run_batch', 'seedance_video', 'subagent_code', 'subagent_research', 'subagent_script', 'video_gen',
     ])
     // 2026-10-18：窄委派也不能再用 tool-subagent 那句通用文案 —— 模型得能一眼分清
@@ -466,6 +490,54 @@ async function main() {
     assert.ok(spec.request.prompt[0].text.includes('表格第三行第二列是什么'), 'prompt 必须带上问题')
   })
 
+  await test('读图员：readerReasoningEffort 非空时注入 agentOptions，空时保持原样', async () => {
+    const tmp = await makeTmp()
+    const activations = []
+    const subagents = {
+      getProvider: () => ({ name: 'spawn' }),
+      async startActivation(spec) {
+        activations.push(spec)
+        return { childId: 'child-effort' }
+      },
+    }
+    const low = setup(mock, tmp, { subagents, overrides: { readerReasoningEffort: 'off' } })
+    await low.tools.ask_glm.execute({ image_path: 'a.png' }, { agent: { id: 'p' }, signal: undefined })
+    assert.deepEqual(activations.at(-1).request.agentOptions, {
+      provider: 'glm',
+      model: 'glm-5.3-flash',
+      reasoningEffort: 'off',
+    })
+
+    const plain = setup(mock, tmp, { subagents })
+    await plain.tools.ask_glm.execute({ image_path: 'a.png' }, { agent: { id: 'p' }, signal: undefined })
+    assert.deepEqual(activations.at(-1).request.agentOptions, { provider: 'glm', model: 'glm-5.3-flash' })
+  })
+
+  await test('读图员：通用 readerProvider/readerModel 覆盖两条专用路由，空时保持原样', async () => {
+    const tmp = await makeTmp()
+    const activations = []
+    const subagents = {
+      getProvider: () => ({ name: 'spawn' }),
+      async startActivation(spec) {
+        activations.push(spec)
+        return { childId: 'child-route' }
+      },
+    }
+    const custom = setup(mock, tmp, {
+      subagents,
+      overrides: { readerProvider: 'qwen-vl', readerModel: 'qwen4-max' },
+    })
+    assert.match(custom.tools.ask_glm.description, /qwen4-max/, '工具描述必须显示实际生效的模型')
+    await custom.tools.ask_glm.execute({ image_path: 'a.png' }, { agent: { id: 'p' }, signal: undefined })
+    assert.deepEqual(activations.at(-1).request.agentOptions, { provider: 'qwen-vl', model: 'qwen4-max' })
+    await custom.tools.ask_qwen.execute({ image_path: 'a.png' }, { agent: { id: 'p' }, signal: undefined })
+    assert.deepEqual(activations.at(-1).request.agentOptions, { provider: 'qwen-vl', model: 'qwen4-max' })
+
+    const plain = setup(mock, tmp, { subagents })
+    await plain.tools.ask_glm.execute({ image_path: 'a.png' }, { agent: { id: 'p' }, signal: undefined })
+    assert.deepEqual(activations.at(-1).request.agentOptions, { provider: 'glm', model: 'glm-5.3-flash' })
+  })
+
   await test('ask_qwen：走 qwen-vl 路由；两个读图员共用 mm-reader preset', async () => {
     const tmp = await makeTmp()
     const activations = []
@@ -558,7 +630,7 @@ async function main() {
   })
 
   // ---------------------------------------------------------------- mini_shell（2026-11-12 已删除）
-  await test('mini_shell 已移除：13 个工具里不再有它', async () => {
+  await test('mini_shell 已移除：14 个工具里不再有它', async () => {
     const { tools } = setup(mock, await makeTmp())
     assert.equal(tools.mini_shell, undefined, 'mini_shell 不应再注册')
   })
@@ -636,7 +708,7 @@ async function main() {
     // 顺序无关比较：deny 名单的语义是集合，"谁先谁后"不是契约。
     assert.deepEqual(
       [...denyLists.at(-1)].sort(),
-      ['ask_qwen', 'video_gen', 'minimax_video'].sort(),
+      ['ask_qwen', 'minimax_draw', 'video_gen', 'minimax_video'].sort(),
       '开了 ask_glm 之后只有互斥的 ask_qwen 与默认关闭的两个出片工具在 deny 名单里',
     )
 
@@ -646,7 +718,7 @@ async function main() {
     offListener.callback({ agent, source: 'test' })
     assert.deepEqual(
       [...denyLists.at(-1)].sort(),
-      ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video'].sort(),
+      ['ask_glm', 'ask_qwen', 'minimax_draw', 'seedance_video', 'video_gen', 'minimax_video'].sort(),
       '关闭的工具应进入该 agent 的 deny 名单',
     )
   })
@@ -704,6 +776,46 @@ async function main() {
       const denied = guard({ name: tool })
       assert.ok(typeof denied === 'string' && denied.includes('互斥') && denied.includes('seedance_video'), tool + ' 应被压制：' + String(denied))
     }
+  })
+
+  await test('制图二选一（2026-11-21）：打开一个自动关掉另一个，关掉的那个不再进工具表', async () => {
+    // 用户要求："搞互斥，节省 prompt"。两个制图工具都是"生成图片"，schema 各 0.55–1.1 KB、
+    // 每轮都要发；互斥后关掉的那个进 deny 名单、从新会话工具表消失 —— 省的是每请求固定成本。
+    assert.deepEqual(
+      normalizeSettingsOps([{ op: 'set', path: ['enableMinimaxImage'], value: true }]).map((op) => op.path[0] + '=' + op.value),
+      ['enableMinimaxImage=true', 'enableQwenDraw=false'],
+    )
+    assert.deepEqual(
+      normalizeSettingsOps([{ op: 'set', path: ['enableQwenDraw'], value: true }]).map((op) => op.path[0] + '=' + op.value),
+      ['enableQwenDraw=true', 'enableMinimaxImage=false'],
+    )
+    // 关闭不牵连另一个。
+    assert.deepEqual(
+      normalizeSettingsOps([{ op: 'set', path: ['enableQwenDraw'], value: false }]).map((op) => op.path[0] + '=' + op.value),
+      ['enableQwenDraw=false'],
+    )
+    // 手改配置同时 true：组内声明顺序第一个（qwen_draw）生效，minimax_draw 被压制。
+    const bothOn = createSwitches({ enableQwenDraw: true, enableMinimaxImage: true })
+    assert.equal(bothOn.isEnabled('qwen_draw'), true, '同时开时应由 qwen_draw 生效（组内第一个）')
+    assert.equal(bothOn.isEnabled('minimax_draw'), false, 'minimax_draw 必须被压制')
+    assert.ok(bothOn.disabledNames().includes('minimax_draw'), '被压制者必须进 deny 名单')
+    assert.ok(!bothOn.disabledNames().includes('qwen_draw'), '生效者不该进 deny 名单')
+    const notes = bothOn.conflictNotes()
+    assert.equal(notes.length, 1, '只有制图这一组冲突：' + JSON.stringify(notes))
+    assert.ok(notes[0].includes('制图模型') && notes[0].includes('minimax_draw'), '冲突文案要点名组与被压制者：' + notes[0])
+    // 出厂默认：qwen_draw 开、minimax_draw 关，零冲突、零额外告警。
+    const stock = createSwitches({})
+    assert.equal(stock.isEnabled('qwen_draw'), true)
+    assert.equal(stock.isEnabled('minimax_draw'), false)
+    assert.deepEqual(stock.conflicts(), [])
+    // 关 qwen、开 minimax 的同一个批量写入里不需要补第二条 self 关闭（顺序即末次生效）。
+    assert.deepEqual(
+      normalizeSettingsOps([
+        { op: 'set', path: ['enableQwenDraw'], value: false },
+        { op: 'set', path: ['enableMinimaxImage'], value: true },
+      ]).map((op) => op.path[0] + '=' + op.value),
+      ['enableQwenDraw=false', 'enableMinimaxImage=true'],
+    )
   })
 
   await test('出片互斥：normalizeSettingsOps 打开 minimax 会关掉另外两个', async () => {
@@ -1395,7 +1507,8 @@ async function main() {
     const bytes = (text) => Buffer.byteLength(text, 'utf8')
 
     // 2026-10-17 新增一条能力行（dashscope_video），+95 B；上限同步上浮，仍然挡"把报表写成小作文"。
-    assert.ok(bytes(health) <= 2600, '紧凑 health 超预算：' + bytes(health) + ' B（实测原版 2667 B / 线上约 3.5 KB）')
+    // 2026-11-21 新增 minimax-image 能力行 + H3 单价行（两条制图链路共用一把 key，但可用性要分开报）。
+    assert.ok(bytes(health) <= 2850, '紧凑 health 超预算：' + bytes(health) + ' B（实测原版 2667 B / 线上约 3.5 KB）')
     assert.ok(bytes(cost) <= 700, '紧凑 cost 超预算：' + bytes(cost) + ' B（实测原版 895 B）')
     assert.ok(bytes(healthVerbose) > bytes(health), 'verbose 必须比紧凑更长（否则等于没实现）')
     // 红线：紧凑模式只删样板/明细，**告警一个都不能省**
@@ -1635,7 +1748,7 @@ async function main() {
 
     const blocked = setup(mock, await makeTmp(), { overrides: { requireSpendConfirm: false, blockSubagentSpend: true } })
     const brake = guardOf(blocked.fake, GUARD_SUBAGENT_SPEND)
-    for (const tool of ['qwen_draw', 'seedance_video', 'video_gen', 'minimax_video']) {
+    for (const tool of ['qwen_draw', 'minimax_draw', 'seedance_video', 'video_gen', 'minimax_video']) {
       const verdict = brake({ name: tool, arguments: {}, agent: subAgent })
       assert.ok(typeof verdict === 'string' && verdict.includes('只允许主代理调用'), tool + ' 应被刹车拦下：' + String(verdict))
     }
@@ -1649,6 +1762,7 @@ async function main() {
       assert.ok(typeof verdict === 'string' && verdict.includes('只允许主代理调用'), tool + ' 应被"只挡出片"拦下：' + String(verdict))
     }
     assert.equal(videoBrake({ name: 'qwen_draw', arguments: {}, agent: subAgent }), undefined, '只挡出片时，出图必须放行')
+    assert.equal(videoBrake({ name: 'minimax_draw', arguments: {}, agent: subAgent }), undefined, '只挡出片时，MiniMax 制图同样属于"出图"，必须放行')
     assert.equal(videoBrake({ name: 'media_task', arguments: {}, agent: subAgent }), undefined, '补下载不是生成，不该拦')
     assert.equal(videoBrake({ name: 'video_gen', arguments: {}, agent: mainAgent }), undefined, '主代理永远可以出片')
   })
@@ -2017,7 +2131,7 @@ async function main() {
     // 单数（只有 ops_bash 一个未知）与复数（多个未知）两条报错措辞都要能学会。
     const knownTools = [
       'pwsh', 'read_image', 'ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video',
-      'qwen_draw', 'ocr_image', 'media_task', 'media_report', 'run_batch',
+      'qwen_draw', 'minimax_draw', 'ocr_image', 'media_task', 'media_report', 'run_batch',
       'bash', // 两台平台都写上，保证"未知"只剩 ops_bash → 走单数分支
     ]
     const runCase = async (known) => {
@@ -2089,15 +2203,28 @@ async function main() {
     const base = switches.signature()
     assert.equal(typeof base, 'string')
     assert.equal(base, switches.signature(), '同一状态必须得到同一个签名（否则短路失效）')
-    assert.equal(base.split(',').length, 10, '十个开关都要进签名：' + base)
+    assert.equal(base.split(',').length, 11, '十一个开关都要进签名：' + base)
 
-    const fields = ['enableAskGlm', 'enableAskQwen', 'enableOcrImage', 'enableQwenDraw', 'enableSeedanceVideo', 'enableVideoGen', 'enableMinimaxVideo', 'enableMediaTask', 'enableMediaReport', 'enableRunBatch']
+    const fields = ['enableAskGlm', 'enableAskQwen', 'enableOcrImage', 'enableSeedanceVideo', 'enableVideoGen', 'enableMinimaxVideo', 'enableMediaTask', 'enableMediaReport', 'enableRunBatch']
     for (const field of fields) {
       const one = setupSwitches()
       const before = one.switches.signature()
       one.set(field)
       assert.notEqual(one.switches.signature(), before, field + ' 变化后签名必须跟着变：' + before)
     }
+
+    // 制图表（2026-11-21 加入 images 互斥组）：签名只反映**生效者**，所以语义与上面不同 ——
+    // 翻转"被压制者"不该改变签名（否则每秒对账都会白重贴一遍掩码）；
+    // 翻转"生效者"必须改变签名（胜者换人 = 工具表真的变了）。
+    const imgs = setupSwitches()
+    const baseSig = imgs.switches.signature()
+    assert.equal(imgs.switches.isEnabled('qwen_draw'), true, '默认由 qwen_draw 生效')
+    imgs.set('enableMinimaxImage')
+    assert.equal(imgs.switches.signature(), baseSig, '被压制者翻转不该改签名（省掉每秒重贴）')
+    assert.equal(imgs.switches.isEnabled('minimax_draw'), false, '同时 true 时仍由 qwen_draw 生效')
+    imgs.set('enableQwenDraw')
+    assert.notEqual(imgs.switches.signature(), baseSig, '生效者被关掉 → minimax_draw 顶上，签名必须变')
+    assert.equal(imgs.switches.isEnabled('minimax_draw'), true, 'qwen 关掉后 minimax 应生效')
   })
 
   await test('性能优化不许吞掉配置变更：改开关后掩码必须在一个 tick 内跟上', async () => {
@@ -2116,7 +2243,7 @@ async function main() {
 
     // 初始状态：seedance / 两个读图员都关着 → 创建时就按实时配置贴掩码
     // （顺序跟随 TOOL_SWITCHES 的声明顺序：ask_glm、ask_qwen、seedance_video）
-    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'seedance_video', 'video_gen', 'minimax_video'], '创建时应按实时配置贴掩码：' + JSON.stringify(applied))
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'minimax_draw', 'seedance_video', 'video_gen', 'minimax_video'], '创建时应按实时配置贴掩码：' + JSON.stringify(applied))
 
     // 稳态：连跑 5 次 tick，不该有任何新掩码（短路生效）
     const before = applied.length
@@ -2127,12 +2254,12 @@ async function main() {
     config.enableSeedanceVideo = true
     tick()
     assert.equal(applied.length, before + 1, '开关变了下一次 tick 必须重新对账：' + JSON.stringify(applied))
-    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'video_gen', 'minimax_video'], '打开后 seedance_video 不该再被 deny：' + JSON.stringify(applied))
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'minimax_draw', 'video_gen', 'minimax_video'], '打开后 seedance_video 不该再被 deny：' + JSON.stringify(applied))
 
     // 反向：关掉 qwen_draw → 下一次 tick 必须把它 deny 掉（deny 顺序 = TOOL_SWITCHES 声明顺序）
     config.enableQwenDraw = false
     tick()
-    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'qwen_draw', 'video_gen', 'minimax_video'], '关掉后必须立刻 deny：' + JSON.stringify(applied))
+    assert.deepEqual(applied.at(-1), ['ask_glm', 'ask_qwen', 'qwen_draw', 'minimax_draw', 'video_gen', 'minimax_video'], '关掉后必须立刻 deny：' + JSON.stringify(applied))
   })
 
   await test('性能：工具 schema 体积有上限（每个请求都要发送，胖描述是持续成本）', async () => {
@@ -2150,14 +2277,17 @@ async function main() {
     // "纯文字截图走它、图像理解走读图员"，其余细节留在 README。
     // 2026-11-17：run_batch 加 env 参数，并把"每条还原 / 20 条上限 / parallel 仅 isolated / 尾巴口径"
     // 写进 description —— 多花的 ~130 B 换掉的是"cd 不延续导致静默 PASS"那一类失败，值。
-    const budget = { ask_glm: 1300, ask_qwen: 1300, ocr_image: 700, qwen_draw: 700, seedance_video: 1200, video_gen: 1200, minimax_video: 1200, media_task: 860, media_report: 500, subagent_code: 1050, subagent_research: 1050, subagent_script: 1050, run_batch: 1250 }
+    // 2026-11-21：新增 minimax_draw（1088 B）。它一个工具干两件事（文生图 + 1–16 张参考图编辑），
+    // 比 qwen_draw 多出 images 数组、面积/尺寸互斥、输出格式三组参数 —— 预算给 1100 B，
+    // 但仍要求"细节写 README，schema 只留能改变行为的信息"。
+    const budget = { ask_glm: 1300, ask_qwen: 1300, ocr_image: 700, qwen_draw: 700, minimax_draw: 1100, seedance_video: 1200, video_gen: 1200, minimax_video: 1200, media_task: 860, media_report: 500, subagent_code: 1050, subagent_research: 1050, subagent_script: 1050, run_batch: 1250 }
     let total = 0
     for (const [name, definition] of Object.entries(tools)) {
       const bytes = Buffer.byteLength(JSON.stringify({ name: definition.name, description: definition.description, parameters: definition.parameters }), 'utf8')
       total += bytes
       assert.ok(bytes <= budget[name], `${name} 的 schema 超预算：${bytes} B > ${budget[name]} B（描述该写进 README，不是写进每个请求）`)
     }
-    assert.ok(total <= 12200, '十三个工具 schema 合计超预算：' + total + ' B/请求（实测约 11880）')
+    assert.ok(total <= 13200, '十四个工具 schema 合计超预算：' + total + ' B/请求（实测约 12800）')
   })
 
   // ---------------------------------------------------------------- 生成物附回上下文（默认关）
@@ -2699,6 +2829,53 @@ async function main() {
     assert.ok(health.report.includes('minimax_video'), 'health 必须列出 MiniMax 行：' + health.report)
     assert.ok(health.report.includes('生视频模型同时开启了'), '冲突必须在紧凑模式也可见：' + health.report)
     assert.ok(health.report.includes('被压制'), '要说明谁被压制：' + health.report)
+  })
+
+  await test('media_report(health)：制图互斥冲突同样可见（2026-11-21 加 images 组）', async () => {
+    // 制图二选一加入 MUTEX_GROUPS 后，配置里手改同时 true 时要能被看见 ——
+    // 否则用户会以为"两个都开了"，而实际只有 qwen 生效（另一个的 schema 也没进工具表）。
+    const tmp = await makeTmp()
+    const { tools } = setup(mock, tmp, { overrides: { enableQwenDraw: true, enableMinimaxImage: true, healthProbe: false } })
+    const { exec } = newExec(tmp)
+    const health = await tools.media_report.execute({ action: 'health' }, exec)
+    assert.ok(health.report.includes('制图模型同时开启了'), '制图冲突必须在紧凑模式也可见：' + health.report)
+    assert.ok(/被压制.*minimax_draw|minimax_draw.*被压制/.test(health.report), '要说明被压制的是 minimax_draw：' + health.report)
+  })
+
+  await test('media_report(health)：探针与失败历史按 capability 落到表里（2026-11-21 实跑缺陷）', async () => {
+    // 现场：探针其实跑过了、结果也写进 probes，但 renderHealthReport 按 adapter 键去取，
+    // 而 ask_glm（llm-pi-ai 路由）与 minimax_image 都没有对应 capability→adapter 映射，
+    // 于是两行永远显示"未探测"、失败历史两列恒为 —。这里钉住"按 capability 取"的契约。
+    const report = renderHealthReport({
+      keyEntries: [
+        { spec: { id: 'zhipu', ref: 'ZHIPU_API_KEY', capability: 'ask_glm', label: 'GLM' }, status: { configured: true, source: 'file' } },
+        { spec: { id: 'minimax-image', ref: 'MINIMAX_API_KEY', capability: 'minimax_image', label: 'H3' }, status: { configured: true, source: 'file' } },
+        { spec: { id: 'minimax', ref: 'MINIMAX_API_KEY', capability: 'minimax_video', label: '海螺出片' }, status: { configured: true, source: 'file' } },
+      ],
+      health: { 'minimax-image': { lastFailure: new Date(Date.now() - 60_000).toISOString() } },
+      probes: {
+        ask_glm: { ok: true, detail: 'GET /models → HTTP 200（12 个模型）' },
+        minimax_image: { ok: false, code: 'QUOTA', detail: 'insufficient balance (1008)' },
+      },
+      llmProviders: ['glm', 'qwen-vl'],
+      config: { pricing: {} },
+      switches: { ask_glm: true, minimax_image: true, minimax_video: false },
+    })
+    const row = (capability) => report.split('\n').find((line) => line.startsWith('| ' + capability + ' |')) ?? ''
+    assert.ok(row('ask_glm').includes('✅ GET /models → HTTP 200'), '读图员的探针必须显示在这一行：' + row('ask_glm'))
+    assert.ok(row('minimax_image').includes('❌ QUOTA insufficient balance (1008)'), '制图的探针失败要如实显示：' + row('minimax_image'))
+    assert.ok(!/^\| minimax_image \|.*\| — \| — \|/.test(row('minimax_image')), '写了失败历史就不该显示两个 —：' + row('minimax_image'))
+  })
+
+  await test('余额不足的返回（2026-11-21 实跑）：带上厂商原因、明确"未计费"', async () => {
+    // 实跑：H3 余额为 0 → HTTP 402 + error.message "insufficient balance (1008)"。
+    // 第一版文案只回"账户余额/配额不足"，把 1008/2053/2067/2068 四种处境抹平了 ——
+    // 用户不知道该充值、换套餐，还是当前套餐不支持该模型。
+    const message = fixedMessage(CODES.QUOTA, { provider: 'MiniMax（H3-Image）', detail: 'insufficient balance (1008)' })
+    assert.ok(message.includes('insufficient balance (1008)'), '厂商原因不能丢：' + message)
+    assert.ok(message.includes('未生成、未计费'), '余额不足时用户最关心"扣没扣钱"：' + message)
+    const bare = fixedMessage(CODES.QUOTA, { provider: 'X' })
+    assert.ok(!bare.includes('（）'), '没有厂商细节时不要留空括号：' + bare)
   })
 
   // ---------------------------------------------------------------- 读图子代理"只看图"契约
@@ -3449,7 +3626,7 @@ async function main() {
       const matched = new RegExp(`\\n {10}${escaped}:\\n([\\s\\S]*?)(?=\\n {10}[^\\s]|\\n {8}[A-Za-z])`).exec(block)
       return matched === null ? null : /unitPrice:\s*([^\s]+)/.exec(matched[1])?.[1]
     }
-    for (const field of ['seedanceModel', 'qwenModel', 'minimaxModel']) {
+    for (const field of ['seedanceModel', 'qwenModel', 'minimaxModel', 'minimaxImageModel']) {
       const model = modelOf(field)
       assert.ok(typeof model === 'string' && model.length > 0, `模板里 ${field} 应有取值`)
       const price = priceOf(model)

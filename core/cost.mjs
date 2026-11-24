@@ -49,6 +49,44 @@ export const DEFAULT_PRICING = {
     asOf: '2026-10-13',
     source: 'https://help.aliyun.com/zh/model-studio/qwen-image-3-0',
   },
+  // ---- MiniMax H3-Image（2026-11-21 加）----
+  //
+  // 官方按 **token** 计价（文本输入 15 / 图片输入 10 / 图片输出 25 元每百万 token），
+  // 所以这里用官方文档给的「单张生成费用参考」做档位价，单位是**张**（unit: image + tiers）。
+  // 档位 = 模式（text 文生 / edit 图片编辑）× 面积（1K/2K/4K）：
+  //   - 编辑价取官方表里「3 张参考图」那一行（最贵的一行）—— 宁高不低；
+  //   - 4K 目前限时 5 折，这里取**不打折**价，理由同上（闸门宁可多拦，不能少拦）。
+  // 实际账单会随 prompt token 用量浮动，所以金额仍是"估算"。source 是官方定价页。
+  'MiniMax-H3-Image': {
+    unit: 'image',
+    unitPrice: 0.1531,
+    currency: 'CNY',
+    asOf: '2026-11-21',
+    tiers: [
+      { mode: 'text', area: '1K', unitPrice: 0.143 },
+      { mode: 'text', area: '2K', unitPrice: 0.1531 },
+      { mode: 'text', area: '4K', unitPrice: 0.4522 },
+      { mode: 'edit', area: '1K', unitPrice: 0.2346 },
+      { mode: 'edit', area: '2K', unitPrice: 0.2746 },
+      { mode: 'edit', area: '4K', unitPrice: 0.5211 },
+    ],
+    source: 'https://platform.minimax.cn/docs/pricing/overview.md#models/image（4K 限时 5 折，这里取不打折价；编辑取 3 张参考图档）',
+  },
+  'MiniMax-H3-Image-Highspeed': {
+    unit: 'image',
+    unitPrice: 0.238,
+    currency: 'CNY',
+    asOf: '2026-11-21',
+    tiers: [
+      { mode: 'text', area: '1K', unitPrice: 0.2319 },
+      { mode: 'text', area: '2K', unitPrice: 0.238 },
+      { mode: 'text', area: '4K', unitPrice: 0.855 },
+      { mode: 'edit', area: '1K', unitPrice: 0.3982 },
+      { mode: 'edit', area: '2K', unitPrice: 0.4003 },
+      { mode: 'edit', area: '4K', unitPrice: 1.0146 },
+    ],
+    source: 'https://platform.minimax.cn/docs/pricing/overview.md#models/image（4K 限时 5 折，这里取不打折价；编辑取 3 张参考图档）',
+  },
   'doubao-seedance-2-5-260628': {
     unit: 'second',
     unitPrice: 1.519,
@@ -348,6 +386,8 @@ export function pricingWarnings(config, plain = (value) => value) {
     ['seedanceModel', '出片'],
     ['videoModel', '出片（百炼）'],
     ['minimaxModel', '出片（MiniMax）'],
+    // MiniMax H3-Image（2026-11-21）：走 tiers（模式 × 面积），启动自检只判"这个 id 有没有档位价"。
+    ['minimaxImageModel', '制图（MiniMax H3）'],
   ]
   const known = new Set()
   for (const [field, label] of configured) {
@@ -904,6 +944,10 @@ export function renderCostReport({ records, config, scope = 'session', sessionId
   lines.push(`# 成本估算（scope: ${scope}${scope === 'session' && sessionId !== undefined ? `, session: ${sessionId}` : ''}${scopeNote}）`)
   /** 单价为 0 的型号数（= 金额不可信的行数）。要在表格外也能用，所以声明在这里。 */
   let zeroPriced = 0
+  /** 未计价的**调用次数**与总次数（2026-11-21 加，修 P2：只报型号数会让人低估缺口）。
+   *  表格外的告警也要用，所以与 zeroPriced 一样声明在 if 之前。 */
+  let unpricedCalls = 0
+  let totalCalls = 0
   if (groups.length === 0) {
     lines.push('')
     lines.push('没有符合条件的用量记录（只统计本插件经手的调用）。')
@@ -920,7 +964,12 @@ export function renderCostReport({ records, config, scope = 'session', sessionId
       const rawPrice = unitPriceOf(group)
       const priced = priceAboveZero(rawPrice)
       const zero = rawPrice !== null && !priced
-      if (rawPrice === null) unpriced += 1
+      const calls = Number(group.count) || 0
+      totalCalls += calls
+      if (rawPrice === null) {
+        unpriced += 1
+        unpricedCalls += calls
+      }
       if (zero) zeroPriced += 1
       // 金额列：非正价的组**照样把记录里已有的数字打出来**，只是标注"不可信"。
       // ⚠ 刻意不在这里做任何过滤/清零：同一型号可能同时存在"占位表时代写的 0 价记录"
@@ -940,7 +989,7 @@ export function renderCostReport({ records, config, scope = 'session', sessionId
     lines.push('')
     const totalText = [...totals.entries()].map(([currency, amount]) => money(amount, currency)).join('，')
     lines.push(
-      `合计：${totalText}（只含已计价部分${unpriced > 0 ? `；另有 ${unpriced} 个型号未计价，实际花费高于此数` : ''}${zeroPriced > 0 ? `；另有 ${zeroPriced} 个型号单价为 0，其金额不可信` : ''}）`,
+      `合计：${totalText}（只含已计价部分${unpriced > 0 ? `；另有 ${unpriced} 个型号未计价（共 ${unpricedCalls} 次调用），实际花费高于此数` : ''}${zeroPriced > 0 ? `；另有 ${zeroPriced} 个型号单价为 0，其金额不可信` : ''}）`,
     )
   }
   if (zeroPriced > 0) {
@@ -954,12 +1003,36 @@ export function renderCostReport({ records, config, scope = 'session', sessionId
         `请核对 插件页 → CN-gpt → 配置卡 的单价表：填真实单价，或填 null（= 未计价，报表会显式写「未计价」）。`,
     )
   }
+  // ---- P2 修复（2026-11-21）：未计价**不再只是一句括号注** ----
+  //
+  // 现场：读图模型（glm-4.6v / qwen3-vl-plus / qwen3.8-max）长期未计价，
+  // 而读图是默认主路径 —— 实测一场会话里 70% 的调用（约 490 万 token）不进合计。
+  // 原来的唯一提示是合计后面那句"另有 N 个型号未计价"，读者很容易当成脚注略过。
+  //
+  // 现在的语义（不改算术，只让它可见）：
+  //   - 合计行给出**未计价的调用次数**，不再只给型号数；
+  //   - 未计价调用过半时，单独出一段告警：合计不能当"已花多少"用，
+  //     会话累计上限也只按已计价记录校验（这是实现事实，不是猜测：amount=null 不计入求和）。
+  const unpricedShare = totalCalls > 0 ? unpricedCalls / totalCalls : 0
+  if (unpricedCalls > 0 && unpricedShare >= 0.5) {
+    lines.push('')
+    lines.push(
+      `⚠ **本次 ${totalCalls} 次调用里有 ${unpricedCalls} 次（${Math.round(unpricedShare * 100)}%）的型号在单价表里未计价**：` +
+        `上面的合计只含已计价部分，既不能当账单，也不能当"会话累计上限已经用到多少"的依据 ——` +
+        `会话累计上限同样只累加有金额的记录。` +
+        `请按各厂商官网把对应型号的价格补进 插件页 → CN-gpt → 配置卡 的单价表（或从 cordis.patch.yml 的 pricing 段补齐）。`,
+    )
+  }
   const asOf = [...new Set(Object.values(pricing).map((entry) => entry?.asOf).filter((value) => typeof value === 'string' && value.length > 0))]
   // 只点出"本次真的用到、但没价"的型号；没用到的型号列出来只会让用户困惑。
   const usedModels = new Set(groups.map((group) => group.model))
+  const callsOfModel = new Map(groups.map((group) => [group.model, Number(group.count) || 0]))
   const unpricedNames = Object.entries(pricing)
     .filter(([model, entry]) => usedModels.has(model) && !isPriced(entry))
-    .map(([model]) => model)
+    .map(([model]) => model) // 保留原数组（下游可能复用），下面单独拼展示文案
+  const unpricedLabel = unpricedNames
+    .map((model) => model + (callsOfModel.get(model) === undefined ? '' : `（${callsOfModel.get(model)} 次）`))
+    .join('、')
   lines.push('')
   // 读图子代理的 token：**2026-10-17 起已经记账**（core/reader-usage.mjs 订阅 llm/stream
   // 的 waterfall 观察 usage 分片）。之前这里只能自曝"未计入"，根因是当时判断
@@ -1005,7 +1078,7 @@ export function renderCostReport({ records, config, scope = 'session', sessionId
   }
   if (unpricedNames.length > 0) {
     lines.push(
-      `未计价型号：${unpricedNames.join('、')} —— 内置表里这些是「未计价」（不是 0 元）。请按各自官网价格在 Config.pricing 里填；每条单价的 source 字段就是取价页面。`,
+      `未计价型号：${unpricedLabel} —— 内置表里这些是「未计价」（不是 0 元）。请按各自官网价格在 Config.pricing 里填；每条单价的 source 字段就是取价页面。`,
     )
   }
   lines.push('统计时间：' + formatTime(nowIso(now)))
@@ -1051,7 +1124,11 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
   for (const { spec, status } of keyEntries) {
     const adapter = adapterOfCapability(spec.capability)
     const last = adapter === undefined ? undefined : health[adapter]
-    const probe = adapter === undefined ? undefined : probes[adapter]
+    // ⚠ 探针按 **capability** 取：一个 adapter 可能服务多行（dashscope 同时供 qwen_draw /
+    // ask_qwen；minimax 同时供出片与制图），而读图员根本没有任务 adapter（它由 llm-pi-ai 路由跑）。
+    // 2026-11-21 实跑缺陷：只看 adapter 键时，探针其实跑过了、结果也写进了 probes，但这里
+    // 查不到 → 两行永远显示"未探测"（P2 修了一半）。probe[capability] 优先，adapter 键留作兼容。
+    const probe = probes[spec.capability] ?? (adapter === undefined ? undefined : probes[adapter])
     const switchOn = switches[spec.capability] !== false
     const probeText = switchOn === false ? '—（已关闭）' : probe === undefined ? '未探测' : probe.ok === true ? `✅ ${probe.detail ?? ''}` : `❌ ${probe.code ?? ''} ${probe.detail ?? ''}`
     lines.push(
@@ -1117,6 +1194,7 @@ export function renderHealthReport({ keyEntries, health = {}, probes = {}, llmPr
   const pricing = pricingOf(config)
   const modelRows = [
     ['qwen_draw（制图）', plainValue(config?.qwenModel)],
+    ['minimax_draw（MiniMax H3 制图）', plainValue(config?.minimaxImageModel)],
     ['seedance_video（出片）', plainValue(config?.seedanceModel)],
     ['video_gen（百炼出片）', plainValue(config?.videoModel)],
     ['minimax_video（MiniMax 出片）', plainValue(config?.minimaxModel)],
@@ -1155,6 +1233,9 @@ function adapterOfCapability(capability) {
   if (capability === 'seedance_video') return 'ark-video'
   if (capability === 'dashscope_video') return 'dashscope-video'
   if (capability === 'minimax_video') return 'minimax-video'
+  // 2026-11-21：MiniMax H3 制图。漏了它会让"最近成功/最近失败"两列恒为 —（实跑踩到：
+  // 余额不足那次失败已经写进 health，报表却看不见）。
+  if (capability === 'minimax_image') return 'minimax-image'
   return undefined
 }
 

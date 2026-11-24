@@ -234,6 +234,45 @@ test('出片互斥：关闭开着的那个不牵连另外两个', async () => {
 })
 
 
+// ---- 制图二选一（2026-11-21 加：两个制图工具互斥，省一份每请求 schema）----
+const images = () => ({ qwen: holder.value.enableQwenDraw, minimax: holder.value.enableMinimaxImage })
+
+test('制图互斥：qwen 开着 → 打开 minimax：先关 qwen、再开 minimax', async () => {
+  const { before } = await mount(
+    { enableQwenDraw: true, enableMinimaxImage: false },
+    [['enableMinimaxImage', 'true']],
+  )
+  assert.equal(before.fields.enableQwenDraw.text, 'false', 'UI 上 qwen_draw 立即变关')
+  opsAre(holder.calls[0], [
+    { op: 'set', path: ['enableQwenDraw'], value: false },
+    { op: 'set', path: ['enableMinimaxImage'], value: true },
+  ], '末次写入必须是用户点开的 minimax_draw')
+  assert.deepEqual(images(), { qwen: false, minimax: true })
+})
+
+test('制图互斥：minimax 开着 → 打开 qwen：先关 minimax、再开 qwen（反向同理）', async () => {
+  const { before } = await mount(
+    { enableQwenDraw: false, enableMinimaxImage: true },
+    [['enableQwenDraw', 'true']],
+  )
+  assert.equal(before.fields.enableMinimaxImage.text, 'false', 'UI 上 minimax_draw 立即变关')
+  opsAre(holder.calls[0], [
+    { op: 'set', path: ['enableMinimaxImage'], value: false },
+    { op: 'set', path: ['enableQwenDraw'], value: true },
+  ], '末次写入必须是用户点开的 qwen_draw')
+  assert.deepEqual(images(), { qwen: true, minimax: false })
+})
+
+test('制图互斥：关闭开着的那个不牵连另一个', async () => {
+  await mount(
+    { enableQwenDraw: false, enableMinimaxImage: true },
+    [['enableMinimaxImage', 'false']],
+  )
+  opsAre(holder.calls[0], [{ op: 'set', path: ['enableMinimaxImage'], value: false }])
+  assert.deepEqual(images(), { qwen: false, minimax: false })
+})
+
+
 let failed = 0
 for (const item of cases) {
   try {

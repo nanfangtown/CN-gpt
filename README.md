@@ -3,7 +3,7 @@
 > **GLM/Qwen 读图 · Qwen 出图 · Seedance/可灵/海螺 出片**
 > **外加一道 fail-closed 花费闸门：未计价一律拒付。**
 >
-> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.3.0` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
+> 包名 `dsh-mm-models` · 插件 id `mm-models` · `0.4.0` · 本地优先 · 不收集遥测 · MIT · 需要 DeepSeek Harness `0.2.1+`
 
 [![npm](https://img.shields.io/npm/v/dsh-mm-models.svg)](https://www.npmjs.com/package/dsh-mm-models)
 [![offline-tests](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/nanfangtown/CN-gpt/actions/workflows/offline-tests.yml)
@@ -20,7 +20,8 @@ DeepSeek 主模型负责思考与交付；外部模型只负责"看 / 画 / 拍"
 | `ask_glm` | GLM 读图子代理 | ✅ 开 | 看图、截图、PDF、图表、手写、界面 → 结构化结论 |
 | `ask_qwen` | Qwen-VL 读图子代理 | ⛔ 关 | 与 `ask_glm` 二选一；默认 `qwen3.8-max`，中文界面 / 密集文字 / 场景描述较强 |
 | `ocr_image` | 本地 OCR（Windows 自带引擎） | ✅ 开 | 纯文字截图直接抄字：免费、离线、图片不出网，通常 0.3–1.5 秒 |
-| `qwen_draw` | Qwen 文生图 / 图生图 | ✅ 开 | 产物落盘 + 返回路径；可选把图附回上下文 |
+| `qwen_draw` | Qwen 文生图 / 图生图 | ✅ 开 | 与 `minimax_draw` 二选一；产物落盘 + 返回路径；可选把图附回上下文 |
+| `minimax_draw` | MiniMax H3 文生图 / 图生图 | ⛔ 关 | 与 `qwen_draw` 二选一；同步接口；1–16 张参考图编辑；1K/2K/4K 档位 |
 | `seedance_video` | 火山方舟 Seedance 出片 | ⛔ 关 | 文生 / 图生视频，异步任务 |
 | `video_gen` | 百炼出片：可灵 v3 / 万相 2.5 | ⛔ 关 | 复用 `DASHSCOPE_API_KEY`，需业务空间 ID |
 | `minimax_video` | MiniMax（海螺）出片 | ⛔ 关 | 文生 / 图生 / 首尾帧；独立 `MINIMAX_API_KEY`；按条计费 |
@@ -50,8 +51,8 @@ DeepSeek 主模型负责思考与交付；外部模型只负责"看 / 画 / 拍"
 :: 从 npm 安装（推荐）——装到的是预构建代码，不需要构建脚本授权
 dsh plugin --profile desktop add dsh-mm-models
 
-:: 锁定版本，便于复现（0.3.0 发布后可用）
-dsh plugin --profile desktop add dsh-mm-models@0.3.0
+:: 锁定版本，便于复现（0.4.0 发布后可用）
+dsh plugin --profile desktop add dsh-mm-models@0.4.0
 
 :: 改源码 / 跟未发布分支时，从本地目录安装
 git clone https://github.com/nanfangtown/CN-gpt.git
@@ -61,7 +62,7 @@ dsh plugin --profile desktop add ".\CN-gpt"
 装完**完整重启 DSH**。安装会在 profile 里加两行 + 三个 agent preset：
 
 1. `llm-pi-ai` —— 注册两条读图路由：`providers.glm`（智谱）与 `providers.qwen-vl`（百炼）。
-2. `mm-models` —— 插件本体（13 个工具 + 一段可关闭的分工提示词）。
+2. `mm-models` —— 插件本体（14 个工具 + 一段可关闭的分工提示词）。
 
 > ⚠ **第 1 行是覆盖语义**：`config` 整体替换，不与已有 `providers` 深合并。
 > 如果你在 设置 → 模型 里配过自定义 provider，安装前先备份 `cordis.patch.yml`，
@@ -82,7 +83,7 @@ dsh plugin --profile desktop add ".\CN-gpt"
 | `ZHIPU_API_KEY` | `ask_glm` | 设置 → 模型 → GLM 行；或 `~/.dsh/.env` |
 | `DASHSCOPE_API_KEY` | `qwen_draw` / `ask_qwen` / `video_gen` | `~/.dsh/.env` 或配置卡引用名 |
 | `ARK_API_KEY` | `seedance_video` | `~/.dsh/.env` 或配置卡引用名 |
-| `MINIMAX_API_KEY` | `minimax_video` | `~/.dsh/.env` 或配置卡引用名；国内 `.cn` / 国际 `.io` 的 key 不通用 |
+| `MINIMAX_API_KEY` | `minimax_video` / `minimax_draw` | `~/.dsh/.env` 或配置卡引用名；国内 `.cn` / 国际 `.io` 的 key 不通用 |
 
 ```bash
 cp .env.example ~/.dsh/.env   # 然后填入真值；不要把填好的 .env 提交到仓库
@@ -295,6 +296,26 @@ minimax_video(prompt="镜头缓慢推进，雨滴打在窗上", duration=6, reso
 MiniMax 的计费单位是**条**（分辨率 × 时长），与另外两家的"按秒"不同；单价表里用 `unit: call` + `tiers` 表达，缺档位一律 fail-closed。
 国内 `.cn` 与国际 `.io` 的 key 不通用，`minimaxBase` 必须与 key 同区域。
 
+## MiniMax H3-Image 制图（`minimax_draw`，默认关）
+
+制图二选一里的另一条链路：文生图 + **图生图**（官方叫"图片编辑"，1–16 张参考图）。
+与 `qwen_draw` **互斥**：同一时刻只允许一条制图链路开启，关掉的那个会从新会话的工具表里
+消失（省下它那份每请求 schema）；与出片工具的三选一无关。共用 `MINIMAX_API_KEY` 与 `minimaxBase`。
+
+- 接口：`POST /v1/images/generations`（文生图）、`POST /v1/images/edits`（参考图编辑）；
+  **同步**返回，没有 task_id。`media_task` 对它会如实回答"同步模式、没有可重查的远端任务"。
+- 面积：`area` 默认 **1K**。官方不填时默认 **4K**（最贵档）——默认值是刻意选的，不是抄官方。
+- 尺寸：`size`（`宽x高`）与 `area` **互斥**（官方同时传会 400）；面积 655,360–20,000,000 px、
+  比例 ≤3:1。图生图没给 size 时按参考图尺寸（夹进官方区间），避免被服务端悄悄放大成 4K。
+- 张数：1–10；参考图 1–16（请求体 ≤64 MiB；本地路径仍受"只允许会话工作目录"约束）。
+- **部分失败也是 200**：`data[]` 里成功项才有 `url`，失败项只有 `error`（内容安全 1027）。
+  工具按 `usage.generated_images` 记账（只对成功张数计费），结果里点名 `failedCount`。
+- 超时：`minimaxImageTimeoutMs` 默认 **600 s**（官方要求 ≥600 s）。该接口**不支持幂等**：
+  本地超时不取消远端生成、也不退费 —— 别为了"早失败"把它调小。
+- 计价：官方按 token 计费，单价表用官方「单张费用参考」做档位（模式 × 面积）；
+  4K 目前限时 5 折，闸门按**不打折**价估（宁高不低）。`media_report(health)` 可看档位是否齐。
+- 没配 key 时工具默认关且 fail-closed；在 插件页 → CN-gpt → 配置卡 打开 `enableMinimaxImage` 即可。
+
 ## 读图路由与两个 block 开关（重要）
 
 出厂默认：
@@ -423,7 +444,7 @@ MiniMax 的计费单位是**条**（分辨率 × 时长），与另外两家的"
 
 ```bash
 npm install          # 只装一个 devDependency（schemastery）
-npm test             # 离线套件：14 个文件 / 约 340 项断言；不需要 DSH、不需要 key、不联网、不花钱
+npm test             # 离线套件：16 个文件 / 约 400 项断言；不需要 DSH、不需要 key、不联网、不花钱
 npm run test:batch   # 只跑 run_batch 的 18 项（串行/并行、退出码、超时、脚本入口、环境隔离）
 npm run test:delegation  # 只跑窄委派的模型路线可见性（8 项：预检通过/失败/关闭/写漏/未预检）
 npm run test:docs    # 文档相对链接检查

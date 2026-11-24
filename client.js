@@ -120,6 +120,8 @@ window.__ModuleLoader__.load({
       ['enableSeedanceVideo', 'boolean', 'switches'],
       ['enableVideoGen', 'boolean', 'switches'],
       ['enableMinimaxVideo', 'boolean', 'switches'],
+      // 2026-11-21：MiniMax H3-Image 文生图 / 图片编辑（与 qwen_draw 二选一、默认关）
+      ['enableMinimaxImage', 'boolean', 'switches'],
       ['enableMediaTask', 'boolean', 'switches'],
       ['enableMediaReport', 'boolean', 'switches'],
       ['enableOcrImage', 'boolean', 'switches'],
@@ -150,7 +152,11 @@ window.__ModuleLoader__.load({
       ['seedanceModel', 'text', 'media'],
       ['videoModel', 'text', 'media'],
       ['minimaxBase', 'text', 'media'],
+      ['zhipuBase', 'text', 'media'],
       ['minimaxModel', 'text', 'media'],
+      ['minimaxImageModel', 'text', 'media'],
+      ['minimaxImageArea', 'text', 'media'],
+      ['minimaxImageTimeoutMs', 'number', 'task'],
       ['dashscopeWorkspaceId', 'text', 'media'],
       ['dashscopeVideoBase', 'text', 'media'],
       ['arkBase', 'text', 'media'],
@@ -177,9 +183,65 @@ window.__ModuleLoader__.load({
       ['autoOcrOnImage', 'boolean', 'misc'],
       ['readerBatchMode', 'boolean', 'misc'],
       ['readerBatchMax', 'number', 'misc'],
+      ['readerProvider', 'text', 'misc'],
+      ['readerModel', 'text', 'misc'],
+      ['readerReasoningEffort', 'text', 'misc'],
       ['healthProbe', 'boolean', 'misc'],
       ['healthProbeTtlMs', 'number', 'misc'],
     ].map(([name, kind, group]) => ({ name, kind, group, unit: UNITS[name] }))
+
+    /** 通用读图路由的三个字段渲染成下拉，候选取自「设置 → 模型」里所有支持 image 的模型。 */
+    const ROUTE_SELECT_FIELDS = new Set(['readerProvider', 'readerModel', 'readerReasoningEffort'])
+    /**
+     * 兜底候选：Host 的 llm-pi-ai 表单不可达时也要让下拉真的出现。
+     * 这是当前 profile 里确认支持 image 的全部模型；表单可读时以动态结果为准。
+     * 新增模型后若发现下拉没更新，说明走的是兜底，去检查 configForms 是否可用。
+     */
+    const FALLBACK_VISION_CHOICES = Object.freeze({
+      providers: ['glm', 'qwen-vl', 'zai-coding-cn'],
+      models: ['glm-4.6v', 'glm-5.3-flash', 'qwen3.8-max', 'qwen3-vl-plus', 'qwen4-max'],
+      efforts: ['low', 'high', 'max', 'xhigh'],
+    })
+    let visionChoices = { providers: [], models: [], efforts: [] }
+
+    /**
+     * 从 Host 的 llm-pi-ai 配置表单读出当前 profile 已配置的视觉模型与 effort 档位。
+     * 读不到就返回空（fail-open）：FieldControl 会退化成普通文本框，绝不挡住手填。
+     * @param {object} ctx - Client 插件上下文。
+     */
+    function collectVisionChoices(ctx) {
+      const out = { providers: [], models: [], efforts: [] }
+      try {
+        const snap = ctx.configForms?.get?.('llm-pi-ai')?.getSnapshot?.()
+        let providers = snap?.value?.providers
+        if (typeof providers === 'string') {
+          try { providers = JSON.parse(providers) } catch { providers = null }
+        }
+        if (providers === null || providers === undefined || typeof providers !== 'object') return { ...FALLBACK_VISION_CHOICES }
+        for (const [pid, provider] of Object.entries(providers)) {
+          const models = Array.isArray(provider?.models) ? provider.models : []
+          let hasVision = false
+          for (const model of models) {
+            const inputs = Array.isArray(model?.input) ? model.input : []
+            if (!inputs.includes('image') || typeof model?.id !== 'string' || model.id === '') continue
+            hasVision = true
+            out.models.push(model.id)
+            const efforts = model?.reasoningEfforts
+            if (efforts !== null && typeof efforts === 'object') {
+              for (const level of Object.keys(efforts)) out.efforts.push(level)
+            }
+          }
+          if (hasVision) out.providers.push(pid)
+        }
+      } catch {
+        return { ...FALLBACK_VISION_CHOICES }
+      }
+      if (out.models.length === 0) return { ...FALLBACK_VISION_CHOICES }
+      out.providers = [...new Set(out.providers)]
+      out.models = [...new Set(out.models)]
+      out.efforts = [...new Set(out.efforts)].sort()
+      return out
+    }
 
     /**
      * 三个密钥槽：凭据 ref、标题、用途、默认引用名。
@@ -255,6 +317,7 @@ window.__ModuleLoader__.load({
      * 互斥开关组（与 Host 侧 core/tool-kit.mjs 的 MUTEX_GROUPS 同构）。
      *
      *   - 读图子代理二选一：ask_glm（智谱）⇄ ask_qwen（百炼 Qwen-VL）；
+     *   - 制图二选一：qwen_draw ⇄ minimax_draw（2026-11-21 加，省一份每请求 schema）；
      *   - 出片模型三选一：seedance_video ⇄ video_gen（百炼）⇄ minimax_video。
      *
      * 打开其中一个会自动把同组其它关掉（同一个批量写入里补 set false）。
@@ -262,6 +325,7 @@ window.__ModuleLoader__.load({
      */
     const MUTEX_GROUPS = [
       ['enableAskGlm', 'enableAskQwen'],
+      ['enableQwenDraw', 'enableMinimaxImage'],
       ['enableSeedanceVideo', 'enableVideoGen', 'enableMinimaxVideo'],
     ]
     const mutexOf = (name) => {
@@ -270,6 +334,7 @@ window.__ModuleLoader__.load({
     }
     /** 需要“二选一 / 三选一”提示的开关行。 */
     const READER_FIELDS = new Set(['enableAskGlm', 'enableAskQwen'])
+    const IMAGE_FIELDS = new Set(['enableQwenDraw', 'enableMinimaxImage'])
     const VIDEO_FIELDS = new Set(['enableSeedanceVideo', 'enableVideoGen', 'enableMinimaxVideo'])
 
     const DICT = {
@@ -296,9 +361,12 @@ window.__ModuleLoader__.load({
         'field.blockSubagentVideoSpend': '禁止子代理出片（出图 / 读图不受影响）',
         'hint.subagentVision': '⚠ 前提：读图员开着，且读图员行 maxDepth ≥ 2，否则子代理会失去看图途径。读图员豁免名单取自契约文件；认不出读图员时本开关对子代理不生效（见 media_report 健康报告）。',
         'field.enableQwenDraw': '允许 qwen_draw（Qwen 制图）',
+        'hint.imageMutex': '制图二选一：与 MiniMax H3 制图互斥。关掉的那个会从新会话的工具表里消失，省下它那份每请求 schema。',
         'field.enableSeedanceVideo': '允许 seedance_video（Seedance 出片）',
         'field.enableVideoGen': '允许 video_gen（百炼出片：可灵 / 万相）',
         'field.enableMinimaxVideo': '允许 minimax_video（MiniMax 海螺出片）',
+        'field.enableMinimaxImage': '允许 minimax_draw（MiniMax H3 文生图 / 图片编辑）',
+        'hint.minimaxImage': '与 qwen_draw 互斥（制图二选一）：打开它会自动关闭 qwen_draw。共用 MINIMAX_API_KEY 与 minimaxBase。默认 1K 档 —— 官方 area 默认是更贵的 4K。',
         'field.enableMediaTask': '允许 media_task（重查 / 补下载）',
         'field.enableMediaReport': '允许 media_report（成本 / 健康）',
         'field.enableOcrImage': '允许 ocr_image（本地 OCR：纯文字截图抄字，不出网）',
@@ -369,7 +437,11 @@ window.__ModuleLoader__.load({
         'field.seedanceModel': 'Seedance 模型',
         'field.videoModel': '百炼视频模型 id',
         'field.minimaxBase': 'MiniMax 基址（国内 .cn / 国际 .io）',
+        'field.zhipuBase': '智谱 GLM 基址（仅用于健康探活）',
         'field.minimaxModel': 'MiniMax 视频模型 id',
+        'field.minimaxImageModel': 'MiniMax H3 图像模型 id',
+        'field.minimaxImageArea': 'H3 默认面积档位（1K / 2K / 4K）',
+        'field.minimaxImageTimeoutMs': 'H3 制图同步等待上限（官方建议 ≥600 秒）',
         'field.dashscopeWorkspaceId': '百炼业务空间 ID（WorkspaceId）',
         'field.dashscopeVideoBase': '百炼视频基址（留空自动拼）',
         'field.arkBase': 'Ark 基址',
@@ -393,6 +465,11 @@ window.__ModuleLoader__.load({
         'field.autoOcrOnImage': '有图自动跑本地 OCR（免费，0.4s）',
         'field.readerBatchMode': '批量读图（强制数组入参）',
         'field.readerBatchMax': '批量一次最多几张',
+        'field.readerProvider': '通用读图 provider',
+        'field.readerModel': '通用读图模型 id',
+        'field.readerReasoningEffort': '读图思考档位',
+        'option.keep': '留空（沿用专用路由 / 模型默认）',
+        'hint.readerRoute': '下拉候选自动取自「设置 → 模型」里所有支持 image 的模型及其 effort 档位。留空 = 沿用 ask_glm / ask_qwen 各自专用路由；选定后两条工具都走这里。列表外的模型请直接编辑 profile 的 cordis.patch.yml。档位须是目标模型官方支持的值：GLM-5.3-Flash 为 low/high/max（默认 max），Qwen4-Max 为 low/high/xhigh。',
         'field.healthProbe': '健康探测',
         'field.healthProbeTtlMs': '探测缓存 TTL（ms）',
         'unit.equals': '=',
@@ -432,9 +509,12 @@ window.__ModuleLoader__.load({
         'field.blockSubagentVideoSpend': 'Block subagent video generation (images and readers unaffected)',
         'hint.subagentVision': '⚠ Requires a reader to be on and its row to have maxDepth ≥ 2, otherwise subagents lose all image access. The reader exemption list comes from the contract file; if readers cannot be identified the switch is not applied to subagents (see media_report health).',
         'field.enableQwenDraw': 'Allow qwen_draw (Qwen images)',
+        'hint.imageMutex': 'Image generation is one-of-two: mutually exclusive with MiniMax H3 images. The disabled one disappears from new sessions’ tool lists, saving its per-request schema.',
         'field.enableSeedanceVideo': 'Allow seedance_video (Seedance video)',
         'field.enableVideoGen': 'Allow video_gen (Bailian video: Kling / Wan)',
         'field.enableMinimaxVideo': 'Allow minimax_video (MiniMax Hailuo video)',
+        'field.enableMinimaxImage': 'Allow minimax_draw (MiniMax H3 text-to-image / image edit)',
+        'hint.minimaxImage': 'Mutually exclusive with qwen_draw (one of two image paths): turning this on turns qwen_draw off. Shares MINIMAX_API_KEY and minimaxBase. Defaults to the 1K tier — the vendor default is the pricier 4K.',
         'field.enableMediaTask': 'Allow media_task (re-query / download)',
         'field.enableMediaReport': 'Allow media_report (cost / health)',
         'field.enableOcrImage': 'Allow ocr_image (local OCR for text screenshots, offline)',
@@ -468,7 +548,11 @@ window.__ModuleLoader__.load({
         'field.seedanceModel': 'Seedance model',
         'field.videoModel': 'Bailian video model id',
         'field.minimaxBase': 'MiniMax base URL (CN .cn / global .io)',
+        'field.zhipuBase': 'Zhipu GLM base URL (health probe only)',
         'field.minimaxModel': 'MiniMax video model id',
+        'field.minimaxImageModel': 'MiniMax H3 image model id',
+        'field.minimaxImageArea': 'H3 default area tier (1K / 2K / 4K)',
+        'field.minimaxImageTimeoutMs': 'H3 sync wait limit (vendor recommends ≥600 s)',
         'field.dashscopeWorkspaceId': 'Bailian workspace ID',
         'field.dashscopeVideoBase': 'Bailian video base URL (blank = auto)',
         'field.arkBase': 'Ark base URL',
@@ -492,6 +576,11 @@ window.__ModuleLoader__.load({
         'field.autoOcrOnImage': 'Auto local OCR on image turns (free, ~0.4s)',
         'field.readerBatchMode': 'Batch reading (array-only input)',
         'field.readerBatchMax': 'Max images per batch',
+        'field.readerProvider': 'Override reader provider',
+        'field.readerModel': 'Override reader model id',
+        'field.readerReasoningEffort': 'Reader reasoning effort',
+        'option.keep': 'Empty (keep per-tool route / model default)',
+        'hint.readerRoute': 'Dropdown choices are collected from every image-capable model under Settings > Models, including their reasoning effort levels. Empty = keep the per-tool ask_glm / ask_qwen routes; once selected, both reader tools use it. For a model outside the list, edit the profile cordis.patch.yml directly. Effort must be supported by the target model: GLM-5.3-Flash low/high/max (default max), Qwen4-Max low/high/xhigh.',
         'field.healthProbe': 'Health probes',
         'field.healthProbeTtlMs': 'Probe cache TTL (ms)',
         'unit.equals': '=',
@@ -795,11 +884,14 @@ window.__ModuleLoader__.load({
         if (spec.name === 'enableSeedanceVideo') return t('hint.seedance')
         if (spec.name === 'enableVideoGen') return t('hint.video')
         if (spec.name === 'enableMinimaxVideo') return t('hint.minimax')
+        if (spec.name === 'enableMinimaxImage') return t('hint.minimaxImage')
         if (spec.name === 'blockMainAgentNativeVision') return t('hint.nativeVision')
         if (spec.name === 'blockSubagentNativeVision') return t('hint.subagentVision')
         if (spec.name === 'blockNativeShell') return t('hint.nativeShell')
         if (spec.name === 'attachResultImages' || spec.name === 'maxAttachImageBytes') return t('hint.attachImages')
+        if (spec.name === 'readerProvider' || spec.name === 'readerModel' || spec.name === 'readerReasoningEffort') return t('hint.readerRoute')
         if (READER_FIELDS.has(spec.name)) return on ? t('hint.reader') : t('hint.readerOff')
+        if (IMAGE_FIELDS.has(spec.name)) return t('hint.imageMutex')
         if (VIDEO_FIELDS.has(spec.name)) return t('hint.videoMutex')
         return undefined
       }
@@ -826,6 +918,37 @@ window.__ModuleLoader__.load({
         )
       }
       const note = hint(false)
+      // 通用读图路由：真正的下拉。候选来自 llm-pi-ai 里所有支持 image 的模型；
+      // 清单拿不到时（表单不可用）自动退回普通文本框，绝不把配置卡变哑。
+      if (ROUTE_SELECT_FIELDS.has(spec.name) && visionChoices.models.length > 0) {
+        const values = spec.name === 'readerProvider'
+          ? visionChoices.providers
+          : spec.name === 'readerModel' ? visionChoices.models : visionChoices.efforts
+        return h(
+          'div',
+          { style: styles.row },
+          h(
+            'div',
+            { style: styles.column },
+            label,
+            note === undefined ? null : h('span', { style: styles.status }, note),
+          ),
+          h(
+            'select',
+            {
+              value: fieldState.text,
+              disabled,
+              'aria-label': t('field.' + spec.name),
+              onChange: (event) => onEdit(spec.name, event.target.value),
+              style: styles.input,
+            },
+            [
+              h('option', { key: '__keep__', value: '' }, t('option.keep')),
+              ...values.map((value) => h('option', { key: value, value }, value)),
+            ],
+          ),
+        )
+      }
       // 毫秒字段：把裸数字翻成人类可读（`1800000` → `30 分钟`），超长等待再给一句提醒。
       // 起因：这一组字段是**同步阻塞等待**，填太大真的会把一轮卡住，而裸毫秒看不出代价。
       const raw = Number(fieldState.text)
@@ -1187,6 +1310,8 @@ window.__ModuleLoader__.load({
      */
     function apply(ctx) {
       const t = ctx.locale.bind(NS)
+      // 读一次就够：配置卡挂载期间模型清单不会变；换 profile 会重新挂载。
+      visionChoices = collectVisionChoices(ctx)
       ctx.effect(() => ctx.locale.register(NS, DICT), 'mm-models: settings dictionary')
       // 官方凭据服务（可选：缺失时密钥区降级为"不可用"提示，不影响其它配置项）。
       // 取法必须用 `ctx.remote.credentials`（官方写法），不是 `ctx.get('credentials')`。

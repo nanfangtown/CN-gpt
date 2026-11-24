@@ -116,6 +116,25 @@ const READER_SPECS = Object.freeze([
 ])
 
 /**
+ * 解析一条读图工具实际使用的路由。
+ *
+ * 通用字段 readerProvider / readerModel 优先级最高：填了就两条工具都走它，
+ * 这样配置卡能指向 llm-pi-ai 里任意支持 image 的模型，不受 GLM/Qwen 二分限制。
+ * 两者都留空时完全回落到各工具自己的专用字段（旧行为不变）。
+ * 允许只覆盖其中一个（例如只换模型、沿用原 provider）。
+ *
+ * @param {object} config - 插件 Config。
+ * @param {object} spec - READER_SPECS 里的一条。
+ * @returns {{provider: string, model: string}}
+ */
+function routeOf(config, spec) {
+  const global = (value) => typeof value === 'string' ? value.trim() : ''
+  const provider = global(config.readerProvider) || global(config[spec.providerField])
+  const model = global(config.readerModel) || global(config[spec.modelField])
+  return { provider, model }
+}
+
+/**
  * 组装给子代理的 prompt。
  * @param {{imagePaths?: string[], question?: string, prompt?: string, ocrText?: string}} input - 入参。
  * @returns {string} 文本。
@@ -167,10 +186,8 @@ export function createReaderTools(deps) {
 
   return READER_SPECS.map((spec) => {
     // 型号从 Config 读（缺省/空串时回落到家族名），不要在文案里写死。
-    const configuredModel = config[spec.modelField]
-    const label = typeof configuredModel === 'string' && configuredModel.trim().length > 0
-      ? configuredModel.trim()
-      : spec.fallbackLabel
+    const configuredModel = routeOf(config, spec).model
+    const label = configuredModel.length > 0 ? configuredModel : spec.fallbackLabel
     return defineTool({
       name: spec.tool,
       description: batchMode
@@ -268,10 +285,10 @@ export function createReaderTools(deps) {
         )
       }
 
-      const provider = config[spec.providerField]
-      const model = config[spec.modelField]
+      const { provider, model } = routeOf(config, spec)
       const preset = config.readerAgentPreset
       const maxDepth = Number(config.readerMaxDepth)
+      const effort = typeof config.readerReasoningEffort === 'string' ? config.readerReasoningEffort.trim() : ''
 
       // 预读（2026-11-01）：派单前先在本地把"字"抄一遍（0.4s、0 元、不出网），
       // 让读图员校对错字/补漏行，而不是从零描述。失败不影响读图，静默降级。
@@ -318,6 +335,11 @@ export function createReaderTools(deps) {
       // 只传嵌套 request 时 rc.3 里 `spec.parent` 为 undefined，直接报
       // "Cannot read properties of undefined (reading 'id')"。
       // 扁平字段与旧 `request` 同时给出：两代运行时都能派出。
+      // 运行时补思考档位。上面 `agentOptions: { provider, model }` 的字面写法
+      // 保持不动：core/reader-guard.mjs 会从契约里扫读图路由，别让扫描失配。
+      if (effort !== '' && request.agentOptions !== undefined) {
+        request.agentOptions = { ...request.agentOptions, reasoningEffort: effort }
+      }
       const activation = await subagents.startActivation({
         ...request,
         provider: 'spawn',

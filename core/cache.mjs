@@ -19,7 +19,9 @@ import { dirname, join } from 'node:path'
 
 // 2026-10-17：升到 2 —— 键里新增了**输入图指纹**（图生图）。
 // 不升版本的话，一张"文生图"的旧缓存会被"图生图"请求命中，返回一张完全无关的图。
-const CACHE_VERSION = 2
+// 2026-11-21：升到 3 —— 键里新增 `area`（MiniMax H3 的 1K/2K/4K 档位）。
+// 不升的话，"同一句 prompt 出 1K"与"出 4K"会互相命中：返回的图尺寸与计费档位都对不上。
+const CACHE_VERSION = 3
 const DEFAULT_MAX_ENTRIES = 200
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
 
@@ -59,6 +61,8 @@ export function cacheKeyOf(spec, config) {
     prompt: spec?.prompt ?? '',
     n: Number(spec?.n ?? 1),
     size: spec?.size ?? '',
+    // 面积档位（1K/2K/4K）：不同档位是不同的图、不同的价，不能命中同一条缓存。
+    area: spec?.area ?? '',
     negativePrompt: spec?.negativePrompt ?? '',
     // 图生图：同一句 prompt 配不同的原图，必须是不命中同一个缓存的两件事。
     images: imagesFingerprintOf(spec?.images),

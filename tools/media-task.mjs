@@ -15,6 +15,9 @@ const PROVIDERS = Object.freeze({
   seedance: { adapterId: 'ark-video', key: keySpec('ark'), label: '方舟 Ark', outDirKey: 'videoOutDir' },
   bailian: { adapterId: 'dashscope-video', key: keySpec('dashscope-video'), label: '百炼（可灵/万相）', outDirKey: 'videoOutDir' },
   minimax: { adapterId: 'minimax-video', key: keySpec('minimax'), label: 'MiniMax（海螺）', outDirKey: 'videoOutDir' },
+  // MiniMax H3-Image（2026-11-21）：同步接口，没有可重查的远端任务；
+  // 登记它的唯一用途是"整轮失败后知道曾经提交过什么"，所以这里如实回答不支持而不是报 404。
+  'minimax-image': { adapterId: 'minimax-image', key: keySpec('minimax-image'), label: 'MiniMax（H3-Image）', outDirKey: 'outDir' },
 })
 
 /**
@@ -29,7 +32,7 @@ export function createMediaTaskTool(deps) {
     description: '重查/补下载异步媒体任务，或列出最近提交过的任务。用于超时/取消/整轮失败之后；一次性查询。',
     parameters: {
       action: { type: 'string', enum: ['status', 'download', 'list'], description: '默认 status；download 补下载；list 列出最近任务（找回 task_id）' },
-      provider: { type: 'string', enum: ['qwen', 'seedance', 'bailian', 'minimax'], description: 'qwen=制图；seedance=方舟出片；bailian=百炼出片（可灵/万相）；minimax=MiniMax 海螺出片（list 时可省略作筛选）' },
+      provider: { type: 'string', enum: ['qwen', 'seedance', 'bailian', 'minimax', 'minimax-image'], description: 'qwen 制图 / seedance 方舟 / bailian 百炼 / minimax 海螺 / minimax-image H3 制图（同步，仅登记）；list 时可省略' },
       task_id: { type: 'string', description: '任务 id（status/download 必填）' },
       out_dir: { type: 'string', description: '补下载目录；默认配置值' },
       limit: { type: 'integer', description: 'list 返回条数上限（默认 10）' },
@@ -127,19 +130,22 @@ export function createMediaTaskTool(deps) {
         }
       }
       const provider = PROVIDERS[args.provider]
-      if (provider === undefined) throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：provider 必须是 qwen / seedance / bailian / minimax')
+      if (provider === undefined) throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：provider 必须是 qwen / seedance / bailian / minimax / minimax-image')
       const taskId = typeof args.task_id === 'string' ? args.task_id.trim() : ''
       if (taskId.length === 0) throw new MediaError(CODES.BAD_REQUEST, '参数不被接受：task_id 不能为空')
       try {
         const adapter = manager.get(provider.adapterId)
-        // 同步模式没有远端任务可查（如 qwen-image）；直接给出可读说明，避免误报 404。
+        // 同步模式没有远端任务可查（如 qwen-image / MiniMax H3-Image）；
+        // 直接给出可读说明，避免误报 404 —— 也避免让模型以为"任务丢了"。
         if (typeof adapter.modeFor === 'function' && adapter.modeFor(config) === 'sync') {
           return {
             provider: args.provider,
             taskId,
             status: 'unsupported',
             artifactCount: 0,
-            detail: '该 provider 当前为同步模式：没有可重查的远端任务；产物在 qwen_draw / seedance_video 调用时已落盘。',
+            detail:
+              '该 provider 当前为**同步模式**：没有可重查的远端任务；产物在调用当时就已落盘（或随那次调用一起失败）。' +
+              '超时/中断时官方可能仍已计费，账本里的预估记录就是它的痕迹。',
           }
         }
         const credential = await keys.resolve(provider.key)

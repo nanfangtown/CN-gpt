@@ -95,6 +95,11 @@ export function readVendorError(body) {
 const POLICY_MARKERS = [
   'datainspectionfailed',
   'data_inspection',
+  // MiniMax H3-Image（2026-11-21）：内容安全原文是
+  //   "output image failed content safety check (1027)" / "input content failed safety check"
+  // 不认识这个词的话，422 会被归成 BAD_REQUEST，文案就变成"改 duration/size"——无效建议。
+  'content safety',
+  'safety check',
   'content_filter',
   'contentfilter',
   'content policy',
@@ -222,7 +227,11 @@ export function fixedMessage(code, info = {}) {
       if (info.where === 'submit') return `${provider}侧限流：任务未创建，建议稍后再试（本插件不会自动重发提交）`
       return `${provider}侧限流：已退避重试 ${info.attempts ?? 1} 次仍未成功，建议稍后再试`
     case CODES.QUOTA:
-      return `账户余额/配额不足：请到${provider}平台充值或换 key`
+      // 2026-11-21 实跑（MiniMax H3 余额为 0）：原来只回"余额/配额不足"，把厂商原因丢了 ——
+      // 而 MiniMax 用同一句 402 表达四种不同处境（1008 余额 / 2053 积分 / 2067 套餐额度 /
+      // 2068 当前套餐不支持该模型），不给 detail 用户根本不知道该充值还是换套餐。
+      // 最后那句"未生成、未计费"也是实跑后补的：余额不足时用户最想知道的就是"有没有扣钱"。
+      return `账户余额/配额不足${detail === '厂商未给出细节' ? '' : `（${detail}）`}：请到${provider}平台充值或换 key。**本次未生成、未计费。**`
     case CODES.BAD_REQUEST:
       return `参数不被接受：${detail}；可尝试改 duration/resolution/size`
     case CODES.POLICY_REJECTED:

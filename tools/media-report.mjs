@@ -18,6 +18,12 @@ const PROBE_ADAPTERS = Object.freeze({
   'dashscope-vl': 'dashscope-image',
   ark: 'ark-video',
   minimax: 'minimax-video',
+  // MiniMax H3-Image 与海螺出片共用 key，但走的是另一个 adapter（探针仍是只读的
+  // `/v1/files/retrieve`）：分开映射，health 才能分别报出"制图"和"出片"的状态。
+  'minimax-image': 'minimax-image',
+  // 2026-11-21 修 P2：智谱 GLM 之前**没有任何探针**，health 里 ask_glm 永远显示"未探测"，
+  // 而它是出厂默认开启、且原生读图被屏蔽时唯一的看图通道 —— key 填错只能等真正读图才发现。
+  zhipu: 'zhipu-vision',
 })
 
 /**
@@ -156,7 +162,11 @@ export function createMediaReportTool(deps) {
         const probes = {}
         for (const spec of KEY_SPECS) {
           const probe = await probeOf(spec.id)
-          if (probe !== undefined) probes[PROBE_ADAPTERS[spec.id]] = probe
+          if (probe === undefined) continue
+          // 两个键都写：capability 是 renderHealthReport 的取用方式（一个 adapter 服务多行时必须这样），
+          // adapter 键保留给诊断脚本与旧读取方。
+          probes[spec.capability] = probe
+          probes[PROBE_ADAPTERS[spec.id]] = probe
         }
         const llm = typeof ctx.get === 'function' ? ctx.get('llm') : undefined
         let llmProviders
@@ -166,7 +176,12 @@ export function createMediaReportTool(deps) {
         } catch {
           llmProviders = undefined
         }
-        const extraConflictNotes = (switches?.conflictNotes?.() ?? []).filter((note) => note.includes('生视频模型'))
+        // 互斥冲突要能在对话里看见：读图那组由 renderHealthReport 自己按能力行报，
+        // 这里补**组级**告警（出片三选一、制图二选一）。2026-11-21 加 images 组，
+        // 所以过滤条件不能只认"生视频模型"——漏了制图冲突等于把告警藏起来。
+        const extraConflictNotes = (switches?.conflictNotes?.() ?? []).filter(
+          (note) => note.includes('生视频模型') || note.includes('制图模型'),
+        )
         const report = renderHealthReport({
           keyEntries,
           health,

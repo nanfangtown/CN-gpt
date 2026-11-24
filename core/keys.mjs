@@ -78,6 +78,19 @@ export const KEY_SPECS = Object.freeze([
     settingsWhere: '插件页 → CN-gpt → 配置卡',
     capability: 'ask_qwen',
   }),
+  // MiniMax H3-Image 与海螺出片共用 MINIMAX_API_KEY（同一账号、同一区域）。
+  // 单独成行只为让 health 能独立报出"制图"这条链路的状态：读图 / 出片共用 key 时，
+  // 只报一行会让"出片关了但制图还开着"这种组合看不出可用性。
+  Object.freeze({
+    id: 'minimax-image',
+    ref: 'MINIMAX_API_KEY',
+    literalField: 'minimaxApiKey',
+    envField: 'minimaxApiKeyEnv',
+    label: 'MiniMax API Key（H3-Image 文生图 / 图片编辑）',
+    usage: '仅 minimax_draw 使用（与 minimax_video 共用 MINIMAX_API_KEY；国内 .cn / 国际 .io 不通用）',
+    settingsWhere: '插件页 → CN-gpt → 配置卡',
+    capability: 'minimax_image',
+  }),
 ])
 
 function nonEmptyString(value) {
