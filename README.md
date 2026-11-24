@@ -51,7 +51,7 @@ DeepSeek 主模型负责思考与交付；外部模型只负责"看 / 画 / 拍"
 :: 从 npm 安装（推荐）——装到的是预构建代码，不需要构建脚本授权
 dsh plugin --profile desktop add dsh-mm-models
 
-:: 锁定版本，便于复现（0.4.0 发布后可用）
+:: 锁定版本，便于复现（npm 上架后可用）
 dsh plugin --profile desktop add dsh-mm-models@0.4.0
 
 :: 改源码 / 跟未发布分支时，从本地目录安装
@@ -463,6 +463,12 @@ npm run test:docs    # 文档相对链接检查
 - **离线套件**用本地假厂商（`tests/mock-providers.mjs`）跑完 提交 → 轮询 → 下载 → 记账，CI 在 Linux / Windows × Node 22 / 24 上跑。
 - **真实 harness 脚本**（`tests/e2e-*.mjs`）需要本机 DSH 安装与真 key，`SKIPPED:` 与通过可区分，`DSH_E2E_STRICT=1` 时跳过会以 78 退出。
 - 变异测试（`npm run test:mutation`）会**直接改写工作区源码**再还原，不要与其它测试并发跑。
+
+## 发布
+
+- 源码在 `https://github.com/nanfangtown/CN-gpt`，`main` 是当前工作分支；`0.4.0` 的源码与文档以该分支为准。
+- 推 `main` 只触发 `offline-tests`（Linux / Windows × Node 22 / 24）；**只有推 `v*` 标签**才会经 `publish.yml` 发到 npm（带 provenance）。推源码与发包是两件独立的事。
+- 本地自检：`npm test` + `npm run test:docs` + `npm pack --dry-run`；发行前的逐项清单见 `RELEASE-CHECKLIST.md`。
 
 ## 参与
 

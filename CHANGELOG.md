@@ -3,7 +3,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 本项目在 `0.x` 期间允许有行为变更，破坏性变更会写在 `Changed` 里。
 
-## [Unreleased]
+## [0.4.0] - 2026-11-24
 
 ### Added
 
@@ -12,33 +12,6 @@
   模型 id 必须在 provider 的 `models` 白名单里且声明 `input: [text, image]`。
   两条通用路由也进入 `blockSubagentNativeVision` 的读图员豁免名单，换模型后不会把读图员一起弄瞎。
   此前只在 `index.js` 与 `cordis.patch.yml` 里有实现和注释，README / CHANGELOG 均未记录。
-
-### Changed
-
-- **变更日志结构整理（2026-11-24）**：删除误插在 0.3.0 与 0.2.2 之间的重复一级标题
-  「# 变更记录」，把格式说明移回文件顶部；0.4.0 段按 Added / Changed / Fixed / Docs 重排，
-  两个 `### Fixed` 合并为一个。**历史条目内容一字未删，分节内条目顺序不变。**
-
-### Fixed
-
-- **出厂配置注释与实现对齐**：`cordis.patch.yml` 两处仍写 `minimax_draw` 与 `qwen_draw`
-  「并行、不互斥」，而 0.4.0 起已在 `MUTEX_GROUPS.images` 里二选一互斥；改为互斥说明。
-- **安全文档更新**：`SECURITY.md` 支持版本从过时的 `0.1.x` 改到 `0.4.x`；外部厂商补齐
-  MiniMax（海螺 / H3-Image），补充 `mm-minimax` 读取 MiniMax Code OAuth 登录态、续期时原子写回
-  该凭据文件的说明；修正「不向本仓库之外上传任何数据」这一与读图 / 出图链路不符的表述。
-- **文档数字与实测对齐**：README 离线套件断言数 约 400 → 313（2026-11-24 本机实测，含 1 项
-  浅克隆跳过）、`test:batch` 18 → 39 项；N=1 占比统一标注为「多场会话 64%–72%」，消除与另一节
-  30/47 的口径冲突；`tests/README.md` 的 `run.mjs` 148 → 154 项。
-- **源码注释整理**：删除 `tools/run-batch.mjs` 中重复的 Windows 包装脚本 JSDoc 块；
-  `normalizeBatchEnv` 注释补上 `null` / `undefined` 视为「不设置」这一唯一例外，与「非法输入
-  直接拒」的契约说明不再自相矛盾。**以上均只改注释与文档，未改任何运行行为。**
-
-### Docs
-
-- README 新增「通用读图路由」小节；`SECURITY.md` 新增 MiniMax Code OAuth 凭据说明。
-## [0.4.0] - 2026-11-21
-
-### Added
 
 - **MiniMax H3-Image 制图（`minimax_draw`，2026-11-21）**：文生图 + 图生图（官方"图片编辑"，1–16 张参考图）。
   - 协议：`POST {minimaxBase}/v1/images/generations` 与 `/v1/images/edits`；**同步**返回，无 task_id；
@@ -56,6 +29,10 @@
     `tests/minimax-image-tool.test.mjs`（10 项：闸门/记账/图生图/越界拒绝/缓存）。
 
 ### Changed
+
+- **变更日志结构整理（2026-11-24）**：删除误插在 0.3.0 与 0.2.2 之间的重复一级标题
+  「# 变更记录」，把格式说明移回文件顶部；0.4.0 段按 Added / Changed / Fixed / Docs 重排，
+  两个 `### Fixed` 合并为一个。**历史条目内容一字未删，分节内条目顺序不变。**
 
 - **制图改二选一：`qwen_draw` ⇄ `minimax_draw` 互斥（2026-11-21，用户要求"省 prompt"）**：
   `enableQwenDraw` / `enableMinimaxImage` 进 `MUTEX_GROUPS` 的 `images` 组（Host 与设置卡两处同构）。
@@ -76,6 +53,18 @@
   子代理 deny 不含、关掉开关后一个 tick 内撤销。
 
 ### Fixed
+
+- **出厂配置注释与实现对齐**：`cordis.patch.yml` 两处仍写 `minimax_draw` 与 `qwen_draw`
+  「并行、不互斥」，而 0.4.0 起已在 `MUTEX_GROUPS.images` 里二选一互斥；改为互斥说明。
+- **安全文档更新**：`SECURITY.md` 支持版本从过时的 `0.1.x` 改到 `0.4.x`；外部厂商补齐
+  MiniMax（海螺 / H3-Image），补充 `mm-minimax` 读取 MiniMax Code OAuth 登录态、续期时原子写回
+  该凭据文件的说明；修正「不向本仓库之外上传任何数据」这一与读图 / 出图链路不符的表述。
+- **文档数字与实测对齐**：README 离线套件断言数 约 400 → 313（2026-11-24 本机实测，含 1 项
+  浅克隆跳过）、`test:batch` 18 → 39 项；N=1 占比统一标注为「多场会话 64%–72%」，消除与另一节
+  30/47 的口径冲突；`tests/README.md` 的 `run.mjs` 148 → 154 项。
+- **源码注释整理**：删除 `tools/run-batch.mjs` 中重复的 Windows 包装脚本 JSDoc 块；
+  `normalizeBatchEnv` 注释补上 `null` / `undefined` 视为「不设置」这一唯一例外，与「非法输入
+  直接拒」的契约说明不再自相矛盾。**以上均只改注释与文档，未改任何运行行为。**
 
 - **健康报告：`ask_glm` 不再永远"未探测"（P2）**：新增只读探针 `tasks/adapters/zhipu-vision.mjs`
   （`GET {zhipuBase}/models`，不花钱、不发对话请求）。200 时还会核对 `readerGlmModel` 是否在清单里 ——
@@ -192,6 +181,8 @@
     `tests/turn-gate.test.mjs` 新增用例 G（超时只等一次 + 晚到结论补回）。
 
 ### Docs
+
+- README 新增「通用读图路由」小节；`SECURITY.md` 新增 MiniMax Code OAuth 凭据说明。
 
 - README 新增两节实测（2026-11-11，一次真实会话 126 步 / 5 轮 / 21.3M prompt）：
   - **「实测：到底省多少 token、多少」**：44 次调用跑 92 条命令，逐条跑会多 48 步、多 8.63M prompt；
